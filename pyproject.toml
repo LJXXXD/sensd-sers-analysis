@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sensd-sers-analysis"
+version = "0.1.0"
+description = "SERS data analysis tools for NSF SENSD program"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "Jiahe (LJ) Li", email = "j.li@missouri.edu"},
+]
+
+dependencies = [
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "matplotlib",
+    "seaborn",
+    "openpyxl",
+    "scipy",
+    "streamlit",
+]
+
+[project.optional-dependencies]
+dev = [
+    "jupyter",
+    "ruff",
+    "pre-commit",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
