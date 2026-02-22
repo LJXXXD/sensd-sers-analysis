@@ -21,7 +21,6 @@ cd sensd-sers-analysis
 
 # Via uv (recommended)
 uv sync --extra dev
-uv pip install -e ".[dev]"
 uv run pre-commit install   # optional
 
 # Or via pip
