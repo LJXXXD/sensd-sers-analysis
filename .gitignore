@@ -42,6 +42,7 @@ Thumbs.db
 temp/
 tmp/
 playground.*
+playground/
 test.*
 temp.*
 
