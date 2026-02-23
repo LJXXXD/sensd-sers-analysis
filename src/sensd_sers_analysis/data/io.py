@@ -23,10 +23,13 @@ DEFAULT_PATTERN = "*.xlsx"
 
 # Column names for sample identification and metadata
 META_COLS = [
+    "sensor_model",
     "sensor_id",
     "test_id",
     "connection_id",
     "serotype",
+    "date",
+    "operator",
     "concentration",
     "filename",
     "signal_index",
@@ -98,6 +101,15 @@ def _parse_embedded_format(
     return metadata, raman_shift, signals, concentrations
 
 
+def _metadata_get(metadata: dict[str, str], *keys: str) -> str:
+    """Look up metadata by multiple possible key variants (e.g., 'sensor model', 'sensor_model')."""
+    for key in keys:
+        val = metadata.get(key, "")
+        if val != "":
+            return str(val).strip()
+    return ""
+
+
 def _load_signal_file(file_path: str | Path) -> pd.DataFrame:
     """Load one SERS Excel file; returns wide-format DataFrame."""
     path = Path(file_path)
@@ -111,10 +123,15 @@ def _load_signal_file(file_path: str | Path) -> pd.DataFrame:
 
     meta_df = pd.DataFrame(
         {
-            "sensor_id": metadata.get("sensor id", ""),
-            "test_id": metadata.get("test id", ""),
-            "connection_id": metadata.get("connection id", ""),
+            "sensor_model": _metadata_get(metadata, "sensor model", "sensor_model"),
+            "sensor_id": metadata.get("sensor id", metadata.get("sensor_id", "")),
+            "test_id": metadata.get("test id", metadata.get("test_id", "")),
+            "connection_id": metadata.get(
+                "connection id", metadata.get("connection_id", "")
+            ),
             "serotype": metadata.get("serotype", ""),
+            "date": _metadata_get(metadata, "date"),
+            "operator": _metadata_get(metadata, "operator"),
             "concentration": concentrations,
             "filename": path.name,
             "signal_index": np.arange(n_signals),
