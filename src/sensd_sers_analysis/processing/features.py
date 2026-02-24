@@ -10,7 +10,10 @@ import numpy as np
 import pandas as pd
 from scipy.integrate import trapezoid as scipy_trapezoid
 
-from sensd_sers_analysis.data.io import get_raman_shift, get_signals_matrix
+from sensd_sers_analysis.data import get_raman_shift, get_signals_matrix
+
+# Column names produced by extract_basic_features; use for stats plots and validation.
+BASIC_FEATURE_COLUMNS = ["max_intensity", "mean_intensity", "integral_area"]
 
 
 def extract_basic_features(df_wide: pd.DataFrame) -> pd.DataFrame:

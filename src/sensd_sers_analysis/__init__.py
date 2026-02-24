@@ -12,7 +12,7 @@ from .data import (
     get_metadata_columns,
     wide_to_tidy,
 )
-from .visualization import plot_spectra
+from .visualization import plot_feature_distribution, plot_spectra
 
 __version__ = "0.1.0"
 
@@ -23,5 +23,6 @@ __all__ = [
     "get_metadata_columns",
     "wide_to_tidy",
     "plot_spectra",
+    "plot_feature_distribution",
     "__version__",
 ]

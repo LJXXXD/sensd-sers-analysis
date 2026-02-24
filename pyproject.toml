@@ -27,8 +27,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "jupyter",
-    "ruff",
+    "pytest",
     "pre-commit",
+    "ruff",
 ]
 
 [tool.setuptools.packages.find]

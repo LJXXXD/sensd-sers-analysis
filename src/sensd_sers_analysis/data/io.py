@@ -256,3 +256,42 @@ def wide_to_tidy(df: pd.DataFrame) -> pd.DataFrame:
     )
     tidy["raman_shift"] = tidy["_rs_col"].str[len(RS_COL_PREFIX) :].astype(float)
     return tidy.drop(columns=["_rs_col"])
+
+
+def load_sers_data_as_wide_and_tidy(
+    paths: Union[str, Path, List[Union[str, Path]]],
+    *,
+    serotypes: Optional[List[str]] = None,
+    pattern: str = DEFAULT_PATTERN,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Load SERS data and return both wide and tidy formats.
+
+    Args:
+        paths: File/folder path or list of paths.
+        serotypes: If provided, only load matching serotypes.
+        pattern: Glob pattern for folder scan (default: *.xlsx).
+
+    Returns:
+        Tuple of (wide_df, tidy_df). Both empty if loading fails.
+    """
+    wide = load_sers_data(paths, serotypes=serotypes, pattern=pattern)
+    if wide.empty:
+        return wide, wide
+    tidy = wide_to_tidy(wide)
+    return wide, tidy
+
+
+def count_unique_spectra(df: pd.DataFrame) -> int:
+    """
+    Count unique spectrum traces (filename + signal_index pairs) in a DataFrame.
+
+    Args:
+        df: Tidy or wide DataFrame with filename and signal_index columns.
+
+    Returns:
+        Number of unique spectra.
+    """
+    if df.empty or "filename" not in df.columns or "signal_index" not in df.columns:
+        return 0
+    return len(df.drop_duplicates(subset=["filename", "signal_index"]))

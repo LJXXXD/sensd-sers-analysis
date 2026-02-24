@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
-from sensd_sers_analysis.constants import CONCENTRATION_GROUP_ORDER
+from sensd_sers_analysis.utils.natural_sort import order_concentration_labels
 
 
 def plot_feature_distribution(
@@ -32,6 +32,9 @@ def plot_feature_distribution(
 
     Uses boxplot or violin plot with optional stripplot overlay for
     individual data points (when sample size is manageable).
+
+    Boxplot outliers (fliers): Points outside Q1 - 1.5*IQR or Q3 + 1.5*IQR,
+    where IQR = Q3 - Q1. Controlled by seaborn's ``whis`` parameter (default 1.5).
 
     Args:
         df_features: DataFrame from extract_basic_features (metadata +
@@ -105,10 +108,9 @@ def plot_feature_distribution(
     def _conc_order(col: str) -> list | None:
         if col != "concentration_group" or col not in df.columns:
             return None
-        order = [
-            v for v in CONCENTRATION_GROUP_ORDER if v in df[col].astype(str).values
-        ]
-        return order if order else None
+        vals = df[col].astype(str).dropna().unique().tolist()
+        vals = [v for v in vals if v]
+        return order_concentration_labels(vals) if vals else None
 
     plot_kwargs: dict = {
         "data": df,
@@ -151,11 +153,16 @@ def plot_feature_distribution(
             "color": "black",
             "alpha": 0.35,
             "size": 3,
-            "jitter": 0.2,
+            "jitter": 0,
+            "dodge": hue is not None,
         }
+        if x_col != "_single" and (x_order := plot_kwargs.get("order")):
+            strip_kw["order"] = x_order
         if hue is not None:
             strip_kw["hue"] = hue
             strip_kw["legend"] = False
+            if hue_order := plot_kwargs.get("hue_order"):
+                strip_kw["hue_order"] = hue_order
         sns.stripplot(**strip_kw)
 
     resolved_title = title

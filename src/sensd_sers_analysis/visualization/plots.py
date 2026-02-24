@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
-from sensd_sers_analysis.constants import CONCENTRATION_GROUP_ORDER
+from sensd_sers_analysis.utils.natural_sort import order_concentration_labels
 
 RAMAN_SHIFT_COL = "raman_shift"
 INTENSITY_COL = "intensity"
@@ -90,21 +90,17 @@ def plot_spectra(
     if hue is not None:
         plot_kwargs["hue"] = hue
         if hue == "concentration_group" and hue in df.columns:
-            order = [
-                v for v in CONCENTRATION_GROUP_ORDER if v in df[hue].astype(str).values
-            ]
-            if order:
-                plot_kwargs["hue_order"] = order
+            vals = df[hue].astype(str).dropna().unique().tolist()
+            vals = [v for v in vals if v]
+            if vals:
+                plot_kwargs["hue_order"] = order_concentration_labels(vals)
     if style is not None:
         plot_kwargs["style"] = style
         if style == "concentration_group" and style in df.columns:
-            order = [
-                v
-                for v in CONCENTRATION_GROUP_ORDER
-                if v in df[style].astype(str).values
-            ]
-            if order:
-                plot_kwargs["style_order"] = order
+            vals = df[style].astype(str).dropna().unique().tolist()
+            vals = [v for v in vals if v]
+            if vals:
+                plot_kwargs["style_order"] = order_concentration_labels(vals)
     if plot_palette is not None:
         plot_kwargs["palette"] = plot_palette
     if norm is not None:
