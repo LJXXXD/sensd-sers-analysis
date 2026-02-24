@@ -11,6 +11,16 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - name: Inject HF frontmatter and commit
+        run: |
+          # Dynamically prepend YAML frontmatter required for HF Spaces Streamlit build
+          printf '%s\n' '---' 'title: SERS Data Explorer' 'sdk: streamlit' 'app_file: apps/app.py' '---' '' > /tmp/frontmatter
+          cat /tmp/frontmatter README.md > README.md.tmp && mv README.md.tmp README.md
+          # Configure git for local commit (ephemeral, not pushed to GitHub)
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "chore: add HF Spaces frontmatter to README"
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
