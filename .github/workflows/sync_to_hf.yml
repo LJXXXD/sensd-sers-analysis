@@ -16,11 +16,13 @@ jobs:
           # Dynamically prepend YAML frontmatter required for HF Spaces Streamlit build
           printf '%s\n' '---' 'title: SERS Data Explorer' 'sdk: streamlit' 'app_file: apps/app.py' '---' '' > /tmp/frontmatter
           cat /tmp/frontmatter README.md > README.md.tmp && mv README.md.tmp README.md
+          # Generate requirements.txt from pyproject.toml
+          python3 -c "import tomllib; data=tomllib.load(open('pyproject.toml', 'rb')); open('requirements.txt', 'w').write('\n'.join(data.get('project', {}).get('dependencies', [])))"
           # Configure git for local commit (ephemeral, not pushed to GitHub)
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add README.md
-          git commit -m "chore: add HF Spaces frontmatter to README"
+          git add README.md requirements.txt
+          git commit -m "chore: add HF Spaces frontmatter and sync requirements.txt"
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
