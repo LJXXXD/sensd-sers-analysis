@@ -1,0 +1,11 @@
+# Install the local package (enables sensd_sers_analysis imports on HF Spaces)
+-e .
+
+numpy
+pandas
+scikit-learn
+matplotlib
+seaborn
+openpyxl
+scipy
+streamlit

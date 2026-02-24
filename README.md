@@ -1,3 +1,9 @@
+---
+title: SERS Data Explorer
+sdk: streamlit
+app_file: apps/app.py
+---
+
 # SERS Data Analysis for Salmonella Detection
 
 This toolkit is developed for the analysis of Surface-Enhanced Raman Spectroscopy (SERS) data within the [NSF SENS-D](https://sensd.ai) program. The project focuses on bridging sensor physics with computational intelligence for rapid Salmonella detection.
