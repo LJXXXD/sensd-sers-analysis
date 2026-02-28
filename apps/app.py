@@ -13,11 +13,13 @@ import streamlit as st
 from sensd_sers_analysis.data import (
     count_unique_spectra,
     load_sers_data_as_wide_and_tidy,
+    wide_to_tidy,
 )
 from sensd_sers_analysis.processing import (
     BASIC_FEATURE_COLUMNS,
     extract_basic_features,
     filter_sers_data,
+    trim_raman_shift,
     get_feature_metadata_columns,
     get_filter_options,
     get_filterable_columns,
@@ -25,8 +27,24 @@ from sensd_sers_analysis.processing import (
     pick_preferred_column,
     preprocess_metadata,
 )
-from sensd_sers_analysis.utils import format_column_label
-from sensd_sers_analysis.visualization import plot_feature_distribution, plot_spectra
+from sensd_sers_analysis.assessment import (
+    compute_batch_variance,
+    compute_degradation,
+    get_consistency_summary_table,
+    identify_deviating_sensors,
+    prepare_degradation_data,
+)
+from sensd_sers_analysis.report import build_sensor_assessment_pdf
+from sensd_sers_analysis.utils import (
+    format_column_label,
+    order_concentration_labels,
+)
+from sensd_sers_analysis.visualization import (
+    plot_batch_boxplot,
+    plot_degradation_trend,
+    plot_feature_distribution,
+    plot_spectra,
+)
 
 st.set_page_config(
     page_title="SERS Data Explorer",
@@ -171,6 +189,47 @@ if tidy_df is None or tidy_df.empty:
 
 tidy_df = preprocess_metadata(tidy_df)
 wide_df = preprocess_metadata(wide_df)
+
+# ---------------------------------------------------------------------------
+# Raman Shift trimming (apply before feature extraction and plotting)
+# ---------------------------------------------------------------------------
+st.sidebar.markdown("#### Raman Shift window")
+st.sidebar.caption(
+    "Trim spectra to a uniform window. Leave blank for no limit. "
+    "Common default: 400–1800 cm⁻¹."
+)
+rs_min_str = st.sidebar.text_input(
+    "Min Raman Shift (cm⁻¹)",
+    value="",
+    placeholder="e.g. 400",
+    key="raman_shift_min",
+    help="Leave blank for no lower limit.",
+)
+rs_max_str = st.sidebar.text_input(
+    "Max Raman Shift (cm⁻¹)",
+    value="",
+    placeholder="e.g. 1800",
+    key="raman_shift_max",
+    help="Leave blank for no upper limit.",
+)
+
+
+def _parse_raman_shift_bound(s: str) -> float | None:
+    """Parse user input to float; return None if blank or invalid."""
+    if not s or not str(s).strip():
+        return None
+    try:
+        return float(str(s).strip())
+    except ValueError:
+        return None
+
+
+min_shift = _parse_raman_shift_bound(rs_min_str)
+max_shift = _parse_raman_shift_bound(rs_max_str)
+wide_df = trim_raman_shift(wide_df, min_shift=min_shift, max_shift=max_shift)
+tidy_df = wide_to_tidy(wide_df)
+tidy_df = preprocess_metadata(tidy_df)
+
 features_df = extract_basic_features(wide_df)
 st.sidebar.success(
     f"Loaded **{len(uploaded)}** files, **{len(wide_df)}** samples ({len(tidy_df)} tidy rows)."
@@ -256,7 +315,9 @@ if filtered.empty:
     st.warning("No data matches the selected filters. Adjust filters and try again.")
     st.stop()
 
-tab_spectra, tab_stats = st.tabs(["📉 Spectral Viewer", "📊 Feature Analysis"])
+tab_spectra, tab_stats, tab_assessment = st.tabs(
+    ["📉 Spectral Viewer", "📊 Feature Analysis", "🔬 Sensor Assessment & Report"]
+)
 
 with tab_spectra:
     available_cols = get_plot_hue_columns(filtered)
@@ -406,3 +467,308 @@ with tab_stats:
                 st.pyplot(fig_stats, use_container_width=True)
             except ValueError as e:
                 st.error(f"Plot error: {e}")
+
+# ---------------------------------------------------------------------------
+# 4. Sensor Assessment & Report
+# ---------------------------------------------------------------------------
+# Fixed group cols for apples-to-apples: variance/CV only within same
+# sensor + serotype + concentration.
+ASSESSMENT_GROUP_COLS = ["sensor_id", "serotype", "concentration_group"]
+
+with tab_assessment:
+    feat_cols_avail = [
+        c for c in BASIC_FEATURE_COLUMNS if c in filtered_features.columns
+    ]
+    has_serotype = "serotype" in filtered_features.columns
+    has_conc_group = "concentration_group" in filtered_features.columns
+
+    if not feat_cols_avail:
+        st.warning(
+            "No feature columns available. Load data with Raman intensity columns "
+            "and ensure filters yield samples."
+        )
+    elif not has_serotype or not has_conc_group:
+        st.warning(
+            "Assessment requires **serotype** and **concentration_group** columns. "
+            "Ensure data is loaded with metadata and preprocess_metadata has run."
+        )
+    else:
+        # ---- 1. Experimental variable control: single serotype + concentration ----
+        st.markdown(
+            "#### Experimental variable control\n"
+            "Select a **specific serotype** and **concentration group** before running "
+            "assessment. Statistics are computed only on replicates sharing these conditions."
+        )
+        serotype_opts = sorted(
+            filtered_features["serotype"].dropna().unique().astype(str).tolist()
+        ) or ["(none)"]
+        conc_raw = (
+            filtered_features["concentration_group"]
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+        conc_opts = [c for c in conc_raw if c and c != "nan"]
+        conc_opts = order_concentration_labels(conc_opts) if conc_opts else ["(none)"]
+
+        a_sero, a_conc, a_feat, a_outlier = st.columns(4)
+        with a_sero:
+            assess_serotype = st.selectbox(
+                "Serotype _(required)_",
+                options=serotype_opts,
+                index=0,
+                key="assess_serotype",
+            )
+        with a_conc:
+            assess_concentration = st.selectbox(
+                "Concentration group _(required)_",
+                options=conc_opts,
+                index=0,
+                key="assess_concentration",
+            )
+        with a_feat:
+            assess_feature = st.selectbox(
+                "Feature",
+                options=feat_cols_avail,
+                index=0,
+                key="assess_feature",
+            )
+        with a_outlier:
+            outlier_method = st.radio(
+                "Outlier method",
+                options=["iqr", "zscore"],
+                index=0,
+                horizontal=True,
+                key="assess_outlier",
+            )
+
+        # Filter to selected conditions (apples-to-apples)
+        _sero_valid = assess_serotype and assess_serotype != "(none)"
+        _conc_valid = assess_concentration and assess_concentration != "(none)"
+        if _sero_valid and _conc_valid:
+            assessment_df = filtered_features[
+                (filtered_features["serotype"].astype(str) == assess_serotype)
+                & (
+                    filtered_features["concentration_group"].astype(str)
+                    == assess_concentration
+                )
+            ].copy()
+        else:
+            assessment_df = pd.DataFrame()
+
+        if assessment_df.empty and (_sero_valid and _conc_valid):
+            st.warning(
+                f"No samples for serotype={assess_serotype}, concentration={assess_concentration}. "
+                "Adjust filters or selection."
+            )
+        elif not _sero_valid or not _conc_valid:
+            st.info(
+                "Select a specific serotype and concentration group above to run assessment."
+            )
+        else:
+            # Use fixed group cols for consistency (only include cols that exist)
+            consistency_group_cols = [
+                c for c in ASSESSMENT_GROUP_COLS if c in assessment_df.columns
+            ]
+            if not consistency_group_cols:
+                consistency_group_cols = (
+                    ["sensor_id"] if "sensor_id" in assessment_df.columns else None
+                )
+
+            # ---- 2. Consistency (CV: raw vs. filtered) ----
+            st.markdown("##### Consistency (CV: raw vs. filtered)")
+            st.caption(
+                f"Within serotype={assess_serotype}, concentration={assess_concentration}. "
+                "Grouped by sensor_id, serotype, concentration_group."
+            )
+            try:
+                consistency_tbl = get_consistency_summary_table(
+                    assessment_df,
+                    feature_cols=[assess_feature],
+                    group_cols=consistency_group_cols,
+                    outlier_method=outlier_method,
+                )
+                if not consistency_tbl.empty:
+                    st.dataframe(
+                        consistency_tbl, use_container_width=True, hide_index=True
+                    )
+            except ValueError as e:
+                st.error(f"Consistency error: {e}")
+
+            # ---- 3. Degradation (test_id / date as temporal axis) ----
+            st.markdown("##### Degradation trend")
+            st.caption(
+                "Feature vs. test sequence (test_id or date ordered). "
+                "Negative slope indicates degradation."
+            )
+            try:
+                df_deg = prepare_degradation_data(
+                    assessment_df, assess_feature, test_col="test_id", date_col="date"
+                )
+                if df_deg.empty or len(df_deg) < 2:
+                    st.info(
+                        "Insufficient temporal data (need test_id or date with ≥2 tests)."
+                    )
+                else:
+                    deg_tbl = compute_degradation(
+                        df_deg,
+                        assess_feature,
+                        "test_ordinal",
+                        group_cols=["sensor_id"]
+                        if "sensor_id" in df_deg.columns
+                        else None,
+                    )
+                    if not deg_tbl.empty:
+                        st.dataframe(deg_tbl, use_container_width=True, hide_index=True)
+
+                    fig_deg = plot_degradation_trend(
+                        df_deg,
+                        assess_feature,
+                        "test_ordinal",
+                        group_col="sensor_id"
+                        if "sensor_id" in df_deg.columns
+                        else None,
+                    )
+                    st.pyplot(fig_deg, use_container_width=True)
+            except ValueError as e:
+                st.error(f"Degradation error: {e}")
+
+            # ---- 4. Multi-sensor batch stability ----
+            st.markdown("---")
+            st.markdown("#### Multi-sensor batch stability")
+            st.caption(
+                f"Within serotype={assess_serotype}, concentration={assess_concentration}. "
+                "Compare sensors under identical conditions."
+            )
+            if "sensor_id" in assessment_df.columns:
+                batch_feature = st.selectbox(
+                    "Feature (batch)",
+                    options=feat_cols_avail,
+                    index=feat_cols_avail.index(assess_feature)
+                    if assess_feature in feat_cols_avail
+                    else 0,
+                    key="batch_feature",
+                )
+                try:
+                    batch_tbl = compute_batch_variance(
+                        assessment_df,
+                        batch_feature,
+                        sensor_col="sensor_id",
+                        group_cols=None,  # already filtered to one serotype+concentration
+                    )
+                    deviating = identify_deviating_sensors(
+                        batch_tbl, z_threshold=2.0, sensor_col="sensor_id"
+                    )
+
+                    st.dataframe(batch_tbl, use_container_width=True, hide_index=True)
+                    if not deviating.empty:
+                        st.markdown("**Deviating sensors (|z| > 2)**")
+                        st.dataframe(
+                            deviating, use_container_width=True, hide_index=True
+                        )
+
+                    fig_batch = plot_batch_boxplot(
+                        assessment_df,
+                        batch_feature,
+                        sensor_col="sensor_id",
+                        group_col=None,
+                    )
+                    st.pyplot(fig_batch, use_container_width=True)
+                except ValueError as e:
+                    st.error(f"Batch variance error: {e}")
+            else:
+                st.info(
+                    "No sensor_id column; batch analysis requires sensor identifiers."
+                )
+
+            # ---- 5. PDF report (bound to user selections) ----
+            st.markdown("---")
+            st.markdown("#### PDF report")
+            if st.button("Generate report", key="pdf_report_btn"):
+                try:
+                    consistency_summary = get_consistency_summary_table(
+                        assessment_df,
+                        group_cols=consistency_group_cols,
+                        outlier_method=outlier_method,
+                    )
+                    df_deg_pdf = prepare_degradation_data(
+                        assessment_df,
+                        assess_feature,
+                        test_col="test_id",
+                        date_col="date",
+                    )
+                    deg_summary = pd.DataFrame()
+                    fig_deg_pdf = None
+                    if not df_deg_pdf.empty and len(df_deg_pdf) >= 2:
+                        deg_summary = compute_degradation(
+                            df_deg_pdf,
+                            assess_feature,
+                            "test_ordinal",
+                            group_cols=(
+                                ["sensor_id"]
+                                if "sensor_id" in df_deg_pdf.columns
+                                else None
+                            ),
+                        )
+                        fig_deg_pdf = plot_degradation_trend(
+                            df_deg_pdf,
+                            assess_feature,
+                            "test_ordinal",
+                            group_col=(
+                                "sensor_id"
+                                if "sensor_id" in df_deg_pdf.columns
+                                else None
+                            ),
+                        )
+
+                    batch_tbl_pdf = pd.DataFrame()
+                    fig_batch_pdf = None
+                    deviating_pdf = pd.DataFrame()
+                    if "sensor_id" in assessment_df.columns:
+                        batch_tbl_pdf = compute_batch_variance(
+                            assessment_df,
+                            assess_feature,
+                            sensor_col="sensor_id",
+                            group_cols=None,
+                        )
+                        deviating_pdf = identify_deviating_sensors(
+                            batch_tbl_pdf, z_threshold=2.0, sensor_col="sensor_id"
+                        )
+                        fig_batch_pdf = plot_batch_boxplot(
+                            assessment_df,
+                            assess_feature,
+                            sensor_col="sensor_id",
+                            group_col=None,
+                        )
+
+                    pdf_bytes = build_sensor_assessment_pdf(
+                        consistency_table=consistency_summary,
+                        degradation_table=deg_summary,
+                        degradation_fig=fig_deg_pdf,
+                        batch_variance_table=(
+                            batch_tbl_pdf if not batch_tbl_pdf.empty else None
+                        ),
+                        batch_boxplot_fig=fig_batch_pdf,
+                        deviating_sensors_table=(
+                            deviating_pdf if not deviating_pdf.empty else None
+                        ),
+                        outlier_method=outlier_method,
+                        report_title=(
+                            f"SERS Sensor Assessment — {assess_serotype}, "
+                            f"{assess_concentration}"
+                        ),
+                    )
+                    st.session_state["assessment_pdf"] = pdf_bytes
+                    st.success("Report generated. Click Download below.")
+                except Exception as e:
+                    st.error(f"Report generation failed: {e}")
+
+        if "assessment_pdf" in st.session_state:
+            st.download_button(
+                label="Download PDF",
+                data=st.session_state["assessment_pdf"],
+                file_name="sensor_assessment_report.pdf",
+                mime="application/pdf",
+                key="pdf_download",
+            )
