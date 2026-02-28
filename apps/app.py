@@ -30,7 +30,10 @@ from sensd_sers_analysis.processing import (
 from sensd_sers_analysis.assessment import (
     compute_batch_variance,
     compute_degradation,
+    fit_concentration_regression,
     get_consistency_summary_table,
+    get_global_model_consistency,
+    get_zero_cfu_baseline,
     identify_deviating_sensors,
     prepare_degradation_data,
 )
@@ -41,8 +44,10 @@ from sensd_sers_analysis.utils import (
 )
 from sensd_sers_analysis.visualization import (
     plot_batch_boxplot,
+    plot_concentration_regression,
     plot_degradation_trend,
     plot_feature_distribution,
+    plot_multi_sensor_regression,
     plot_spectra,
 )
 
@@ -315,8 +320,13 @@ if filtered.empty:
     st.warning("No data matches the selected filters. Adjust filters and try again.")
     st.stop()
 
-tab_spectra, tab_stats, tab_assessment = st.tabs(
-    ["📉 Spectral Viewer", "📊 Feature Analysis", "🔬 Sensor Assessment & Report"]
+tab_spectra, tab_stats, tab_assessment, tab_model_consistency = st.tabs(
+    [
+        "📉 Spectral Viewer",
+        "📊 Feature Analysis",
+        "🔬 Sensor Assessment & Report",
+        "📈 Model-Based Sensor Consistency",
+    ]
 )
 
 with tab_spectra:
@@ -772,3 +782,176 @@ with tab_assessment:
                 mime="application/pdf",
                 key="pdf_download",
             )
+
+# ---------------------------------------------------------------------------
+# 5. Model-Based Sensor Consistency
+# ---------------------------------------------------------------------------
+with tab_model_consistency:
+    mc_feat_cols = [c for c in BASIC_FEATURE_COLUMNS if c in filtered_features.columns]
+    has_sensor = "sensor_id" in filtered_features.columns
+    has_serotype = "serotype" in filtered_features.columns
+    has_log_conc = "log_concentration" in filtered_features.columns
+
+    if not mc_feat_cols:
+        st.warning(
+            "No feature columns available. Load data with Raman intensity columns "
+            "and ensure filters yield samples."
+        )
+    elif not has_sensor or not has_serotype:
+        st.warning(
+            "Model-Based Consistency requires **sensor_id** and **serotype** columns. "
+            "Ensure data is loaded with metadata and preprocess_metadata has run."
+        )
+    elif not has_log_conc:
+        st.warning(
+            "Model-Based Consistency requires **log_concentration**. "
+            "Ensure preprocess_metadata has run on the loaded data."
+        )
+    else:
+        st.markdown(
+            "#### Model-based sensor consistency\n"
+            "Evaluate sensor stability by fitting a linear regression across the "
+            "concentration spectrum (log concentration vs feature). RMSE of the fit "
+            "is the core consistency metric. 0 CFU samples are excluded from the fit "
+            "and shown as a horizontal baseline."
+        )
+        sensor_opts = sorted(
+            filtered_features["sensor_id"].dropna().unique().astype(str).tolist()
+        ) or ["(none)"]
+        serotype_opts = sorted(
+            filtered_features["serotype"].dropna().unique().astype(str).tolist()
+        ) or ["(none)"]
+
+        mc_sensor, mc_serotype, mc_feature = st.columns(3)
+        with mc_sensor:
+            model_sensor = st.selectbox(
+                "Sensor ID",
+                options=sensor_opts,
+                index=0,
+                key="model_consistency_sensor",
+            )
+        with mc_serotype:
+            model_serotype = st.selectbox(
+                "Serotype",
+                options=serotype_opts,
+                index=0,
+                key="model_consistency_serotype",
+            )
+        with mc_feature:
+            model_feature = st.selectbox(
+                "Feature to assess",
+                options=mc_feat_cols,
+                index=0,
+                key="model_consistency_feature",
+            )
+
+        _mc_sensor_ok = model_sensor and model_sensor != "(none)"
+        _mc_serotype_ok = model_serotype and model_serotype != "(none)"
+        if _mc_sensor_ok and _mc_serotype_ok:
+            model_df = filtered_features[
+                (filtered_features["sensor_id"].astype(str) == model_sensor)
+                & (filtered_features["serotype"].astype(str) == model_serotype)
+            ].copy()
+        else:
+            model_df = pd.DataFrame()
+
+        if model_df.empty and (_mc_sensor_ok and _mc_serotype_ok):
+            st.warning(
+                f"No samples for sensor_id={model_sensor}, serotype={model_serotype}. "
+                "Adjust filters or selection."
+            )
+        elif not _mc_sensor_ok or not _mc_serotype_ok:
+            st.info(
+                "Select a sensor ID and serotype above to run model-based consistency."
+            )
+        else:
+            reg_result = fit_concentration_regression(model_df, model_feature)
+            zero_baseline = get_zero_cfu_baseline(model_df, model_feature)
+
+            if reg_result is not None:
+                m1, m2 = st.columns(2)
+                with m1:
+                    st.metric("RMSE (Consistency Metric)", f"{reg_result.rmse:.4f}")
+                with m2:
+                    st.metric("R²", f"{reg_result.r2:.4f}")
+            else:
+                st.warning(
+                    "Insufficient data for regression (need ≥2 samples with valid "
+                    "log concentration). 0 CFU samples are excluded from the fit."
+                )
+
+            try:
+                fig_mc = plot_concentration_regression(
+                    model_df,
+                    model_feature,
+                    regression_result=reg_result,
+                    zero_cfu_baseline=zero_baseline,
+                    title=f"{model_sensor} — {model_serotype}",
+                )
+                st.pyplot(fig_mc, use_container_width=True)
+            except ValueError as e:
+                st.error(f"Plot error: {e}")
+
+        # ---- Global Multi-Sensor Assessment ----
+        st.markdown("---")
+        st.markdown("#### Global Multi-Sensor Assessment")
+        st.caption(
+            "Compare regression metrics across all sensors. Sort by RMSE to identify "
+            "sensors with the worst consistency. Use the overlay plot to visually "
+            "compare regression lines across the batch."
+        )
+
+        global_tbl = get_global_model_consistency(
+            filtered_features, feature_cols=mc_feat_cols
+        )
+        if not global_tbl.empty:
+            st.dataframe(
+                global_tbl,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "R_squared": st.column_config.NumberColumn("R²", format="%.4f"),
+                    "RMSE": st.column_config.NumberColumn("RMSE", format="%.4f"),
+                },
+            )
+        else:
+            st.info(
+                "No regression results. Ensure filtered data has ≥2 valid "
+                "(>0 CFU) points per sensor × serotype × feature."
+            )
+
+        st.markdown("##### Multi-sensor regression overlay")
+        st.caption(
+            "Select serotype and feature to overlay all sensors' scatter points "
+            "and regression lines. Tight bundle = uniform batch; diverging lines = "
+            "erratic behavior."
+        )
+        overlay_sero, overlay_feat = st.columns(2)
+        with overlay_sero:
+            overlay_serotype = st.selectbox(
+                "Serotype _(overlay)_",
+                options=serotype_opts,
+                index=0,
+                key="overlay_serotype",
+            )
+        with overlay_feat:
+            overlay_feature = st.selectbox(
+                "Feature _(overlay)_",
+                options=mc_feat_cols,
+                index=0,
+                key="overlay_feature",
+            )
+
+        _overlay_sero_ok = overlay_serotype and overlay_serotype != "(none)"
+        if _overlay_sero_ok:
+            try:
+                fig_overlay = plot_multi_sensor_regression(
+                    filtered_features,
+                    overlay_serotype,
+                    overlay_feature,
+                )
+                st.pyplot(fig_overlay, use_container_width=True)
+            except ValueError as e:
+                st.error(f"Overlay plot error: {e}")
+        else:
+            st.info("Select a serotype above to generate the overlay plot.")

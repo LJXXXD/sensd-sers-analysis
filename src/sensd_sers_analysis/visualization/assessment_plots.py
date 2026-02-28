@@ -12,6 +12,10 @@ import pandas as pd
 import seaborn as sns
 from scipy import stats
 
+from sensd_sers_analysis.assessment.model_consistency import (
+    ConcentrationRegressionResult,
+)
+
 
 def plot_degradation_trend(
     df: pd.DataFrame,
@@ -181,4 +185,208 @@ def plot_batch_boxplot(
 
     sns.despine(ax=ax)
     fig.tight_layout()
+    return fig
+
+
+def plot_concentration_regression(
+    df: pd.DataFrame,
+    feature_col: str,
+    *,
+    regression_result: Optional[ConcentrationRegressionResult] = None,
+    zero_cfu_baseline: Optional[float] = None,
+    log_conc_col: str = "log_concentration",
+    title: Optional[str] = None,
+    figsize: tuple[float, float] = (10, 6),
+    ax: Optional[plt.Axes] = None,
+) -> plt.Figure:
+    """
+    Scatter plot of log concentration vs feature with regression line and 0 CFU baseline.
+
+    Args:
+        df: Feature DataFrame with log_concentration and feature columns.
+        feature_col: Feature column (Y-axis).
+        regression_result: Fitted regression (slope, intercept, R², RMSE).
+        zero_cfu_baseline: Mean feature value for 0 CFU replicates (horizontal line).
+        log_conc_col: Log concentration column (X-axis).
+        title: Optional plot title.
+        figsize: Figure size in inches.
+        ax: Optional axes to draw on.
+
+    Returns:
+        matplotlib Figure.
+    """
+    if feature_col not in df.columns or log_conc_col not in df.columns:
+        raise ValueError(
+            f"Required columns '{feature_col}' or '{log_conc_col}' not in DataFrame."
+        )
+
+    valid = df[[log_conc_col, feature_col]].notna().all(axis=1)
+    df_plot = df.loc[valid]
+
+    if df_plot.empty:
+        raise ValueError("No valid data for concentration regression plot.")
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.get_figure()
+
+    x = df_plot[log_conc_col].astype(float).values
+    y = df_plot[feature_col].astype(float).values
+
+    ax.scatter(x, y, alpha=0.6, s=50, color="steelblue", edgecolors="white", zorder=3)
+
+    # Regression line
+    if regression_result is not None:
+        x_min, x_max = x.min(), x.max()
+        x_line = np.linspace(x_min, x_max, 50)
+        y_line = regression_result.intercept + regression_result.slope * x_line
+        ax.plot(
+            x_line,
+            y_line,
+            color="crimson",
+            linestyle="-",
+            linewidth=2,
+            label=f"Linear fit (R²={regression_result.r2:.3f}, RMSE={regression_result.rmse:.4f})",
+            zorder=2,
+        )
+
+    # 0 CFU baseline
+    if zero_cfu_baseline is not None:
+        ax.axhline(
+            zero_cfu_baseline,
+            color="gray",
+            linestyle="--",
+            linewidth=1.5,
+            label="0 CFU Baseline",
+            zorder=1,
+        )
+
+    ax.set_xlabel("Log₁₀ Concentration (CFU/ml)")
+    ax.set_ylabel(feature_col.replace("_", " ").title())
+    if title:
+        ax.set_title(title, fontweight="bold", pad=12)
+    else:
+        ax.set_title(
+            f"Model-Based Consistency: {feature_col.replace('_', ' ').title()} vs Log Concentration",
+            fontweight="bold",
+            pad=12,
+        )
+    ax.legend(loc="best")
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    return fig
+
+
+def plot_multi_sensor_regression(
+    df: pd.DataFrame,
+    serotype: str,
+    feature_col: str,
+    *,
+    sensor_col: str = "sensor_id",
+    serotype_col: str = "serotype",
+    log_conc_col: str = "log_concentration",
+    title: Optional[str] = None,
+    figsize: tuple[float, float] = (12, 7),
+    line_alpha: float = 0.7,
+    ax: Optional[plt.Axes] = None,
+) -> plt.Figure:
+    """
+    Overlay scatter points and regression lines for all sensors (one serotype, one feature).
+
+    Filters to the selected serotype and excludes 0 CFU (rows without valid
+    log_concentration). Each sensor_id gets distinct color for points and line.
+    Use to compare batch uniformity (tight bundle) vs erratic behavior (diverging).
+
+    Args:
+        df: Feature DataFrame with sensor_id, serotype, log_concentration, feature.
+        serotype: Serotype to filter (e.g., "ST", "SE").
+        feature_col: Feature column (Y-axis).
+        sensor_col: Column for sensor identifier (hue).
+        serotype_col: Column for serotype filter.
+        log_conc_col: Log concentration column (X-axis).
+        title: Optional plot title.
+        figsize: Figure size in inches.
+        line_alpha: Transparency for regression lines (0–1).
+        ax: Optional axes to draw on.
+
+    Returns:
+        matplotlib Figure.
+    """
+    required = [sensor_col, serotype_col, log_conc_col, feature_col]
+    if any(c not in df.columns for c in required):
+        raise ValueError(f"Required columns missing. Need: {required}")
+
+    # Filter to serotype and valid log_concentration (excludes 0 CFU)
+    subset = df[
+        (df[serotype_col].astype(str) == str(serotype))
+        & df[log_conc_col].notna()
+        & df[feature_col].notna()
+    ].copy()
+
+    if subset.empty:
+        raise ValueError(
+            f"No valid data for serotype={serotype}. Need rows with non-null "
+            f"{log_conc_col} and {feature_col}."
+        )
+
+    sensors = subset[sensor_col].dropna().unique()
+    if len(sensors) == 0:
+        raise ValueError(f"No sensor_id values found for serotype={serotype}.")
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.get_figure()
+
+    # Distinct colors per sensor
+    palette = sns.color_palette("husl", n_colors=len(sensors))
+    color_map = dict(zip(sensors, palette))
+
+    for sens in sensors:
+        mask = subset[sensor_col] == sens
+        sub = subset.loc[mask]
+        x = sub[log_conc_col].astype(float).values
+        y = sub[feature_col].astype(float).values
+        color = color_map.get(sens, "gray")
+
+        ax.scatter(
+            x,
+            y,
+            alpha=0.6,
+            s=50,
+            color=color,
+            edgecolors="white",
+            label=str(sens),
+            zorder=3,
+        )
+
+        if len(x) >= 2:
+            res = stats.linregress(x, y)
+            x_line = np.linspace(x.min(), x.max(), 50)
+            y_line = res.intercept + res.slope * x_line
+            ax.plot(
+                x_line,
+                y_line,
+                color=color,
+                linestyle="-",
+                linewidth=2,
+                alpha=line_alpha,
+                zorder=2,
+            )
+
+    ax.set_xlabel("Log₁₀ Concentration (CFU/ml)")
+    ax.set_ylabel(feature_col.replace("_", " ").title())
+    if title:
+        ax.set_title(title, fontweight="bold", pad=12)
+    else:
+        ax.set_title(
+            f"Multi-Sensor Regression: {feature_col.replace('_', ' ').title()} "
+            f"vs Log Concentration ({serotype})",
+            fontweight="bold",
+            pad=12,
+        )
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=9)
+    sns.despine(ax=ax)
+    fig.tight_layout(rect=[0, 0, 0.85, 1])
     return fig
