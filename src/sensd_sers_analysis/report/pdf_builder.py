@@ -513,3 +513,118 @@ def build_phase1_qa_pdf(
         Path(output_path).write_bytes(pdf_bytes)
 
     return pdf_bytes
+
+
+def build_phase2_classification_pdf(
+    *,
+    pca_fig: Optional[Any] = None,
+    feature_importance_fig: Optional[Any] = None,
+    confusion_matrix_fig: Optional[Any] = None,
+    accuracy: Optional[float] = None,
+    f1: Optional[float] = None,
+    report_title: str = "Phase 2: Serotyping & Classification Report",
+    output_path: Optional[str | Path] = None,
+) -> bytes:
+    """
+    Compile Phase 2 classification results into PDF.
+
+    Args:
+        pca_fig: PCA scatter (PC1 vs PC2 by class).
+        feature_importance_fig: RF feature importance bar chart.
+        confusion_matrix_fig: Confusion matrix heatmap.
+        accuracy: Overall accuracy.
+        f1: Weighted F1-score.
+        report_title: Title on first page.
+        output_path: If provided, save PDF to path.
+
+    Returns:
+        PDF file contents as bytes.
+    """
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        rightMargin=0.75 * inch,
+        leftMargin=0.75 * inch,
+        topMargin=0.75 * inch,
+        bottomMargin=0.75 * inch,
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "ReportTitle",
+        parent=styles["Heading1"],
+        fontSize=18,
+        spaceAfter=12,
+    )
+    heading_style = ParagraphStyle(
+        "SectionHeading",
+        parent=styles["Heading2"],
+        fontSize=14,
+        spaceBefore=18,
+        spaceAfter=8,
+    )
+    body_style = styles["Normal"]
+
+    flow: list = []
+
+    flow.append(Paragraph(report_title, title_style))
+    flow.append(
+        Paragraph(
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            body_style,
+        )
+    )
+    flow.append(Spacer(1, 0.25 * inch))
+
+    if pca_fig is not None:
+        flow.append(
+            Paragraph("1. PCA Scatter (Unsupervised Clustering)", heading_style)
+        )
+        flow.append(
+            Paragraph(
+                "PC1 vs PC2 colored by class (ST, SE, Rinsate). "
+                "Shows natural separability before ML.",
+                body_style,
+            )
+        )
+        flow.append(Spacer(1, 0.1 * inch))
+        img_bytes = _figure_to_image_bytes(pca_fig)
+        img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=4 * inch)
+        flow.append(img)
+        flow.append(Spacer(1, 0.3 * inch))
+
+    if feature_importance_fig is not None:
+        flow.append(Paragraph("2. Random Forest Feature Importance", heading_style))
+        flow.append(
+            Paragraph(
+                "Ranking of features by importance. Validates peak extraction value.",
+                body_style,
+            )
+        )
+        flow.append(Spacer(1, 0.1 * inch))
+        img_bytes = _figure_to_image_bytes(feature_importance_fig)
+        img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=4 * inch)
+        flow.append(img)
+        flow.append(Spacer(1, 0.3 * inch))
+
+    if confusion_matrix_fig is not None:
+        flow.append(Paragraph("3. Confusion Matrix", heading_style))
+        if accuracy is not None or f1 is not None:
+            metrics_parts = []
+            if accuracy is not None:
+                metrics_parts.append(f"Accuracy: {accuracy:.3f}")
+            if f1 is not None:
+                metrics_parts.append(f"F1-Score (weighted): {f1:.3f}")
+            flow.append(Paragraph(" | ".join(metrics_parts), body_style))
+        flow.append(Spacer(1, 0.1 * inch))
+        img_bytes = _figure_to_image_bytes(confusion_matrix_fig)
+        img = Image(io.BytesIO(img_bytes), width=4.5 * inch, height=4 * inch)
+        flow.append(img)
+
+    doc.build(flow)
+    pdf_bytes = buffer.getvalue()
+
+    if output_path is not None:
+        Path(output_path).write_bytes(pdf_bytes)
+
+    return pdf_bytes
