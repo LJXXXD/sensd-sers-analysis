@@ -18,9 +18,11 @@ from .metadata import (
     add_log_concentration,
     preprocess_metadata,
 )
+from .pca_features import add_pca_features
 
 __all__ = [
     "add_concentration_group",
+    "add_pca_features",
     "add_log_concentration",
     "BASIC_FEATURE_COLUMNS",
     "DEFAULT_FILTER_ORDER",

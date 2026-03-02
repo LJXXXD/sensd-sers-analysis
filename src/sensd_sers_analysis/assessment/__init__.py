@@ -10,9 +10,14 @@ from .batch_variance import (
     identify_deviating_sensors,
 )
 from .model_consistency import (
+    CleanedRegressionResult,
     ConcentrationRegressionResult,
+    MacroRegressionResult,
+    compute_macro_batch_regression,
     fit_concentration_regression,
+    fit_concentration_regression_cleaned,
     get_global_model_consistency,
+    get_global_model_consistency_qa,
     get_zero_cfu_baseline,
 )
 from .consistency import (
@@ -32,13 +37,16 @@ from .outliers import (
 )
 
 __all__ = [
+    "CleanedRegressionResult",
     "ConcentrationRegressionResult",
     "add_sequence_column",
     "coefficient_of_variation",
     "compute_batch_variance",
     "compute_consistency_metrics",
     "fit_concentration_regression",
+    "fit_concentration_regression_cleaned",
     "get_global_model_consistency",
+    "get_global_model_consistency_qa",
     "get_zero_cfu_baseline",
     "compute_degradation",
     "prepare_degradation_data",
@@ -47,4 +55,6 @@ __all__ = [
     "filter_outliers",
     "get_consistency_summary_table",
     "identify_deviating_sensors",
+    "MacroRegressionResult",
+    "compute_macro_batch_regression",
 ]

@@ -314,3 +314,146 @@ def build_sensor_assessment_pdf(
         Path(output_path).write_bytes(pdf_bytes)
 
     return pdf_bytes
+
+
+def build_phase1_qa_pdf(
+    *,
+    global_qa_table: Optional[pd.DataFrame] = None,
+    overlay_fig: Optional[Any] = None,
+    macro_fig: Optional[Any] = None,
+    report_title: str = "Sensor Consistency & Quality Assurance Report",
+    output_path: Optional[str | Path] = None,
+) -> bytes:
+    """
+    Compile Phase 1 QA results into PDF.
+
+    Args:
+        global_qa_table: DataFrame with sensor_id, serotype, feature, n_points,
+            outliers_dropped, raw_rmse, raw_r2, clean_rmse, clean_r2, status.
+        overlay_fig: matplotlib Figure for multi-sensor regression overlay.
+        macro_fig: matplotlib Figure for macro batch regression (Pass sensors only).
+        report_title: Title on first page.
+        output_path: If provided, also save PDF to this path.
+
+    Returns:
+        PDF file contents as bytes.
+    """
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        rightMargin=0.75 * inch,
+        leftMargin=0.75 * inch,
+        topMargin=0.75 * inch,
+        bottomMargin=0.75 * inch,
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "ReportTitle",
+        parent=styles["Heading1"],
+        fontSize=18,
+        spaceAfter=12,
+    )
+    heading_style = ParagraphStyle(
+        "SectionHeading",
+        parent=styles["Heading2"],
+        fontSize=14,
+        spaceBefore=18,
+        spaceAfter=8,
+    )
+    body_style = styles["Normal"]
+
+    flow: list = []
+
+    flow.append(Paragraph(report_title, title_style))
+    flow.append(
+        Paragraph(
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            body_style,
+        )
+    )
+    flow.append(Spacer(1, 0.25 * inch))
+
+    if global_qa_table is not None and not global_qa_table.empty:
+        flow.append(Paragraph("1. Individual Sensor Assessment Table", heading_style))
+        flow.append(
+            Paragraph(
+                "Linear fit analysis with statistical outlier removal. "
+                "Raw RMSE / Raw R²: before removal. Clean RMSE / Clean R²: after. "
+                "Excluded: Clean RMSE > 2× batch median OR Clean R² < 0.80.",
+                body_style,
+            )
+        )
+        flow.append(Spacer(1, 0.1 * inch))
+
+        table_data = _df_to_table_data(
+            global_qa_table,
+            float_fmt="{:.4f}",
+        )
+        col_count = len(table_data[0])
+        # Full page width: letter 8.5" - left 0.75" - right 0.75" = 7"
+        usable_width = 7.0 * inch
+        col_widths = [usable_width / max(col_count, 1)] * col_count
+        t = Table(table_data, colWidths=col_widths)
+        t.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4472C4")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, 0), 9),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("BACKGROUND", (0, 1), (-1, -1), colors.beige),
+                    ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
+                    ("FONTSIZE", (0, 1), (-1, -1), 8),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    (
+                        "ROWBACKGROUNDS",
+                        (0, 1),
+                        (-1, -1),
+                        [colors.white, colors.HexColor("#f5f5f5")],
+                    ),
+                ]
+            )
+        )
+        flow.append(t)
+        flow.append(Spacer(1, 0.3 * inch))
+
+    if overlay_fig is not None:
+        flow.append(Paragraph("2. Multi-Sensor Regression Overlay", heading_style))
+        flow.append(
+            Paragraph(
+                "Scatter and regression lines per sensor. Excluded sensors shown "
+                "with dashed gray lines.",
+                body_style,
+            )
+        )
+        flow.append(Spacer(1, 0.1 * inch))
+        img_bytes = _figure_to_image_bytes(overlay_fig)
+        img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=3.5 * inch)
+        flow.append(img)
+        flow.append(Spacer(1, 0.3 * inch))
+
+    if macro_fig is not None:
+        flow.append(Paragraph("3. Macro Batch Regression", heading_style))
+        flow.append(
+            Paragraph(
+                "Pooled inlier data from Pass sensors only. Single macro-regression "
+                "line with Batch RMSE and Batch R² for the good batch.",
+                body_style,
+            )
+        )
+        flow.append(Spacer(1, 0.1 * inch))
+        img_bytes = _figure_to_image_bytes(macro_fig)
+        img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=3.5 * inch)
+        flow.append(img)
+
+    doc.build(flow)
+    pdf_bytes = buffer.getvalue()
+
+    if output_path is not None:
+        Path(output_path).write_bytes(pdf_bytes)
+
+    return pdf_bytes

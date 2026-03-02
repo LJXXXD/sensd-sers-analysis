@@ -6,6 +6,7 @@ from .assessment_plots import (
     plot_batch_boxplot,
     plot_concentration_regression,
     plot_degradation_trend,
+    plot_macro_batch_regression,
     plot_multi_sensor_regression,
 )
 from .plots import plot_spectra
@@ -16,6 +17,7 @@ __all__ = [
     "plot_concentration_regression",
     "plot_degradation_trend",
     "plot_feature_distribution",
+    "plot_macro_batch_regression",
     "plot_multi_sensor_regression",
     "plot_spectra",
 ]

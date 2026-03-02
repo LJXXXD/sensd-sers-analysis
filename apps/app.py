@@ -30,14 +30,14 @@ from sensd_sers_analysis.processing import (
 from sensd_sers_analysis.assessment import (
     compute_batch_variance,
     compute_degradation,
-    fit_concentration_regression,
+    fit_concentration_regression_cleaned,
     get_consistency_summary_table,
-    get_global_model_consistency,
+    get_global_model_consistency_qa,
     get_zero_cfu_baseline,
     identify_deviating_sensors,
     prepare_degradation_data,
 )
-from sensd_sers_analysis.report import build_sensor_assessment_pdf
+from sensd_sers_analysis.report import build_phase1_qa_pdf, build_sensor_assessment_pdf
 from sensd_sers_analysis.utils import (
     format_column_label,
     order_concentration_labels,
@@ -47,6 +47,7 @@ from sensd_sers_analysis.visualization import (
     plot_concentration_regression,
     plot_degradation_trend,
     plot_feature_distribution,
+    plot_macro_batch_regression,
     plot_multi_sensor_regression,
     plot_spectra,
 )
@@ -810,10 +811,10 @@ with tab_model_consistency:
     else:
         st.markdown(
             "#### Model-based sensor consistency\n"
-            "Evaluate sensor stability by fitting a linear regression across the "
-            "concentration spectrum (log concentration vs feature). RMSE of the fit "
-            "is the core consistency metric. 0 CFU samples are excluded from the fit "
-            "and shown as a horizontal baseline."
+            "Two-pass regression with residual-based outlier removal. 0 CFU samples "
+            "are excluded from the fit and shown as a horizontal baseline. Outliers "
+            "are identified via IQR on absolute residuals and excluded from the "
+            "clean fit."
         )
         sensor_opts = sorted(
             filtered_features["sensor_id"].dropna().unique().astype(str).tolist()
@@ -865,15 +866,23 @@ with tab_model_consistency:
                 "Select a sensor ID and serotype above to run model-based consistency."
             )
         else:
-            reg_result = fit_concentration_regression(model_df, model_feature)
+            cres = fit_concentration_regression_cleaned(model_df, model_feature)
             zero_baseline = get_zero_cfu_baseline(model_df, model_feature)
 
-            if reg_result is not None:
-                m1, m2 = st.columns(2)
+            if cres is not None:
+                m1, m2, m3, m4 = st.columns(4)
                 with m1:
-                    st.metric("RMSE (Consistency Metric)", f"{reg_result.rmse:.4f}")
+                    st.metric("Raw RMSE", f"{cres.raw_rmse:.4f}")
                 with m2:
-                    st.metric("R²", f"{reg_result.r2:.4f}")
+                    st.metric("Raw R²", f"{cres.raw_r2:.4f}")
+                with m3:
+                    st.metric("Clean RMSE", f"{cres.clean_rmse:.4f}")
+                with m4:
+                    st.metric("Clean R²", f"{cres.clean_r2:.4f}")
+                if cres.n_outliers > 0:
+                    st.caption(
+                        f"Outliers dropped: {cres.n_outliers} (IQR on |residuals|)"
+                    )
             else:
                 st.warning(
                     "Insufficient data for regression (need ≥2 samples with valid "
@@ -884,8 +893,10 @@ with tab_model_consistency:
                 fig_mc = plot_concentration_regression(
                     model_df,
                     model_feature,
-                    regression_result=reg_result,
+                    regression_result=cres.clean_result if cres else None,
+                    raw_regression_result=cres.raw_result if cres else None,
                     zero_cfu_baseline=zero_baseline,
+                    outlier_mask=cres.outlier_mask if cres else None,
                     title=f"{model_sensor} — {model_serotype}",
                 )
                 st.pyplot(fig_mc, use_container_width=True)
@@ -896,22 +907,29 @@ with tab_model_consistency:
         st.markdown("---")
         st.markdown("#### Global Multi-Sensor Assessment")
         st.caption(
-            "Compare regression metrics across all sensors. Sort by RMSE to identify "
-            "sensors with the worst consistency. Use the overlay plot to visually "
-            "compare regression lines across the batch."
+            "Per-sensor QA with dual threshold. Excluded if: Clean RMSE > 2× batch "
+            "median OR Clean R² < 0.80 (dead/flat sensor)."
         )
 
-        global_tbl = get_global_model_consistency(
+        global_qa_tbl, excluded_map = get_global_model_consistency_qa(
             filtered_features, feature_cols=mc_feat_cols
         )
-        if not global_tbl.empty:
+        if not global_qa_tbl.empty:
             st.dataframe(
-                global_tbl,
+                global_qa_tbl,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "R_squared": st.column_config.NumberColumn("R²", format="%.4f"),
-                    "RMSE": st.column_config.NumberColumn("RMSE", format="%.4f"),
+                    "raw_rmse": st.column_config.NumberColumn(
+                        "Raw RMSE", format="%.4f"
+                    ),
+                    "raw_r2": st.column_config.NumberColumn("Raw R²", format="%.4f"),
+                    "clean_rmse": st.column_config.NumberColumn(
+                        "Clean RMSE", format="%.4f"
+                    ),
+                    "clean_r2": st.column_config.NumberColumn(
+                        "Clean R²", format="%.4f"
+                    ),
                 },
             )
         else:
@@ -922,9 +940,8 @@ with tab_model_consistency:
 
         st.markdown("##### Multi-sensor regression overlay")
         st.caption(
-            "Select serotype and feature to overlay all sensors' scatter points "
-            "and regression lines. Tight bundle = uniform batch; diverging lines = "
-            "erratic behavior."
+            "Select serotype and feature. Excluded sensors (dashed gray); passing "
+            "sensors (solid colors). Tight bundle = uniform batch."
         )
         overlay_sero, overlay_feat = st.columns(2)
         with overlay_sero:
@@ -943,15 +960,112 @@ with tab_model_consistency:
             )
 
         _overlay_sero_ok = overlay_serotype and overlay_serotype != "(none)"
+        excluded_overlay = (
+            excluded_map.get(
+                (str(overlay_serotype), str(overlay_feature)),
+                set(),
+            )
+            if _overlay_sero_ok
+            else set()
+        )
         if _overlay_sero_ok:
             try:
                 fig_overlay = plot_multi_sensor_regression(
                     filtered_features,
                     overlay_serotype,
                     overlay_feature,
+                    excluded_sensors=excluded_overlay,
                 )
                 st.pyplot(fig_overlay, use_container_width=True)
             except ValueError as e:
                 st.error(f"Overlay plot error: {e}")
+
+        # ---- Macro Batch Regression (Pass sensors only) ----
+        st.markdown("##### Macro batch regression")
+        st.caption(
+            "Pooled inlier data from Pass sensors. Single macro-regression line "
+            "with Batch RMSE and Batch R² for the good batch."
+        )
+        if _overlay_sero_ok:
+            all_sensors_overlay = set(
+                str(s)
+                for s in filtered_features[
+                    (filtered_features["serotype"].astype(str) == overlay_serotype)
+                ]["sensor_id"]
+                .dropna()
+                .unique()
+            )
+            pass_sensors_overlay = all_sensors_overlay - excluded_overlay
+            try:
+                fig_macro, macro_res = plot_macro_batch_regression(
+                    filtered_features,
+                    overlay_serotype,
+                    overlay_feature,
+                    pass_sensors_overlay,
+                )
+                st.pyplot(fig_macro, use_container_width=True)
+                if macro_res is not None:
+                    ma1, ma2 = st.columns(2)
+                    with ma1:
+                        st.metric("Batch RMSE", f"{macro_res.batch_rmse:.4f}")
+                    with ma2:
+                        st.metric("Batch R²", f"{macro_res.batch_r2:.4f}")
+            except ValueError as e:
+                st.error(f"Macro regression error: {e}")
         else:
-            st.info("Select a serotype above to generate the overlay plot.")
+            st.info("Select a serotype above to generate the macro regression.")
+
+        # ---- Phase 1 QA PDF Report ----
+        st.markdown("---")
+        st.markdown("#### Phase 1 QA Report")
+        if st.button("Generate Phase 1 QA Report", key="phase1_qa_pdf_btn"):
+            try:
+                overlay_fig_pdf = None
+                macro_fig_pdf = None
+                if _overlay_sero_ok:
+                    overlay_fig_pdf = plot_multi_sensor_regression(
+                        filtered_features,
+                        overlay_serotype,
+                        overlay_feature,
+                        excluded_sensors=excluded_overlay,
+                    )
+                    all_sens = set(
+                        str(s)
+                        for s in filtered_features[
+                            (
+                                filtered_features["serotype"].astype(str)
+                                == overlay_serotype
+                            )
+                        ]["sensor_id"]
+                        .dropna()
+                        .unique()
+                    )
+                    pass_sens = all_sens - excluded_overlay
+                    macro_fig_pdf, _ = plot_macro_batch_regression(
+                        filtered_features,
+                        overlay_serotype,
+                        overlay_feature,
+                        pass_sens,
+                    )
+                pdf_bytes = build_phase1_qa_pdf(
+                    global_qa_table=global_qa_tbl if not global_qa_tbl.empty else None,
+                    overlay_fig=overlay_fig_pdf,
+                    macro_fig=macro_fig_pdf,
+                    report_title=(
+                        "Sensor Consistency & Quality Assurance Report — "
+                        f"{overlay_serotype or 'All'}, {overlay_feature or 'All'}"
+                    ),
+                )
+                st.session_state["phase1_qa_pdf"] = pdf_bytes
+                st.success("Phase 1 QA report generated. Click Download below.")
+            except Exception as e:
+                st.error(f"Phase 1 QA report generation failed: {e}")
+
+        if "phase1_qa_pdf" in st.session_state:
+            st.download_button(
+                label="Download Phase 1 QA PDF",
+                data=st.session_state["phase1_qa_pdf"],
+                file_name="phase1_qa_report.pdf",
+                mime="application/pdf",
+                key="phase1_qa_pdf_download",
+            )
