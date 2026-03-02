@@ -449,9 +449,13 @@ def plot_multi_sensor_regression(
             fontweight="bold",
             pad=12,
         )
-    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=9)
+    ax.legend(
+        loc="upper left",
+        fontsize=8,
+        framealpha=0.85,
+    )
     sns.despine(ax=ax)
-    fig.tight_layout(rect=[0, 0, 0.85, 1])
+    fig.tight_layout()
     return fig
 
 
@@ -577,9 +581,17 @@ def plot_macro_batch_regression(
     else:
         fig = ax.get_figure()
 
-    # Scatter: hue by sensor if multiple, else single color
-    plot_df = pd.DataFrame({"x": x_arr, "y": y_arr, "sensor": sensor_pooled})
-    if len(set(sensor_pooled)) > 1:
+    # Separate inliers vs macro outliers
+    inlier_mask = ~result.macro_outlier_mask
+    x_in = x_arr[inlier_mask]
+    y_in = y_arr[inlier_mask]
+    sensor_in = [s for s, m in zip(sensor_pooled, inlier_mask) if m]
+    x_out = x_arr[result.macro_outlier_mask]
+    y_out = y_arr[result.macro_outlier_mask]
+
+    # Scatter inliers: hue by sensor if multiple, else single color
+    plot_df = pd.DataFrame({"x": x_in, "y": y_in, "sensor": sensor_in})
+    if len(set(sensor_in)) > 1:
         sns.scatterplot(
             data=plot_df,
             x="x",
@@ -592,27 +604,53 @@ def plot_macro_batch_regression(
         )
     else:
         ax.scatter(
-            x_arr,
-            y_arr,
+            x_in,
+            y_in,
             alpha=0.6,
             s=50,
             color="steelblue",
             edgecolors="white",
         )
 
-    # Macro regression line
+    # Macro outliers: red X markers
+    if len(x_out) > 0:
+        ax.scatter(
+            x_out,
+            y_out,
+            marker="X",
+            s=80,
+            color="crimson",
+            edgecolors="darkred",
+            linewidths=1.5,
+            label=f"Macro outliers (n={result.n_macro_outliers})",
+            zorder=6,
+        )
+
+    # Raw line (Pass 1, dashed gray)
     x_min, x_max = x_arr.min(), x_arr.max()
     x_line = np.linspace(x_min, x_max, 50)
-    y_line = result.intercept + result.slope * x_line
+    y_raw = result.raw_intercept + result.raw_slope * x_line
     ax.plot(
         x_line,
-        y_line,
+        y_raw,
+        color="gray",
+        linestyle="--",
+        linewidth=2,
+        label=(f"Raw (R²={result.raw_batch_r2:.3f}, RMSE={result.raw_batch_rmse:.4f})"),
+        zorder=4,
+    )
+
+    # Clean line (Pass 2, solid red)
+    y_clean = result.intercept + result.slope * x_line
+    ax.plot(
+        x_line,
+        y_clean,
         color="crimson",
         linestyle="-",
         linewidth=2.5,
         label=(
-            f"Macro fit (Batch R²={result.batch_r2:.3f}, "
-            f"Batch RMSE={result.batch_rmse:.4f}, n={result.n_points})"
+            f"Clean (R²={result.clean_batch_r2:.3f}, RMSE={result.clean_batch_rmse:.4f}, "
+            f"n={result.n_points})"
         ),
         zorder=5,
     )

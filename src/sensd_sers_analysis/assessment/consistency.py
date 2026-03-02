@@ -131,7 +131,11 @@ def compute_consistency_metrics(
             f"group_cols {missing} not in DataFrame. Available: {list(df.columns)}"
         )
 
-    return df.groupby(group_cols, dropna=False).apply(_row_metrics).reset_index()
+    return (
+        df.groupby(group_cols, dropna=False, observed=True)
+        .apply(_row_metrics, include_groups=False)
+        .reset_index()
+    )
 
 
 def get_consistency_summary_table(

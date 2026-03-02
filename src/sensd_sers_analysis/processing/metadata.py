@@ -56,11 +56,9 @@ def add_log_concentration(df: pd.DataFrame) -> pd.DataFrame:
         return out
 
     conc = _extract_scalar_concentration(out["concentration"], out)
-    log_conc = np.where(
-        conc.notna() & (conc > 0),
-        np.log10(conc),
-        np.nan,
-    )
+    log_conc = np.full(len(conc), np.nan, dtype=float)
+    pos_mask = conc.notna() & (conc > 0)
+    log_conc[pos_mask] = np.log10(conc[pos_mask].astype(float))
     out["log_concentration"] = pd.Series(log_conc, index=out.index, dtype=float)
     return out
 

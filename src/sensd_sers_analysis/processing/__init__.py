@@ -3,7 +3,13 @@ SERS signal processing: feature extraction and preprocessing.
 """
 
 from .alignment import trim_raman_shift
-from .features import BASIC_FEATURE_COLUMNS, extract_basic_features
+from .features import (
+    BASIC_FEATURE_COLUMNS,
+    DEFAULT_GLOBAL_QA_FEATURES,
+    PREFERRED_FEATURE_ORDER,
+    extract_basic_features,
+    order_features_by_preference,
+)
 from .filters import (
     DEFAULT_FILTER_ORDER,
     filter_sers_data,
@@ -19,12 +25,23 @@ from .metadata import (
     preprocess_metadata,
 )
 from .pca_features import add_pca_features
+from .peak_features import (
+    PeakWindowInfo,
+    extract_dynamic_peak_features,
+    get_peak_height_columns,
+)
 
 __all__ = [
     "add_concentration_group",
     "add_pca_features",
-    "add_log_concentration",
     "BASIC_FEATURE_COLUMNS",
+    "DEFAULT_GLOBAL_QA_FEATURES",
+    "order_features_by_preference",
+    "PREFERRED_FEATURE_ORDER",
+    "PeakWindowInfo",
+    "extract_dynamic_peak_features",
+    "get_peak_height_columns",
+    "add_log_concentration",
     "DEFAULT_FILTER_ORDER",
     "extract_basic_features",
     "trim_raman_shift",

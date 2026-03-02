@@ -150,19 +150,21 @@ def plot_feature_distribution(
             "x": x_col,
             "y": feature_col,
             "ax": ax,
-            "color": "black",
             "alpha": 0.35,
             "size": 3,
             "jitter": 0,
             "dodge": hue is not None,
+            "legend": False,
         }
         if x_col != "_single" and (x_order := plot_kwargs.get("order")):
             strip_kw["order"] = x_order
         if hue is not None:
             strip_kw["hue"] = hue
-            strip_kw["legend"] = False
             if hue_order := plot_kwargs.get("hue_order"):
                 strip_kw["hue_order"] = hue_order
+        else:
+            strip_kw["hue"] = x_col
+            strip_kw["palette"] = {v: "black" for v in df[x_col].unique()}
         sns.stripplot(**strip_kw)
 
     resolved_title = title

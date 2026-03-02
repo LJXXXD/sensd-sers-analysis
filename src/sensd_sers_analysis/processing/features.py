@@ -22,6 +22,43 @@ BASIC_FEATURE_COLUMNS = [
     "PC2",
 ]
 
+# Preferred display and default order for feature dropdowns and tables.
+PREFERRED_FEATURE_ORDER = [
+    "integral_area",
+    "mean_intensity",
+    "max_intensity",
+    "Peak_1_Height",
+    "Peak_2_Height",
+    "Peak_3_Height",
+    "Peak_4_Height",
+    "Peak_5_Height",
+    "Peak_6_Height",
+    "PC1",
+    "PC2",
+]
+
+# Default features for Global QA Table multiselect.
+DEFAULT_GLOBAL_QA_FEATURES = [
+    "integral_area",
+    "Peak_3_Height",
+    "Peak_4_Height",
+    "Peak_5_Height",
+    "Peak_6_Height",
+]
+
+
+def order_features_by_preference(
+    features: list[str],
+    *,
+    preference: list[str] | None = None,
+) -> list[str]:
+    """Order feature list by PREFERRED_FEATURE_ORDER; extras at end."""
+    pref = preference or PREFERRED_FEATURE_ORDER
+    seen = set(pref)
+    ordered = [f for f in pref if f in features]
+    extras = [f for f in features if f not in seen]
+    return ordered + sorted(extras)
+
 
 def extract_basic_features(df_wide: pd.DataFrame) -> pd.DataFrame:
     """

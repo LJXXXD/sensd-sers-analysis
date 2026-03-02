@@ -186,7 +186,11 @@ def compute_degradation(
             f"group_cols {missing} not in DataFrame. Available: {list(df.columns)}"
         )
 
-    return df.groupby(group_cols, dropna=False).apply(_fit_group).reset_index()
+    return (
+        df.groupby(group_cols, dropna=False, observed=True)
+        .apply(_fit_group, include_groups=False)
+        .reset_index()
+    )
 
 
 def add_sequence_column(

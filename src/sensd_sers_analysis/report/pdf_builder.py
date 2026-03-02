@@ -46,6 +46,34 @@ def _df_to_table_data(
     return rows
 
 
+def _compute_table_col_widths(
+    table_data: list[list[str]],
+    usable_width: float,
+) -> list[float]:
+    """
+    Compute column widths proportional to content, spanning full usable_width.
+
+    Uses max(header_len, max_row_len) per column so wider content gets more space.
+    Ensures table fills 100% of printable page width.
+    """
+    if not table_data or not table_data[0]:
+        return []
+    col_count = len(table_data[0])
+    weights: list[float] = []
+    for j in range(col_count):
+        header_len = len(str(table_data[0][j]))
+        max_row = (
+            max(len(str(table_data[i][j])) for i in range(1, len(table_data)))
+            if len(table_data) > 1
+            else 0
+        )
+        weights.append(max(header_len, max_row, 3))
+    total = sum(weights)
+    if total <= 0:
+        return [usable_width / col_count] * col_count
+    return [(w / total) * usable_width for w in weights]
+
+
 def _figure_to_image_bytes(fig, *, dpi: int = 150, format: str = "png") -> bytes:
     """Serialize matplotlib Figure to PNG bytes."""
     buf = io.BytesIO()
@@ -319,8 +347,8 @@ def build_sensor_assessment_pdf(
 def build_phase1_qa_pdf(
     *,
     global_qa_table: Optional[pd.DataFrame] = None,
-    overlay_fig: Optional[Any] = None,
-    macro_fig: Optional[Any] = None,
+    overlay_items: Optional[list[dict]] = None,
+    macro_items: Optional[list[dict]] = None,
     report_title: str = "Sensor Consistency & Quality Assurance Report",
     output_path: Optional[str | Path] = None,
 ) -> bytes:
@@ -329,9 +357,9 @@ def build_phase1_qa_pdf(
 
     Args:
         global_qa_table: DataFrame with sensor_id, serotype, feature, n_points,
-            outliers_dropped, raw_rmse, raw_r2, clean_rmse, clean_r2, status.
-        overlay_fig: matplotlib Figure for multi-sensor regression overlay.
-        macro_fig: matplotlib Figure for macro batch regression (Pass sensors only).
+            outliers, raw_rmse, raw_r2, clean_rmse, clean_r2, status.
+        overlay_items: List of dicts with keys fig, serotype, feature.
+        macro_items: List of dicts with keys fig, macro_result, serotype, feature.
         report_title: Title on first page.
         output_path: If provided, also save PDF to this path.
 
@@ -390,10 +418,8 @@ def build_phase1_qa_pdf(
             global_qa_table,
             float_fmt="{:.4f}",
         )
-        col_count = len(table_data[0])
-        # Full page width: letter 8.5" - left 0.75" - right 0.75" = 7"
         usable_width = 7.0 * inch
-        col_widths = [usable_width / max(col_count, 1)] * col_count
+        col_widths = _compute_table_col_widths(table_data, usable_width)
         t = Table(table_data, colWidths=col_widths)
         t.setStyle(
             TableStyle(
@@ -421,8 +447,11 @@ def build_phase1_qa_pdf(
         flow.append(t)
         flow.append(Spacer(1, 0.3 * inch))
 
-    if overlay_fig is not None:
-        flow.append(Paragraph("2. Multi-Sensor Regression Overlay", heading_style))
+    overlay_items = overlay_items or []
+    macro_items = macro_items or []
+
+    if overlay_items:
+        flow.append(Paragraph("2. Multi-Sensor Regression Overlays", heading_style))
         flow.append(
             Paragraph(
                 "Scatter and regression lines per sensor. Excluded sensors shown "
@@ -430,25 +459,52 @@ def build_phase1_qa_pdf(
                 body_style,
             )
         )
-        flow.append(Spacer(1, 0.1 * inch))
-        img_bytes = _figure_to_image_bytes(overlay_fig)
-        img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=3.5 * inch)
-        flow.append(img)
+        for item in overlay_items:
+            sero = item.get("serotype", "")
+            feat = item.get("feature", "")
+            fig = item.get("fig")
+            if fig is not None:
+                flow.append(Spacer(1, 0.15 * inch))
+                flow.append(Paragraph(f"{sero} — {feat}", styles["Heading3"]))
+                flow.append(Spacer(1, 0.08 * inch))
+                img_bytes = _figure_to_image_bytes(fig)
+                img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=3.5 * inch)
+                flow.append(img)
         flow.append(Spacer(1, 0.3 * inch))
 
-    if macro_fig is not None:
-        flow.append(Paragraph("3. Macro Batch Regression", heading_style))
+    if macro_items:
+        flow.append(Paragraph("3. Macro Batch Regressions", heading_style))
         flow.append(
             Paragraph(
-                "Pooled inlier data from Pass sensors only. Single macro-regression "
-                "line with Batch RMSE and Batch R² for the good batch.",
+                "Two-pass pooled regression: Raw line (dashed gray) on all pooled "
+                "inliers; Clean line (solid red) after IQR-based macro outlier removal. "
+                "Macro outliers marked with red X.",
                 body_style,
             )
         )
-        flow.append(Spacer(1, 0.1 * inch))
-        img_bytes = _figure_to_image_bytes(macro_fig)
-        img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=3.5 * inch)
-        flow.append(img)
+        for item in macro_items:
+            sero = item.get("serotype", "")
+            feat = item.get("feature", "")
+            fig = item.get("fig")
+            macro_result = item.get("macro_result")
+            if fig is not None:
+                flow.append(Spacer(1, 0.15 * inch))
+                flow.append(Paragraph(f"{sero} — {feat}", styles["Heading3"]))
+                if macro_result is not None:
+                    flow.append(
+                        Paragraph(
+                            f"Raw: RMSE={macro_result.raw_batch_rmse:.4f}, "
+                            f"R²={macro_result.raw_batch_r2:.4f}. "
+                            f"Clean: RMSE={macro_result.clean_batch_rmse:.4f}, "
+                            f"R²={macro_result.clean_batch_r2:.4f}. "
+                            f"Macro outliers removed: {macro_result.n_macro_outliers}.",
+                            body_style,
+                        )
+                    )
+                flow.append(Spacer(1, 0.08 * inch))
+                img_bytes = _figure_to_image_bytes(fig)
+                img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=3.5 * inch)
+                flow.append(img)
 
     doc.build(flow)
     pdf_bytes = buffer.getvalue()

@@ -400,7 +400,7 @@ def get_global_model_consistency_qa(
 
     Returns:
         Tuple of (DataFrame, excluded_sensors_map). DataFrame has columns:
-        sensor_id, serotype, feature, n_points, outliers_dropped, raw_rmse,
+        sensor_id, serotype, feature, n_points, outliers, raw_rmse,
         raw_r2, clean_rmse, clean_r2, status. excluded_sensors_map is
         {(serotype, feature): {sensor_id, ...}}.
     """
@@ -409,7 +409,7 @@ def get_global_model_consistency_qa(
         serotype_col,
         "feature",
         "n_points",
-        "outliers_dropped",
+        "outliers",
         "raw_rmse",
         "raw_r2",
         "clean_rmse",
@@ -448,7 +448,7 @@ def get_global_model_consistency_qa(
                             serotype_col: sero,
                             "feature": feat,
                             "n_points": cres.n_samples,
-                            "outliers_dropped": cres.n_outliers,
+                            "outliers": cres.n_outliers,
                             "raw_rmse": cres.raw_rmse,
                             "raw_r2": cres.raw_r2,
                             "clean_rmse": cres.clean_rmse,
@@ -493,14 +493,22 @@ def get_global_model_consistency_qa(
 
 @dataclass
 class MacroRegressionResult:
-    """Result of pooled macro-regression across Pass sensors' inlier data."""
+    """Result of two-pass pooled macro-regression across Pass sensors' inlier data."""
 
-    slope: float
-    intercept: float
-    batch_rmse: float
-    batch_r2: float
+    slope: float  # Clean fit slope
+    intercept: float  # Clean fit intercept
+    raw_slope: float
+    raw_intercept: float
+    raw_batch_rmse: float
+    raw_batch_r2: float
+    clean_batch_rmse: float
+    clean_batch_r2: float
     n_points: int
     n_sensors: int
+    n_macro_outliers: int
+    macro_outlier_mask: np.ndarray
+    x_pooled: np.ndarray
+    y_pooled: np.ndarray
 
 
 def compute_macro_batch_regression(
@@ -575,16 +583,59 @@ def compute_macro_batch_regression(
 
     x_arr = np.array(x_pooled)
     y_arr = np.array(y_pooled)
-    res = stats.linregress(x_arr, y_arr)
-    y_pred = res.intercept + res.slope * x_arr
-    batch_rmse = np.sqrt(np.mean((y_arr - y_pred) ** 2))
-    batch_r2 = res.rvalue**2 if res.rvalue is not None else np.nan
+
+    # Pass 1: fit on all pooled data
+    res1 = stats.linregress(x_arr, y_arr)
+    y_pred1 = res1.intercept + res1.slope * x_arr
+    residuals = y_arr - y_pred1
+    raw_batch_rmse = float(np.sqrt(np.mean(residuals**2)))
+    raw_batch_r2 = float(res1.rvalue**2) if res1.rvalue is not None else np.nan
+
+    # Macro outlier detection: IQR on absolute residuals
+    macro_outlier_mask = _detect_residual_outliers_iqr(residuals, whis=iqr_whis)
+    n_macro_outliers = int(np.sum(macro_outlier_mask))
+
+    # Pass 2: refit on inliers (need at least 2)
+    inlier_mask = ~macro_outlier_mask
+    n_inliers = int(np.sum(inlier_mask))
+    if n_inliers < 2:
+        return MacroRegressionResult(
+            slope=res1.slope,
+            intercept=res1.intercept,
+            raw_slope=res1.slope,
+            raw_intercept=res1.intercept,
+            raw_batch_rmse=raw_batch_rmse,
+            raw_batch_r2=raw_batch_r2,
+            clean_batch_rmse=raw_batch_rmse,
+            clean_batch_r2=raw_batch_r2,
+            n_points=len(x_pooled),
+            n_sensors=sensors_contributing,
+            n_macro_outliers=n_macro_outliers,
+            macro_outlier_mask=macro_outlier_mask,
+            x_pooled=x_arr,
+            y_pooled=y_arr,
+        )
+
+    x_clean = x_arr[inlier_mask]
+    y_clean = y_arr[inlier_mask]
+    res2 = stats.linregress(x_clean, y_clean)
+    y_pred2 = res2.intercept + res2.slope * x_clean
+    clean_batch_rmse = float(np.sqrt(np.mean((y_clean - y_pred2) ** 2)))
+    clean_batch_r2 = float(res2.rvalue**2) if res2.rvalue is not None else np.nan
 
     return MacroRegressionResult(
-        slope=res.slope,
-        intercept=res.intercept,
-        batch_rmse=float(batch_rmse),
-        batch_r2=float(batch_r2),
+        slope=res2.slope,
+        intercept=res2.intercept,
+        raw_slope=res1.slope,
+        raw_intercept=res1.intercept,
+        raw_batch_rmse=raw_batch_rmse,
+        raw_batch_r2=raw_batch_r2,
+        clean_batch_rmse=clean_batch_rmse,
+        clean_batch_r2=clean_batch_r2,
         n_points=len(x_pooled),
         n_sensors=sensors_contributing,
+        n_macro_outliers=n_macro_outliers,
+        macro_outlier_mask=macro_outlier_mask,
+        x_pooled=x_arr,
+        y_pooled=y_arr,
     )

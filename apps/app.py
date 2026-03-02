@@ -7,23 +7,30 @@ Collaborators can load datasets, filter dynamically, and generate plots without 
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
 from sensd_sers_analysis.data import (
     count_unique_spectra,
+    get_raman_shift,
+    get_signals_matrix,
     load_sers_data_as_wide_and_tidy,
     wide_to_tidy,
 )
 from sensd_sers_analysis.processing import (
     BASIC_FEATURE_COLUMNS,
+    DEFAULT_GLOBAL_QA_FEATURES,
     extract_basic_features,
+    extract_dynamic_peak_features,
     filter_sers_data,
+    get_peak_height_columns,
     trim_raman_shift,
     get_feature_metadata_columns,
     get_filter_options,
     get_filterable_columns,
     get_plot_hue_columns,
+    order_features_by_preference,
     pick_preferred_column,
     preprocess_metadata,
 )
@@ -218,6 +225,45 @@ rs_max_str = st.sidebar.text_input(
     key="raman_shift_max",
     help="Leave blank for no upper limit.",
 )
+# Per-serotype number of peaks (sidebar)
+_serotypes_from_wide = (
+    sorted(wide_df["serotype"].dropna().unique().astype(str).tolist())
+    if wide_df is not None and not wide_df.empty and "serotype" in wide_df.columns
+    else []
+)
+_serotypes_from_wide = [s for s in _serotypes_from_wide if s and s != "nan"]
+
+if _serotypes_from_wide:
+    n_peaks = 6
+    st.sidebar.markdown("#### Peaks per serotype")
+    st.sidebar.caption(
+        "Number of peaks to extract for each serotype. Different serovars "
+        "may have different numbers of prominent peaks."
+    )
+    n_peaks_by_serotype = {}
+    for _s in _serotypes_from_wide:
+        n_peaks_by_serotype[_s] = int(
+            st.sidebar.number_input(
+                f"Peaks ({_s})",
+                min_value=1,
+                max_value=10,
+                value=6,
+                step=1,
+                key=f"n_peaks_{_s}",
+                help=f"Peaks for {_s}",
+            )
+        )
+else:
+    n_peaks_by_serotype = None
+    n_peaks = st.sidebar.number_input(
+        "Number of Peaks",
+        min_value=1,
+        max_value=10,
+        value=6,
+        step=1,
+        key="n_peaks",
+        help="Number of peaks (no serotype column in data).",
+    )
 
 
 def _parse_raman_shift_bound(s: str) -> float | None:
@@ -237,6 +283,27 @@ tidy_df = wide_to_tidy(wide_df)
 tidy_df = preprocess_metadata(tidy_df)
 
 features_df = extract_basic_features(wide_df)
+
+# Dynamic peak extraction (serotype-specific, 0 CFU excluded from learning)
+peak_df, peak_by_sero, mean_by_sero, default_sero, raman_x = (
+    extract_dynamic_peak_features(
+        wide_df, n_peaks=int(n_peaks), n_peaks_by_serotype=n_peaks_by_serotype
+    )
+)
+if peak_by_sero:
+    first_infos = next(iter(peak_by_sero.values()))
+    peak_cols = get_peak_height_columns(first_infos)
+    features_df = features_df.join(peak_df[peak_cols], how="left")
+    st.session_state["peak_infos_by_serotype"] = peak_by_sero
+    st.session_state["mean_spec_by_serotype"] = mean_by_sero
+    st.session_state["peak_default_serotype"] = default_sero
+    st.session_state["raman_x"] = raman_x
+else:
+    st.session_state["peak_infos_by_serotype"] = {}
+    st.session_state["mean_spec_by_serotype"] = {}
+    st.session_state["peak_default_serotype"] = None
+    st.session_state["raman_x"] = np.array([])
+
 st.sidebar.success(
     f"Loaded **{len(uploaded)}** files, **{len(wide_df)}** samples ({len(tidy_df)} tidy rows)."
 )
@@ -321,9 +388,10 @@ if filtered.empty:
     st.warning("No data matches the selected filters. Adjust filters and try again.")
     st.stop()
 
-tab_spectra, tab_stats, tab_assessment, tab_model_consistency = st.tabs(
+tab_spectra, tab_peak_diag, tab_stats, tab_assessment, tab_model_consistency = st.tabs(
     [
         "📉 Spectral Viewer",
+        "🔍 Peak Detection Diagnostics",
         "📊 Feature Analysis",
         "🔬 Sensor Assessment & Report",
         "📈 Model-Based Sensor Consistency",
@@ -393,13 +461,277 @@ with tab_spectra:
             errorbar=errorbar,
             figsize=(14, plot_height),
         )
-        st.pyplot(fig, use_container_width=True)
+        st.pyplot(fig, width="stretch")
     except ValueError as e:
         st.error(f"Plot error: {e}")
         st.caption(
             "Ensure filtered data has required columns: raman_shift, intensity, "
             "filename, signal_index."
         )
+
+with tab_peak_diag:
+    import matplotlib.pyplot as plt
+
+    peak_by_sero = st.session_state.get("peak_infos_by_serotype", {})
+    mean_by_sero = st.session_state.get("mean_spec_by_serotype", {})
+    raman_x = st.session_state.get("raman_x", np.array([]))
+
+    if not peak_by_sero or raman_x.size == 0:
+        st.info(
+            "Peak detection requires loaded data with Raman intensity columns. "
+            "Adjust **Peaks per serotype** in the sidebar and ensure high-concentration "
+            "samples are present (>0 CFU, serotype-specific)."
+        )
+    else:
+        st.markdown(
+            "Visual verification of dynamic peak extraction: serotype-specific "
+            "anchors, search windows, and detection success rates (0 CFU excluded from "
+            "learning). Each serotype uses its own peak count from the sidebar."
+        )
+
+        # ---- All serotypes: plots and tables ----
+        for sel_serotype in sorted(peak_by_sero.keys()):
+            peak_infos = peak_by_sero.get(sel_serotype, [])
+            mean_spec = mean_by_sero.get(sel_serotype, np.array([]))
+
+            if not peak_infos or mean_spec.size == 0:
+                continue
+
+            with st.expander(
+                f"**{sel_serotype}** — Mean spectrum & diagnostics", expanded=True
+            ):
+                # Anchor & Window Plot
+                fig_anchor, ax_anchor = plt.subplots(figsize=(14, 4))
+                ax_anchor.plot(
+                    raman_x,
+                    mean_spec,
+                    color="C0",
+                    linewidth=1.5,
+                    label=f"Mean ({sel_serotype}, high conc)",
+                )
+                for i, info in enumerate(peak_infos):
+                    ax_anchor.axvline(
+                        info.center,
+                        color=f"C{(i % 9) + 1}",
+                        linestyle="--",
+                        linewidth=1.2,
+                        alpha=0.8,
+                        label=f"{info.peak_name} @ {info.center:.0f} cm⁻¹",
+                    )
+                    ax_anchor.axvspan(
+                        info.window_min,
+                        info.window_max,
+                        alpha=0.15,
+                        color=f"C{(i % 9) + 1}",
+                    )
+                ax_anchor.set_xlabel("Raman shift (cm⁻¹)")
+                ax_anchor.set_ylabel("Intensity")
+                ax_anchor.set_title(
+                    f"{sel_serotype} | Dashed = Voted Centers, Shaded = Search Windows"
+                )
+                ax_anchor.legend(loc="upper right", fontsize=8, ncol=2)
+                ax_anchor.grid(True, alpha=0.3)
+                fig_anchor.tight_layout()
+                st.pyplot(fig_anchor, width="stretch")
+                plt.close(fig_anchor)
+
+                # Diagnostics Table
+                diag_data = [
+                    {
+                        "Peak Name": p.peak_name,
+                        "Center (cm⁻¹)": f"{p.center:.1f}",
+                        "Window Range": f"[{p.window_min:.1f}, {p.window_max:.1f}]",
+                        "Detection Success Rate (%)": f"{p.success_rate * 100:.1f}",
+                    }
+                    for p in peak_infos
+                ]
+                st.dataframe(pd.DataFrame(diag_data), width="stretch", hide_index=True)
+
+        # ---- 3. Signal-Level Verification ----
+        st.markdown("#### Signal-level verification")
+        st.caption(
+            "Inspect a single spectrum: shaded regions = serotype-specific search "
+            "windows; green ★ = where the algorithm detected a peak (passed prominence "
+            "check). Pick a serotype below to filter signals — this ties verification "
+            "to the plots above."
+        )
+        wide_filtered = (
+            wide_df.loc[filtered_features.index]
+            if not filtered_features.empty
+            else wide_df
+        )
+        sensor_col = "sensor_id" if "sensor_id" in filtered_features.columns else None
+        conc_col = (
+            "concentration_group"
+            if "concentration_group" in filtered_features.columns
+            else None
+        )
+        serotype_col = "serotype" if "serotype" in filtered_features.columns else None
+
+        if sensor_col and conc_col and not wide_filtered.empty:
+            sero_opts_ver = sorted(peak_by_sero.keys())
+            sel_sero_ver = st.selectbox(
+                "Serotype (filter signals)",
+                options=sero_opts_ver,
+                index=0,
+                key="peak_diag_serotype_filter",
+                help="Only show sensors/concentrations that have signals of this serotype.",
+            )
+            df_ver = (
+                filtered_features[
+                    filtered_features[serotype_col].astype(str) == sel_sero_ver
+                ]
+                if serotype_col
+                else filtered_features
+            )
+
+            sensor_opts = (
+                sorted(df_ver[sensor_col].dropna().unique().astype(str).tolist())
+                if not df_ver.empty
+                else []
+            )
+            conc_opts = (
+                order_concentration_labels(
+                    df_ver[conc_col].dropna().unique().astype(str).tolist()
+                )
+                or ["(none)"]
+                if not df_ver.empty
+                else ["(none)"]
+            )
+
+            if not sensor_opts or not conc_opts:
+                st.info(
+                    f"No signals for serotype **{sel_sero_ver}** in the current filters. "
+                    "Adjust filters or select another serotype."
+                )
+            else:
+                col_s, col_c, col_sig = st.columns(3)
+                with col_s:
+                    sel_sensor = st.selectbox(
+                        "Sensor ID",
+                        options=sensor_opts,
+                        index=0,
+                        key="peak_diag_sensor",
+                    )
+                with col_c:
+                    sel_conc = st.selectbox(
+                        "Concentration",
+                        options=conc_opts,
+                        index=0,
+                        key="peak_diag_conc",
+                    )
+                matches = df_ver[
+                    (df_ver[sensor_col].astype(str) == sel_sensor)
+                    & (df_ver[conc_col].astype(str) == sel_conc)
+                ]
+                signal_labels = []
+                for idx in matches.index:
+                    fn = (
+                        wide_filtered.loc[idx, "filename"]
+                        if "filename" in wide_filtered.columns
+                        else str(idx)
+                    )
+                    signal_labels.append(f"{fn} (idx {idx})")
+
+                with col_sig:
+                    if len(signal_labels) > 1:
+                        sel_idx = st.selectbox(
+                            "Signal",
+                            options=range(len(signal_labels)),
+                            format_func=lambda i: signal_labels[i],
+                            key="peak_diag_signal",
+                        )
+                        row_idx = matches.index[sel_idx]
+                    else:
+                        row_idx = matches.index[0] if len(matches) > 0 else None
+
+                if row_idx is not None:
+                    row_sero = (
+                        str(wide_filtered.loc[row_idx, serotype_col])
+                        if serotype_col and serotype_col in wide_filtered.columns
+                        else sel_sero_ver
+                    )
+                    row_peak_infos = peak_by_sero.get(row_sero)
+                    if not row_peak_infos:
+                        row_peak_infos = peak_by_sero.get(
+                            st.session_state.get("peak_default_serotype")
+                        )
+                    if not row_peak_infos:
+                        row_peak_infos = next(iter(peak_by_sero.values()), [])
+
+                    spec_row = wide_filtered.loc[[row_idx]]
+                    sig_mat = get_signals_matrix(spec_row)
+                    raman = get_raman_shift(spec_row)
+                    y_spec = sig_mat[0]
+                    x_spec = np.asarray(raman, dtype=float)
+
+                    # #region agent log
+                    # Use only finite (x,y) points: concatenated files produce union columns,
+                    # so each row has NaN where its source file lacked that Raman shift.
+                    # Matplotlib breaks the line at NaN; filter to valid points for continuity.
+                    valid = np.isfinite(y_spec.astype(float))
+                    x_plot = x_spec[valid]
+                    y_plot = np.asarray(y_spec, dtype=float)[valid]
+                    sort_idx = np.argsort(x_plot)
+                    x_plot = x_plot[sort_idx]
+                    y_plot = y_plot[sort_idx]
+
+                    fig_sig, ax_sig = plt.subplots(figsize=(14, 5))
+                    ax_sig.plot(
+                        x_plot, y_plot, color="C0", linewidth=1.2, label="Raw spectrum"
+                    )
+
+                    peak_cols = get_peak_height_columns(row_peak_infos)
+                    for i, info in enumerate(row_peak_infos):
+                        ax_sig.axvspan(
+                            info.window_min,
+                            info.window_max,
+                            alpha=0.12,
+                            color=f"C{(i % 9) + 1}",
+                        )
+                        peak_col = info.peak_name
+                        if peak_col in filtered_features.columns:
+                            val = filtered_features.loc[row_idx, peak_col]
+                            if pd.notna(val) and np.isfinite(val):
+                                mask = (x_spec >= info.window_min) & (
+                                    x_spec <= info.window_max
+                                )
+                                window_y = np.where(mask, y_spec.astype(float), np.nan)
+                                if mask.any() and np.any(np.isfinite(window_y)):
+                                    local_idx = int(np.nanargmax(window_y))
+                                    peak_x = float(x_spec[local_idx])
+                                    peak_y = float(y_spec[local_idx])
+                                    ax_sig.scatter(
+                                        peak_x,
+                                        peak_y,
+                                        marker="*",
+                                        s=200,
+                                        color="green",
+                                        edgecolors="darkgreen",
+                                        linewidths=1.5,
+                                        zorder=5,
+                                        label="Detected" if i == 0 else None,
+                                    )
+
+                    ax_sig.set_xlabel("Raman shift (cm⁻¹)")
+                    ax_sig.set_ylabel("Intensity")
+                    ax_sig.set_title(
+                        f"Signal: {sel_sensor} @ {sel_conc} ({row_sero}) | Green ★ = detected peaks"
+                    )
+                    ax_sig.legend(loc="upper right", fontsize=8)
+                    ax_sig.grid(True, alpha=0.3)
+                    fig_sig.tight_layout()
+                    st.pyplot(fig_sig, width="stretch")
+                    plt.close(fig_sig)
+                else:
+                    st.warning(
+                        "No matching signal for selected sensor and concentration."
+                    )
+        else:
+            st.caption(
+                "Signal-level verification requires sensor_id and concentration_group "
+                "in the data."
+            )
 
 with tab_stats:
     all_feat_nan = all(
@@ -422,22 +754,38 @@ with tab_stats:
         x_default = pick_preferred_column(x_opts) or (x_opts[0] if x_opts else None)
         x_default_idx = x_opts.index(x_default) if x_default in x_opts else 0
 
-        c_feat, c_x, c_hue_s, c_type = st.columns(4)
-        with c_feat:
+        stats_feat_opts = [
+            c for c in BASIC_FEATURE_COLUMNS if c in filtered_features.columns
+        ]
+        stats_peak_opts = [
+            c
+            for c in get_peak_height_columns(
+                next(
+                    iter(st.session_state.get("peak_infos_by_serotype", {}).values()),
+                    [],
+                )
+            )
+            if c in filtered_features.columns
+        ]
+        stats_feat_opts = order_features_by_preference(
+            stats_feat_opts + stats_peak_opts
+        )
+        col1, col2, col3 = st.columns(3)
+        with col1:
             feature_col = st.selectbox(
                 "Feature (Y-axis)",
-                options=BASIC_FEATURE_COLUMNS,
-                index=2,
+                options=stats_feat_opts if stats_feat_opts else ["(no features)"],
+                index=min(2, len(stats_feat_opts) - 1) if stats_feat_opts else 0,
                 key="stats_feature",
             )
-        with c_x:
+        with col2:
             x_col = st.selectbox(
                 "X-axis",
                 options=x_opts if x_opts else ["(no grouping)"],
                 index=min(x_default_idx, len(x_opts) - 1) if x_opts else 0,
                 key="stats_x",
             )
-        with c_hue_s:
+        with col3:
             hue_default_s = pick_preferred_column(x_opts, ("serotype",)) or "None"
             hue_col_s = st.selectbox(
                 "Hue",
@@ -445,14 +793,13 @@ with tab_stats:
                 index=hue_opts.index(hue_default_s),
                 key="stats_hue",
             )
-        with c_type:
-            plot_type = st.radio(
-                "Plot type",
-                options=["box", "violin"],
-                index=0,
-                horizontal=True,
-                key="stats_plot_type",
-            )
+        plot_type = st.radio(
+            "Plot type",
+            options=["box", "violin"],
+            index=0,
+            horizontal=True,
+            key="stats_plot_type",
+        )
 
         if filtered_features.empty:
             st.warning("No samples match the selected filters for feature analysis.")
@@ -475,7 +822,7 @@ with tab_stats:
                     hue=hue_val,
                     plot_type=plot_type,
                 )
-                st.pyplot(fig_stats, use_container_width=True)
+                st.pyplot(fig_stats, width="stretch")
             except ValueError as e:
                 st.error(f"Plot error: {e}")
 
@@ -490,6 +837,12 @@ with tab_assessment:
     feat_cols_avail = [
         c for c in BASIC_FEATURE_COLUMNS if c in filtered_features.columns
     ]
+    feat_cols_avail = feat_cols_avail + [
+        c
+        for c in get_peak_height_columns(st.session_state.get("peak_infos", []))
+        if c in filtered_features.columns
+    ]
+    feat_cols_avail = order_features_by_preference(feat_cols_avail)
     has_serotype = "serotype" in filtered_features.columns
     has_conc_group = "concentration_group" in filtered_features.columns
 
@@ -601,9 +954,7 @@ with tab_assessment:
                     outlier_method=outlier_method,
                 )
                 if not consistency_tbl.empty:
-                    st.dataframe(
-                        consistency_tbl, use_container_width=True, hide_index=True
-                    )
+                    st.dataframe(consistency_tbl, width="stretch", hide_index=True)
             except ValueError as e:
                 st.error(f"Consistency error: {e}")
 
@@ -631,7 +982,7 @@ with tab_assessment:
                         else None,
                     )
                     if not deg_tbl.empty:
-                        st.dataframe(deg_tbl, use_container_width=True, hide_index=True)
+                        st.dataframe(deg_tbl, width="stretch", hide_index=True)
 
                     fig_deg = plot_degradation_trend(
                         df_deg,
@@ -641,7 +992,7 @@ with tab_assessment:
                         if "sensor_id" in df_deg.columns
                         else None,
                     )
-                    st.pyplot(fig_deg, use_container_width=True)
+                    st.pyplot(fig_deg, width="stretch")
             except ValueError as e:
                 st.error(f"Degradation error: {e}")
 
@@ -672,12 +1023,10 @@ with tab_assessment:
                         batch_tbl, z_threshold=2.0, sensor_col="sensor_id"
                     )
 
-                    st.dataframe(batch_tbl, use_container_width=True, hide_index=True)
+                    st.dataframe(batch_tbl, width="stretch", hide_index=True)
                     if not deviating.empty:
                         st.markdown("**Deviating sensors (|z| > 2)**")
-                        st.dataframe(
-                            deviating, use_container_width=True, hide_index=True
-                        )
+                        st.dataframe(deviating, width="stretch", hide_index=True)
 
                     fig_batch = plot_batch_boxplot(
                         assessment_df,
@@ -685,7 +1034,7 @@ with tab_assessment:
                         sensor_col="sensor_id",
                         group_col=None,
                     )
-                    st.pyplot(fig_batch, use_container_width=True)
+                    st.pyplot(fig_batch, width="stretch")
                 except ValueError as e:
                     st.error(f"Batch variance error: {e}")
             else:
@@ -789,6 +1138,12 @@ with tab_assessment:
 # ---------------------------------------------------------------------------
 with tab_model_consistency:
     mc_feat_cols = [c for c in BASIC_FEATURE_COLUMNS if c in filtered_features.columns]
+    peak_cols_mc = get_peak_height_columns(
+        next(iter(st.session_state.get("peak_infos_by_serotype", {}).values()), [])
+    )
+    mc_feat_cols = order_features_by_preference(
+        mc_feat_cols + [c for c in peak_cols_mc if c in filtered_features.columns]
+    )
     has_sensor = "sensor_id" in filtered_features.columns
     has_serotype = "serotype" in filtered_features.columns
     has_log_conc = "log_concentration" in filtered_features.columns
@@ -899,7 +1254,7 @@ with tab_model_consistency:
                     outlier_mask=cres.outlier_mask if cres else None,
                     title=f"{model_sensor} — {model_serotype}",
                 )
-                st.pyplot(fig_mc, use_container_width=True)
+                st.pyplot(fig_mc, width="stretch")
             except ValueError as e:
                 st.error(f"Plot error: {e}")
 
@@ -911,15 +1266,28 @@ with tab_model_consistency:
             "median OR Clean R² < 0.80 (dead/flat sensor)."
         )
 
+        global_qa_default = [
+            f for f in DEFAULT_GLOBAL_QA_FEATURES if f in mc_feat_cols
+        ] or (mc_feat_cols[:5] if mc_feat_cols else [])
+        global_qa_selected = st.multiselect(
+            "Features for Global QA Table (and PDF)",
+            options=mc_feat_cols,
+            default=global_qa_default,
+            key="global_qa_features",
+        )
+        if not global_qa_selected:
+            st.info("Select at least one feature to populate the Global QA Table.")
         global_qa_tbl, excluded_map = get_global_model_consistency_qa(
-            filtered_features, feature_cols=mc_feat_cols
+            filtered_features,
+            feature_cols=global_qa_selected,
         )
         if not global_qa_tbl.empty:
             st.dataframe(
                 global_qa_tbl,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
+                    "outliers": st.column_config.NumberColumn("Outliers"),
                     "raw_rmse": st.column_config.NumberColumn(
                         "Raw RMSE", format="%.4f"
                     ),
@@ -940,121 +1308,120 @@ with tab_model_consistency:
 
         st.markdown("##### Multi-sensor regression overlay")
         st.caption(
-            "Select serotype and feature. Excluded sensors (dashed gray); passing "
+            "Select serotypes and features. Excluded sensors (dashed gray); passing "
             "sensors (solid colors). Tight bundle = uniform batch."
+        )
+        overlay_sero_opts = [s for s in serotype_opts if s and s != "(none)"]
+        overlay_feat_default = (
+            ["integral_area"] if "integral_area" in mc_feat_cols else mc_feat_cols[:1]
         )
         overlay_sero, overlay_feat = st.columns(2)
         with overlay_sero:
-            overlay_serotype = st.selectbox(
+            overlay_serotypes = st.multiselect(
                 "Serotype _(overlay)_",
-                options=serotype_opts,
-                index=0,
+                options=overlay_sero_opts,
+                default=overlay_sero_opts,
                 key="overlay_serotype",
             )
         with overlay_feat:
-            overlay_feature = st.selectbox(
+            overlay_features = st.multiselect(
                 "Feature _(overlay)_",
                 options=mc_feat_cols,
-                index=0,
+                default=overlay_feat_default,
                 key="overlay_feature",
             )
 
-        _overlay_sero_ok = overlay_serotype and overlay_serotype != "(none)"
-        excluded_overlay = (
-            excluded_map.get(
-                (str(overlay_serotype), str(overlay_feature)),
-                set(),
-            )
-            if _overlay_sero_ok
-            else set()
-        )
-        if _overlay_sero_ok:
-            try:
-                fig_overlay = plot_multi_sensor_regression(
-                    filtered_features,
-                    overlay_serotype,
-                    overlay_feature,
-                    excluded_sensors=excluded_overlay,
+        overlay_items: list = []
+        macro_items: list = []
+        for sero in overlay_serotypes:
+            for feat in overlay_features:
+                excluded = excluded_map.get((str(sero), str(feat)), set())
+                all_sens = set(
+                    str(s)
+                    for s in filtered_features[
+                        filtered_features["serotype"].astype(str) == sero
+                    ]["sensor_id"]
+                    .dropna()
+                    .unique()
                 )
-                st.pyplot(fig_overlay, use_container_width=True)
-            except ValueError as e:
-                st.error(f"Overlay plot error: {e}")
+                pass_sens = all_sens - excluded
 
-        # ---- Macro Batch Regression (Pass sensors only) ----
-        st.markdown("##### Macro batch regression")
-        st.caption(
-            "Pooled inlier data from Pass sensors. Single macro-regression line "
-            "with Batch RMSE and Batch R² for the good batch."
-        )
-        if _overlay_sero_ok:
-            all_sensors_overlay = set(
-                str(s)
-                for s in filtered_features[
-                    (filtered_features["serotype"].astype(str) == overlay_serotype)
-                ]["sensor_id"]
-                .dropna()
-                .unique()
-            )
-            pass_sensors_overlay = all_sensors_overlay - excluded_overlay
-            try:
-                fig_macro, macro_res = plot_macro_batch_regression(
-                    filtered_features,
-                    overlay_serotype,
-                    overlay_feature,
-                    pass_sensors_overlay,
-                )
-                st.pyplot(fig_macro, use_container_width=True)
-                if macro_res is not None:
-                    ma1, ma2 = st.columns(2)
-                    with ma1:
-                        st.metric("Batch RMSE", f"{macro_res.batch_rmse:.4f}")
-                    with ma2:
-                        st.metric("Batch R²", f"{macro_res.batch_r2:.4f}")
-            except ValueError as e:
-                st.error(f"Macro regression error: {e}")
-        else:
-            st.info("Select a serotype above to generate the macro regression.")
+                st.markdown(f"**{sero} — {feat}**")
+                try:
+                    fig_ov = plot_multi_sensor_regression(
+                        filtered_features,
+                        sero,
+                        feat,
+                        excluded_sensors=excluded,
+                    )
+                    st.pyplot(fig_ov, width="stretch")
+                    overlay_items.append(
+                        {"fig": fig_ov, "serotype": sero, "feature": feat}
+                    )
+                except ValueError as e:
+                    st.error(f"Overlay ({sero}, {feat}): {e}")
+
+                st.markdown("**Macro batch regression**")
+                try:
+                    fig_macro, macro_res = plot_macro_batch_regression(
+                        filtered_features,
+                        sero,
+                        feat,
+                        pass_sens,
+                    )
+                    st.pyplot(fig_macro, width="stretch")
+                    macro_items.append(
+                        {
+                            "fig": fig_macro,
+                            "macro_result": macro_res,
+                            "serotype": sero,
+                            "feature": feat,
+                        }
+                    )
+                    if macro_res is not None:
+                        ma1, ma2, ma3, ma4, ma5 = st.columns(5)
+                        with ma1:
+                            st.metric(
+                                "Raw Batch RMSE",
+                                f"{macro_res.raw_batch_rmse:.4f}",
+                            )
+                        with ma2:
+                            st.metric(
+                                "Raw Batch R²",
+                                f"{macro_res.raw_batch_r2:.4f}",
+                            )
+                        with ma3:
+                            st.metric(
+                                "Clean Batch RMSE",
+                                f"{macro_res.clean_batch_rmse:.4f}",
+                            )
+                        with ma4:
+                            st.metric(
+                                "Clean Batch R²",
+                                f"{macro_res.clean_batch_r2:.4f}",
+                            )
+                        with ma5:
+                            st.metric(
+                                "Macro Outliers",
+                                f"{macro_res.n_macro_outliers}",
+                            )
+                except ValueError as e:
+                    st.error(f"Macro ({sero}, {feat}): {e}")
+                st.markdown("---")
+
+        if not overlay_serotypes or not overlay_features:
+            st.info("Select at least one serotype and one feature to generate plots.")
 
         # ---- Phase 1 QA PDF Report ----
         st.markdown("---")
         st.markdown("#### Phase 1 QA Report")
         if st.button("Generate Phase 1 QA Report", key="phase1_qa_pdf_btn"):
             try:
-                overlay_fig_pdf = None
-                macro_fig_pdf = None
-                if _overlay_sero_ok:
-                    overlay_fig_pdf = plot_multi_sensor_regression(
-                        filtered_features,
-                        overlay_serotype,
-                        overlay_feature,
-                        excluded_sensors=excluded_overlay,
-                    )
-                    all_sens = set(
-                        str(s)
-                        for s in filtered_features[
-                            (
-                                filtered_features["serotype"].astype(str)
-                                == overlay_serotype
-                            )
-                        ]["sensor_id"]
-                        .dropna()
-                        .unique()
-                    )
-                    pass_sens = all_sens - excluded_overlay
-                    macro_fig_pdf, _ = plot_macro_batch_regression(
-                        filtered_features,
-                        overlay_serotype,
-                        overlay_feature,
-                        pass_sens,
-                    )
                 pdf_bytes = build_phase1_qa_pdf(
                     global_qa_table=global_qa_tbl if not global_qa_tbl.empty else None,
-                    overlay_fig=overlay_fig_pdf,
-                    macro_fig=macro_fig_pdf,
-                    report_title=(
-                        "Sensor Consistency & Quality Assurance Report — "
-                        f"{overlay_serotype or 'All'}, {overlay_feature or 'All'}"
-                    ),
+                    overlay_items=overlay_items,
+                    macro_items=macro_items,
+                    report_title="Sensor Consistency & Quality Assurance Report",
                 )
                 st.session_state["phase1_qa_pdf"] = pdf_bytes
                 st.success("Phase 1 QA report generated. Click Download below.")
