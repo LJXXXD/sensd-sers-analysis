@@ -162,6 +162,10 @@ def fit_concentration_regression_cleaned(
     x = df_fit[log_conc_col].astype(float).values
     y = df_fit[feature_col].astype(float).values
 
+    # Cannot compute regression if x has no variance (e.g. single concentration)
+    if np.ptp(x) == 0:
+        return None
+
     # Pass 1: fit all valid points
     res1 = stats.linregress(x, y)
     y_pred1 = res1.intercept + res1.slope * x
@@ -201,6 +205,18 @@ def fit_concentration_regression_cleaned(
 
     x_clean = x[inlier_mask]
     y_clean = y[inlier_mask]
+    if np.ptp(x_clean) == 0:
+        return CleanedRegressionResult(
+            raw_rmse=raw_rmse,
+            raw_r2=raw_r2,
+            clean_rmse=raw_rmse,
+            clean_r2=raw_r2,
+            n_samples=len(df_fit),
+            n_outliers=n_outliers,
+            outlier_mask=outlier_mask,
+            raw_result=raw_result,
+            clean_result=raw_result,
+        )
     res2 = stats.linregress(x_clean, y_clean)
     y_pred2 = res2.intercept + res2.slope * x_clean
     clean_rmse = np.sqrt(np.mean((y_clean - y_pred2) ** 2))
