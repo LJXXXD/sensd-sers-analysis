@@ -2,9 +2,10 @@
 # Project-Specific .gitignore
 # -----------------------------------------------------------------------------
 
-# Large datasets and generated outputs (excluded from Git)
+# Large datasets, generated outputs and archives
 /data/
 /results/
+/archive/
 
 # Model files and data files
 *.pth
