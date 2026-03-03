@@ -12,6 +12,7 @@ from scipy.integrate import trapezoid as scipy_trapezoid
 
 from sensd_sers_analysis.data import get_raman_shift, get_signals_matrix
 from sensd_sers_analysis.processing.pca_features import add_pca_features
+from sensd_sers_analysis.processing.peak_features import get_peak_height_columns
 
 # Column names produced by extract_basic_features; use for stats plots and validation.
 BASIC_FEATURE_COLUMNS = [
@@ -45,6 +46,35 @@ DEFAULT_GLOBAL_QA_FEATURES = [
     "Peak_5_Height",
     "Peak_6_Height",
 ]
+
+# Base feature columns for Phase 2 classification (ML input).
+PHASE2_FEATURE_BASE = [
+    "integral_area",
+    "max_intensity",
+    "mean_intensity",
+    "PC1",
+    "PC2",
+]
+
+
+def get_available_feature_columns(
+    df: pd.DataFrame,
+    peak_infos_by_serotype: dict,
+) -> list[str]:
+    """
+    Return ordered feature columns available in df (basic + dynamic peaks).
+
+    Args:
+        df: DataFrame with feature columns.
+        peak_infos_by_serotype: Dict of serotype -> list of PeakWindowInfo.
+
+    Returns:
+        List of column names in preferred display order.
+    """
+    basic = [c for c in BASIC_FEATURE_COLUMNS if c in df.columns]
+    peak_infos = next(iter(peak_infos_by_serotype.values()), [])
+    peak_cols = [c for c in get_peak_height_columns(peak_infos) if c in df.columns]
+    return order_features_by_preference(basic + peak_cols)
 
 
 def order_features_by_preference(

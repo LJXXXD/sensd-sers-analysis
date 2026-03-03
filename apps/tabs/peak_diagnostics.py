@@ -6,6 +6,17 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from components.shared_ui import render_dataframe_stretch, render_figure_stretch
+from theme import (
+    DEFAULT_FIGSIZE_ANCHOR,
+    DEFAULT_FIGSIZE_WIDE,
+    GRID_ALPHA,
+    LEGEND_FONTSIZE,
+    SPAN_ALPHA_ANCHOR,
+    SPAN_ALPHA_SIGNAL,
+    AXVLINE_ALPHA,
+)
+
 from sensd_sers_analysis.data import get_raman_shift, get_signals_matrix
 from sensd_sers_analysis.utils import order_concentration_labels
 
@@ -42,7 +53,7 @@ def render(filtered_features, wide_df):
         with st.expander(
             f"**{sel_serotype}** — Mean spectrum & diagnostics", expanded=True
         ):
-            fig_anchor, ax_anchor = plt.subplots(figsize=(14, 4))
+            fig_anchor, ax_anchor = plt.subplots(figsize=DEFAULT_FIGSIZE_ANCHOR)
             ax_anchor.plot(
                 raman_x,
                 mean_spec,
@@ -56,13 +67,13 @@ def render(filtered_features, wide_df):
                     color=f"C{(i % 9) + 1}",
                     linestyle="--",
                     linewidth=1.2,
-                    alpha=0.8,
+                    alpha=AXVLINE_ALPHA,
                     label=f"{info.peak_name} @ {info.center:.0f} cm⁻¹",
                 )
                 ax_anchor.axvspan(
                     info.window_min,
                     info.window_max,
-                    alpha=0.15,
+                    alpha=SPAN_ALPHA_ANCHOR,
                     color=f"C{(i % 9) + 1}",
                 )
             ax_anchor.set_xlabel("Raman shift (cm⁻¹)")
@@ -70,11 +81,10 @@ def render(filtered_features, wide_df):
             ax_anchor.set_title(
                 f"{sel_serotype} | Dashed = Voted Centers, Shaded = Search Windows"
             )
-            ax_anchor.legend(loc="upper right", fontsize=8, ncol=2)
-            ax_anchor.grid(True, alpha=0.3)
+            ax_anchor.legend(loc="upper right", fontsize=LEGEND_FONTSIZE, ncol=2)
+            ax_anchor.grid(True, alpha=GRID_ALPHA)
             fig_anchor.tight_layout()
-            st.pyplot(fig_anchor, width="stretch")
-            plt.close(fig_anchor)
+            render_figure_stretch(fig_anchor)
 
             diag_data = [
                 {
@@ -85,7 +95,7 @@ def render(filtered_features, wide_df):
                 }
                 for p in peak_infos
             ]
-            st.dataframe(pd.DataFrame(diag_data), width="stretch", hide_index=True)
+            render_dataframe_stretch(pd.DataFrame(diag_data))
 
     st.markdown("#### Signal-level verification")
     st.caption(
@@ -215,14 +225,14 @@ def render(filtered_features, wide_df):
     x_plot = x_plot[sort_idx]
     y_plot = y_plot[sort_idx]
 
-    fig_sig, ax_sig = plt.subplots(figsize=(14, 5))
+    fig_sig, ax_sig = plt.subplots(figsize=DEFAULT_FIGSIZE_WIDE)
     ax_sig.plot(x_plot, y_plot, color="C0", linewidth=1.2, label="Raw spectrum")
 
     for i, info in enumerate(row_peak_infos):
         ax_sig.axvspan(
             info.window_min,
             info.window_max,
-            alpha=0.12,
+            alpha=SPAN_ALPHA_SIGNAL,
             color=f"C{(i % 9) + 1}",
         )
         peak_col = info.peak_name
@@ -252,8 +262,7 @@ def render(filtered_features, wide_df):
     ax_sig.set_title(
         f"Signal: {sel_sensor} @ {sel_conc} ({row_sero}) | Green ★ = detected peaks"
     )
-    ax_sig.legend(loc="upper right", fontsize=8)
-    ax_sig.grid(True, alpha=0.3)
+    ax_sig.legend(loc="upper right", fontsize=LEGEND_FONTSIZE)
+    ax_sig.grid(True, alpha=GRID_ALPHA)
     fig_sig.tight_layout()
-    st.pyplot(fig_sig, width="stretch")
-    plt.close(fig_sig)
+    render_figure_stretch(fig_sig)

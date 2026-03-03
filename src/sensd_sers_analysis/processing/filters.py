@@ -116,6 +116,38 @@ def filter_sers_data(
     return df.loc[mask]
 
 
+# Default values treated as "no selection" in filter_by_selections.
+_DEFAULT_INVALID_SELECTIONS = frozenset({"", "(none)", "nan"})
+
+
+def filter_by_selections(
+    df: pd.DataFrame,
+    selections: dict[str, str],
+    *,
+    invalid_values: frozenset[str] | set[str] | None = None,
+) -> pd.DataFrame:
+    """
+    Subset DataFrame by column=value pairs. Skips selections that are invalid.
+
+    Args:
+        df: DataFrame to filter.
+        selections: Dict mapping column name -> selected value (string).
+        invalid_values: Values to treat as "no selection" (skipped). Default:
+            {"", "(none)", "nan"}.
+
+    Returns:
+        Subset of df where df[col].astype(str) == val for each valid selection.
+        Returns full df if no valid selections.
+    """
+    inv = invalid_values if invalid_values is not None else _DEFAULT_INVALID_SELECTIONS
+    mask = pd.Series(True, index=df.index)
+    for col, val in selections.items():
+        if col not in df.columns or val is None or str(val).strip() in inv:
+            continue
+        mask = mask & (df[col].astype(str) == str(val).strip())
+    return df.loc[mask].copy()
+
+
 def get_filterable_columns(df) -> list[str]:
     """
     Discover metadata columns suitable for filtering, in display order.

@@ -21,21 +21,23 @@ from sensd_sers_analysis.processing import (
 from sensd_sers_analysis.utils import format_column_label
 
 from components.data_loading import load_from_uploaded
+from components.raman_sidebar import render_raman_and_peaks_sidebar
 from components.filter_ui import (
-    _render_filter,
+    MAIN_FILTER_COUNT,
     _FILTER_DIVIDER,
     _TITLE_TO_FILTER_DIVIDER,
+    _render_filter,
     render_main_filter_header,
     section_divider,
 )
 
-from pages import (
+from tabs import (
     feature_analysis,
     model_consistency,
     peak_diagnostics,
-    phase2_classification,
     sensor_assessment,
-    spectral_viewer,
+    serotype_classification,
+    spectra_viewer,
 )
 
 st.set_page_config(
@@ -44,16 +46,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-
-def _parse_raman_shift_bound(s: str) -> float | None:
-    """Parse user input to float; return None if blank or invalid."""
-    if not s or not str(s).strip():
-        return None
-    try:
-        return float(str(s).strip())
-    except ValueError:
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -85,65 +77,9 @@ st.sidebar.success(
 # ---------------------------------------------------------------------------
 # Raman shift trimming and peaks per serotype
 # ---------------------------------------------------------------------------
-st.sidebar.markdown("#### Raman Shift window")
-rs_col1, rs_col2 = st.sidebar.columns(2)
-with rs_col1:
-    rs_min_str = st.text_input(
-        "Min (cm⁻¹)",
-        value="",
-        placeholder="e.g. 400",
-        key="raman_shift_min",
-        help="Leave blank for no lower limit.",
-    )
-with rs_col2:
-    rs_max_str = st.text_input(
-        "Max (cm⁻¹)",
-        value="",
-        placeholder="e.g. 1800",
-        key="raman_shift_max",
-        help="Leave blank for no upper limit.",
-    )
-
-_serotypes_from_wide = (
-    sorted(wide_df["serotype"].dropna().unique().astype(str).tolist())
-    if wide_df is not None and not wide_df.empty and "serotype" in wide_df.columns
-    else []
+min_shift, max_shift, n_peaks, n_peaks_by_serotype = render_raman_and_peaks_sidebar(
+    st.sidebar, wide_df
 )
-_serotypes_from_wide = [s for s in _serotypes_from_wide if s and s != "nan"]
-
-if _serotypes_from_wide:
-    n_peaks = 6
-    st.sidebar.markdown("#### Peaks per serotype")
-    n_peaks_by_serotype = {}
-    for i, _s in enumerate(_serotypes_from_wide):
-        if i % 2 == 0:
-            peak_cols = st.sidebar.columns(2)
-        with peak_cols[i % 2]:
-            n_peaks_by_serotype[_s] = int(
-                st.number_input(
-                    f"Peaks ({_s})",
-                    min_value=1,
-                    max_value=10,
-                    value=6,
-                    step=1,
-                    key=f"n_peaks_{_s}",
-                    help=f"Peaks for {_s}",
-                )
-            )
-else:
-    n_peaks_by_serotype = None
-    n_peaks = st.sidebar.number_input(
-        "Number of Peaks",
-        min_value=1,
-        max_value=10,
-        value=6,
-        step=1,
-        key="n_peaks",
-        help="Number of peaks (no serotype column in data).",
-    )
-
-min_shift = _parse_raman_shift_bound(rs_min_str)
-max_shift = _parse_raman_shift_bound(rs_max_str)
 wide_df = trim_raman_shift(wide_df, min_shift=min_shift, max_shift=max_shift)
 tidy_df = wide_to_tidy(wide_df)
 tidy_df = preprocess_metadata(tidy_df)
@@ -179,7 +115,6 @@ filter_columns = get_filterable_columns(tidy_df)
 render_main_filter_header(st.sidebar, filter_columns)
 st.sidebar.markdown(_TITLE_TO_FILTER_DIVIDER, unsafe_allow_html=True)
 
-MAIN_FILTER_COUNT = 5  # Serotype, Concentration Group, Date, Sensor ID, Test ID
 main_cols = filter_columns[:MAIN_FILTER_COUNT]
 more_cols = filter_columns[MAIN_FILTER_COUNT:]
 
@@ -245,17 +180,17 @@ if filtered.empty:
     tab_phase2,
 ) = st.tabs(
     [
-        "📉 Spectral Viewer",
-        "🔍 Peak Detection Diagnostics",
-        "📊 Feature Analysis",
-        "🔬 Sensor Assessment & Report",
-        "📈 Model-Based Sensor Consistency",
-        "🧪 Phase 2: Serotyping & Classification",
+        "Spectra Viewer",
+        "Peak Diagnostics",
+        "Feature Analysis",
+        "Sensor Assessment",
+        "Model Consistency",
+        "Serotype Classification",
     ]
 )
 
 with tab_spectra:
-    spectral_viewer.render(filtered)
+    spectra_viewer.render(filtered)
 
 with tab_peak_diag:
     peak_diagnostics.render(filtered_features, wide_df)
@@ -270,4 +205,4 @@ with tab_model_consistency:
     model_consistency.render(filtered_features)
 
 with tab_phase2:
-    phase2_classification.render(filtered_features)
+    serotype_classification.render(filtered_features)

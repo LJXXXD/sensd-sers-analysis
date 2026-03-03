@@ -1,22 +1,22 @@
 """
-Spectral Viewer tab — plot SERS spectra with hue, style, and variance options.
+Spectra Viewer tab — plot SERS spectra with hue, style, and variance options.
 """
 
 import streamlit as st
+
+from components.shared_ui import render_figure_stretch
+from theme import (
+    DEFAULT_FIGSIZE_WIDTH,
+    PLOT_HEIGHT_DEFAULT,
+    PLOT_HEIGHT_MAX,
+    PLOT_HEIGHT_MIN,
+)
 
 from sensd_sers_analysis.processing import (
     get_plot_hue_columns,
     pick_preferred_column,
 )
-from sensd_sers_analysis.visualization import plot_spectra
-
-
-VARIANCE_OPTIONS = [
-    ("Individual Lines", False, "sd"),
-    ("±1 SD", True, "sd"),
-    ("±1 SE", True, "se"),
-    ("95% CI", True, ("ci", 95)),
-]
+from sensd_sers_analysis.visualization import VARIANCE_OPTIONS, plot_spectra
 
 
 def render(filtered):
@@ -55,9 +55,9 @@ def render(filtered):
     with c_h:
         plot_height = st.slider(
             "Height (in)",
-            min_value=4,
-            max_value=12,
-            value=6,
+            min_value=PLOT_HEIGHT_MIN,
+            max_value=PLOT_HEIGHT_MAX,
+            value=PLOT_HEIGHT_DEFAULT,
             step=1,
             key="plot_height_slider",
         )
@@ -75,9 +75,9 @@ def render(filtered):
             style=style_col,
             show_variance=show_variance,
             errorbar=errorbar,
-            figsize=(14, plot_height),
+            figsize=(DEFAULT_FIGSIZE_WIDTH, plot_height),
         )
-        st.pyplot(fig, width="stretch")
+        render_figure_stretch(fig)
     except ValueError as e:
         st.error(f"Plot error: {e}")
         st.caption(

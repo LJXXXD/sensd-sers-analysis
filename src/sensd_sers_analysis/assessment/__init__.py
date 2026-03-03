@@ -21,6 +21,7 @@ from .model_consistency import (
     get_zero_cfu_baseline,
 )
 from .consistency import (
+    ASSESSMENT_GROUP_COLS,
     coefficient_of_variation,
     compute_consistency_metrics,
     get_consistency_summary_table,
@@ -37,6 +38,7 @@ from .outliers import (
 )
 
 __all__ = [
+    "ASSESSMENT_GROUP_COLS",
     "CleanedRegressionResult",
     "ConcentrationRegressionResult",
     "add_sequence_column",

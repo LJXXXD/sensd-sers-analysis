@@ -6,13 +6,20 @@ extracted features across replicates. Supports raw vs. outlier-filtered metrics.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
 
 from sensd_sers_analysis.assessment.outliers import filter_outliers
 from sensd_sers_analysis.processing import BASIC_FEATURE_COLUMNS
+
+# Default columns for grouping in sensor assessment consistency tables.
+ASSESSMENT_GROUP_COLS: List[str] = [
+    "sensor_id",
+    "serotype",
+    "concentration_group",
+]
 
 
 @dataclass

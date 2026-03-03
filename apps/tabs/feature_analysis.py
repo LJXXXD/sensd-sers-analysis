@@ -4,14 +4,21 @@ Feature Analysis tab — feature distribution plots.
 
 import streamlit as st
 
+from components.shared_ui import render_figure_stretch
+from theme import (
+    DEFAULT_FIGSIZE_WIDTH,
+    PLOT_HEIGHT_DEFAULT,
+    PLOT_HEIGHT_MAX,
+    PLOT_HEIGHT_MIN,
+)
+
 from sensd_sers_analysis.processing import (
     BASIC_FEATURE_COLUMNS,
     get_feature_metadata_columns,
     pick_preferred_column,
 )
+from sensd_sers_analysis.processing import get_available_feature_columns
 from sensd_sers_analysis.visualization import plot_feature_distribution
-
-from utils import get_available_feature_columns
 
 
 def render(filtered_features):
@@ -65,13 +72,24 @@ def render(filtered_features):
             index=hue_opts.index(hue_default_s),
             key="stats_hue",
         )
-    plot_type = st.radio(
-        "Plot type",
-        options=["box", "violin"],
-        index=0,
-        horizontal=True,
-        key="stats_plot_type",
-    )
+    col_plot_type, col_height = st.columns(2)
+    with col_plot_type:
+        plot_type = st.radio(
+            "Plot type",
+            options=["box", "violin"],
+            index=0,
+            horizontal=True,
+            key="stats_plot_type",
+        )
+    with col_height:
+        plot_height = st.slider(
+            "Height (in)",
+            min_value=PLOT_HEIGHT_MIN,
+            max_value=PLOT_HEIGHT_MAX,
+            value=PLOT_HEIGHT_DEFAULT,
+            step=1,
+            key="stats_plot_height",
+        )
 
     if filtered_features.empty:
         st.warning("No samples match the selected filters for feature analysis.")
@@ -94,7 +112,8 @@ def render(filtered_features):
             x=x_val,
             hue=hue_val,
             plot_type=plot_type,
+            figsize=(DEFAULT_FIGSIZE_WIDTH, plot_height),
         )
-        st.pyplot(fig_stats, width="stretch")
+        render_figure_stretch(fig_stats)
     except ValueError as e:
         st.error(f"Plot error: {e}")

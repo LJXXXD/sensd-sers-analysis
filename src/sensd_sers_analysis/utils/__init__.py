@@ -11,10 +11,12 @@ from .natural_sort import (
     natural_sort_key,
     order_concentration_labels,
 )
+from .parsing import parse_raman_shift_bound
 
 __all__ = [
     "format_column_label",
     "natural_sort",
     "natural_sort_key",
     "order_concentration_labels",
+    "parse_raman_shift_bound",
 ]

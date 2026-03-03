@@ -4,7 +4,14 @@ Sensor Assessment & Report tab — consistency, degradation, batch stability, PD
 
 import streamlit as st
 
+from components.shared_ui import (
+    render_dataframe_stretch,
+    render_figure_stretch,
+    render_pdf_download_section,
+)
+
 from sensd_sers_analysis.assessment import (
+    ASSESSMENT_GROUP_COLS,
     compute_batch_variance,
     compute_degradation,
     get_consistency_summary_table,
@@ -13,14 +20,14 @@ from sensd_sers_analysis.assessment import (
 )
 from sensd_sers_analysis.report import build_sensor_assessment_pdf
 from sensd_sers_analysis.utils import order_concentration_labels
+from sensd_sers_analysis.processing import (
+    filter_by_selections,
+    get_available_feature_columns,
+)
 from sensd_sers_analysis.visualization import (
     plot_batch_boxplot,
     plot_degradation_trend,
 )
-
-from utils import get_available_feature_columns
-
-ASSESSMENT_GROUP_COLS = ["sensor_id", "serotype", "concentration_group"]
 
 
 def render(filtered_features):
@@ -93,13 +100,13 @@ def render(filtered_features):
     _sero_valid = assess_serotype and assess_serotype != "(none)"
     _conc_valid = assess_concentration and assess_concentration != "(none)"
     if _sero_valid and _conc_valid:
-        assessment_df = filtered_features[
-            (filtered_features["serotype"].astype(str) == assess_serotype)
-            & (
-                filtered_features["concentration_group"].astype(str)
-                == assess_concentration
-            )
-        ].copy()
+        assessment_df = filter_by_selections(
+            filtered_features,
+            {
+                "serotype": assess_serotype,
+                "concentration_group": assess_concentration,
+            },
+        )
     else:
         assessment_df = filtered_features.iloc[0:0].copy()
 
@@ -136,7 +143,7 @@ def render(filtered_features):
             outlier_method=outlier_method,
         )
         if not consistency_tbl.empty:
-            st.dataframe(consistency_tbl, width="stretch", hide_index=True)
+            render_dataframe_stretch(consistency_tbl)
     except ValueError as e:
         st.error(f"Consistency error: {e}")
 
@@ -159,7 +166,7 @@ def render(filtered_features):
                 group_cols=["sensor_id"] if "sensor_id" in df_deg.columns else None,
             )
             if not deg_tbl.empty:
-                st.dataframe(deg_tbl, width="stretch", hide_index=True)
+                render_dataframe_stretch(deg_tbl)
 
             fig_deg = plot_degradation_trend(
                 df_deg,
@@ -167,7 +174,7 @@ def render(filtered_features):
                 "test_ordinal",
                 group_col="sensor_id" if "sensor_id" in df_deg.columns else None,
             )
-            st.pyplot(fig_deg, width="stretch")
+            render_figure_stretch(fig_deg)
     except ValueError as e:
         st.error(f"Degradation error: {e}")
 
@@ -197,10 +204,10 @@ def render(filtered_features):
                 batch_tbl, z_threshold=2.0, sensor_col="sensor_id"
             )
 
-            st.dataframe(batch_tbl, width="stretch", hide_index=True)
+            render_dataframe_stretch(batch_tbl)
             if not deviating.empty:
                 st.markdown("**Deviating sensors (|z| > 2)**")
-                st.dataframe(deviating, width="stretch", hide_index=True)
+                render_dataframe_stretch(deviating)
 
             fig_batch = plot_batch_boxplot(
                 assessment_df,
@@ -208,39 +215,35 @@ def render(filtered_features):
                 sensor_col="sensor_id",
                 group_col=None,
             )
-            st.pyplot(fig_batch, width="stretch")
+            render_figure_stretch(fig_batch)
         except ValueError as e:
             st.error(f"Batch variance error: {e}")
     else:
         st.info("No sensor_id column; batch analysis requires sensor identifiers.")
 
     st.markdown("---")
-    st.markdown("#### PDF report")
-    if st.button("Generate report", key="pdf_report_btn"):
-        try:
-            _generate_assessment_pdf(
-                assessment_df,
-                assess_feature,
-                assess_serotype,
-                assess_concentration,
-                consistency_group_cols,
-                outlier_method,
-            )
-            st.success("Report generated. Click Download below.")
-        except Exception as e:
-            st.error(f"Report generation failed: {e}")
+    st.markdown("#### PDF Report")
 
-    if "assessment_pdf" in st.session_state:
-        st.download_button(
-            label="Download PDF",
-            data=st.session_state["assessment_pdf"],
-            file_name="sensor_assessment_report.pdf",
-            mime="application/pdf",
-            key="pdf_download",
+    def _generate_assessment_pdf_bytes() -> bytes:
+        return _build_assessment_pdf(
+            assessment_df,
+            assess_feature,
+            assess_serotype,
+            assess_concentration,
+            consistency_group_cols,
+            outlier_method,
         )
 
+    render_pdf_download_section(
+        session_key="assessment_pdf",
+        filename="sensor_assessment_report.pdf",
+        generate_callback=_generate_assessment_pdf_bytes,
+        button_label="Generate report",
+        download_label="Download PDF",
+    )
 
-def _generate_assessment_pdf(
+
+def _build_assessment_pdf(
     assessment_df,
     assess_feature,
     assess_serotype,
@@ -316,4 +319,4 @@ def _generate_assessment_pdf(
             f"SERS Sensor Assessment — {assess_serotype}, {assess_concentration}"
         ),
     )
-    st.session_state["assessment_pdf"] = pdf_bytes
+    return pdf_bytes

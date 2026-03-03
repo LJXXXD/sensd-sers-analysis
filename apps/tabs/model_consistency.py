@@ -4,6 +4,13 @@ Model-Based Sensor Consistency tab — regression QA, global assessment, Phase 1
 
 import streamlit as st
 
+from components.shared_ui import (
+    render_dataframe_stretch,
+    render_figure_stretch,
+    render_metrics_row,
+    render_pdf_download_section,
+)
+
 from sensd_sers_analysis.assessment import (
     fit_concentration_regression_cleaned,
     get_global_model_consistency_qa,
@@ -11,13 +18,15 @@ from sensd_sers_analysis.assessment import (
 )
 from sensd_sers_analysis.processing import DEFAULT_GLOBAL_QA_FEATURES
 from sensd_sers_analysis.report import build_phase1_qa_pdf
+from sensd_sers_analysis.processing import (
+    filter_by_selections,
+    get_available_feature_columns,
+)
 from sensd_sers_analysis.visualization import (
     plot_concentration_regression,
     plot_macro_batch_regression,
     plot_multi_sensor_regression,
 )
-
-from utils import get_available_feature_columns
 
 
 def render(filtered_features):
@@ -89,10 +98,10 @@ def render(filtered_features):
     _mc_sensor_ok = model_sensor and model_sensor != "(none)"
     _mc_serotype_ok = model_serotype and model_serotype != "(none)"
     if _mc_sensor_ok and _mc_serotype_ok:
-        model_df = filtered_features[
-            (filtered_features["sensor_id"].astype(str) == model_sensor)
-            & (filtered_features["serotype"].astype(str) == model_serotype)
-        ].copy()
+        model_df = filter_by_selections(
+            filtered_features,
+            {"sensor_id": model_sensor, "serotype": model_serotype},
+        )
     else:
         model_df = filtered_features.iloc[0:0].copy()
 
@@ -108,15 +117,14 @@ def render(filtered_features):
         zero_baseline = get_zero_cfu_baseline(model_df, model_feature)
 
         if cres is not None:
-            m1, m2, m3, m4 = st.columns(4)
-            with m1:
-                st.metric("Raw RMSE", f"{cres.raw_rmse:.4f}")
-            with m2:
-                st.metric("Raw R²", f"{cres.raw_r2:.4f}")
-            with m3:
-                st.metric("Clean RMSE", f"{cres.clean_rmse:.4f}")
-            with m4:
-                st.metric("Clean R²", f"{cres.clean_r2:.4f}")
+            render_metrics_row(
+                [
+                    ("Raw RMSE", f"{cres.raw_rmse:.4f}"),
+                    ("Raw R²", f"{cres.raw_r2:.4f}"),
+                    ("Clean RMSE", f"{cres.clean_rmse:.4f}"),
+                    ("Clean R²", f"{cres.clean_r2:.4f}"),
+                ]
+            )
             if cres.n_outliers > 0:
                 st.caption(f"Outliers dropped: {cres.n_outliers} (IQR on |residuals|)")
         else:
@@ -135,7 +143,7 @@ def render(filtered_features):
                 outlier_mask=cres.outlier_mask if cres else None,
                 title=f"{model_sensor} — {model_serotype}",
             )
-            st.pyplot(fig_mc, width="stretch")
+            render_figure_stretch(fig_mc)
         except ValueError as e:
             st.error(f"Plot error: {e}")
 
@@ -162,10 +170,8 @@ def render(filtered_features):
         feature_cols=global_qa_selected,
     )
     if not global_qa_tbl.empty:
-        st.dataframe(
+        render_dataframe_stretch(
             global_qa_tbl,
-            width="stretch",
-            hide_index=True,
             column_config={
                 "outliers": st.column_config.NumberColumn("Outliers"),
                 "raw_rmse": st.column_config.NumberColumn("Raw RMSE", format="%.4f"),
@@ -230,7 +236,7 @@ def render(filtered_features):
                     feat,
                     excluded_sensors=excluded,
                 )
-                st.pyplot(fig_ov, width="stretch")
+                render_figure_stretch(fig_ov)
                 overlay_items.append({"fig": fig_ov, "serotype": sero, "feature": feat})
             except ValueError as e:
                 st.error(f"Overlay ({sero}, {feat}): {e}")
@@ -243,7 +249,7 @@ def render(filtered_features):
                     feat,
                     pass_sens,
                 )
-                st.pyplot(fig_macro, width="stretch")
+                render_figure_stretch(fig_macro)
                 macro_items.append(
                     {
                         "fig": fig_macro,
@@ -253,59 +259,36 @@ def render(filtered_features):
                     }
                 )
                 if macro_res is not None:
-                    ma1, ma2, ma3, ma4, ma5 = st.columns(5)
-                    with ma1:
-                        st.metric(
-                            "Raw Batch RMSE",
-                            f"{macro_res.raw_batch_rmse:.4f}",
-                        )
-                    with ma2:
-                        st.metric(
-                            "Raw Batch R²",
-                            f"{macro_res.raw_batch_r2:.4f}",
-                        )
-                    with ma3:
-                        st.metric(
-                            "Clean Batch RMSE",
-                            f"{macro_res.clean_batch_rmse:.4f}",
-                        )
-                    with ma4:
-                        st.metric(
-                            "Clean Batch R²",
-                            f"{macro_res.clean_batch_r2:.4f}",
-                        )
-                    with ma5:
-                        st.metric(
-                            "Macro Outliers",
-                            f"{macro_res.n_macro_outliers}",
-                        )
+                    render_metrics_row(
+                        [
+                            ("Raw Batch RMSE", f"{macro_res.raw_batch_rmse:.4f}"),
+                            ("Raw Batch R²", f"{macro_res.raw_batch_r2:.4f}"),
+                            ("Clean Batch RMSE", f"{macro_res.clean_batch_rmse:.4f}"),
+                            ("Clean Batch R²", f"{macro_res.clean_batch_r2:.4f}"),
+                            ("Macro Outliers", f"{macro_res.n_macro_outliers}"),
+                        ]
+                    )
             except ValueError as e:
                 st.error(f"Macro ({sero}, {feat}): {e}")
             st.markdown("---")
 
     if not overlay_serotypes or not overlay_features:
         st.info("Select at least one serotype and one feature to generate plots.")
+        st.markdown("---")
+    st.markdown("#### PDF Report")
 
-    st.markdown("---")
-    st.markdown("#### Phase 1 QA Report")
-    if st.button("Generate Phase 1 QA Report", key="phase1_qa_pdf_btn"):
-        try:
-            pdf_bytes = build_phase1_qa_pdf(
-                global_qa_table=global_qa_tbl if not global_qa_tbl.empty else None,
-                overlay_items=overlay_items,
-                macro_items=macro_items,
-                report_title="Sensor Consistency & Quality Assurance Report",
-            )
-            st.session_state["phase1_qa_pdf"] = pdf_bytes
-            st.success("Phase 1 QA report generated. Click Download below.")
-        except Exception as e:
-            st.error(f"Phase 1 QA report generation failed: {e}")
-
-    if "phase1_qa_pdf" in st.session_state:
-        st.download_button(
-            label="Download Phase 1 QA PDF",
-            data=st.session_state["phase1_qa_pdf"],
-            file_name="phase1_qa_report.pdf",
-            mime="application/pdf",
-            key="phase1_qa_pdf_download",
+    def _generate_phase1_pdf_bytes() -> bytes:
+        return build_phase1_qa_pdf(
+            global_qa_table=global_qa_tbl if not global_qa_tbl.empty else None,
+            overlay_items=overlay_items,
+            macro_items=macro_items,
+            report_title="Sensor Consistency & Quality Assurance Report",
         )
+
+    render_pdf_download_section(
+        session_key="phase1_qa_pdf",
+        filename="model_consistency_report.pdf",
+        generate_callback=_generate_phase1_pdf_bytes,
+        button_label="Generate Model Consistency Report",
+        download_label="Download Model Consistency Report",
+    )

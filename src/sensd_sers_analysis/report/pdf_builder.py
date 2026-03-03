@@ -40,6 +40,10 @@ def _df_to_table_data(
             if pd.notna(x) and isinstance(x, (int, float))
             else ""
         )
+    # Convert categorical columns to object so fillna("—") does not raise;
+    # Categorical does not allow values outside its categories
+    for c in df_str.select_dtypes(include=["category"]).columns:
+        df_str[c] = df_str[c].astype(object)
     df_str = df_str.fillna("—")
     headers = [str(c)[:20] for c in df_str.columns]
     rows = [headers] + df_str.astype(str).values.tolist()

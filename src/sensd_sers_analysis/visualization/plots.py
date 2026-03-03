@@ -21,6 +21,14 @@ FILENAME_COL = "filename"
 SIGNAL_INDEX_COL = "signal_index"
 DEFAULT_NUMERIC_CMAP = "viridis"
 
+# Variance display options for spectral plots: (label, show_variance, errorbar).
+VARIANCE_OPTIONS: list[tuple[str, bool, str | tuple[str, float]]] = [
+    ("Individual Lines", False, "sd"),
+    ("±1 SD", True, "sd"),
+    ("±1 SE", True, "se"),
+    ("95% CI", True, ("ci", 95)),
+]
+
 
 def plot_spectra(
     df: pd.DataFrame,
