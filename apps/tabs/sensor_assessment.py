@@ -2,6 +2,8 @@
 Sensor Assessment & Report tab — consistency, degradation, batch stability, PDF.
 """
 
+import logging
+
 import streamlit as st
 
 from components.shared_ui import (
@@ -28,6 +30,8 @@ from sensd_sers_analysis.visualization import (
     plot_batch_boxplot,
     plot_degradation_trend,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def render(filtered_features):
@@ -145,6 +149,7 @@ def render(filtered_features):
         if not consistency_tbl.empty:
             render_dataframe_stretch(consistency_tbl)
     except ValueError as e:
+        logger.warning("Consistency error: %s", e)
         st.error(f"Consistency error: {e}")
 
     st.markdown("##### Degradation trend")
@@ -176,6 +181,7 @@ def render(filtered_features):
             )
             render_figure_stretch(fig_deg)
     except ValueError as e:
+        logger.warning("Degradation error: %s", e)
         st.error(f"Degradation error: {e}")
 
     st.markdown("---")
@@ -217,6 +223,7 @@ def render(filtered_features):
             )
             render_figure_stretch(fig_batch)
         except ValueError as e:
+            logger.warning("Batch variance error: %s", e)
             st.error(f"Batch variance error: {e}")
     else:
         st.info("No sensor_id column; batch analysis requires sensor identifiers.")
@@ -252,6 +259,12 @@ def _build_assessment_pdf(
     outlier_method,
 ):
     """Build and store sensor assessment PDF in session state."""
+    logger.info(
+        "Building sensor assessment PDF: serotype=%s, conc=%s, feature=%s",
+        assess_serotype,
+        assess_concentration,
+        assess_feature,
+    )
     consistency_summary = get_consistency_summary_table(
         assessment_df,
         group_cols=consistency_group_cols,

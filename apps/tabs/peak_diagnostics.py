@@ -2,11 +2,15 @@
 Peak Detection Diagnostics tab — serotype-specific peak verification.
 """
 
+import logging
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from components.shared_ui import render_dataframe_stretch, render_figure_stretch
+from sensd_sers_analysis.data import get_raman_shift, get_signals_matrix
+from sensd_sers_analysis.utils import order_concentration_labels
 from theme import (
     DEFAULT_FIGSIZE_ANCHOR,
     DEFAULT_FIGSIZE_WIDE,
@@ -17,8 +21,7 @@ from theme import (
     AXVLINE_ALPHA,
 )
 
-from sensd_sers_analysis.data import get_raman_shift, get_signals_matrix
-from sensd_sers_analysis.utils import order_concentration_labels
+logger = logging.getLogger(__name__)
 
 
 def render(filtered_features, wide_df):
@@ -30,6 +33,9 @@ def render(filtered_features, wide_df):
     raman_x = st.session_state.get("raman_x", np.array([]))
 
     if not peak_by_sero or raman_x.size == 0:
+        logger.info(
+            "Peak diagnostics skipped: no peak data (peak_by_sero or raman_x empty)"
+        )
         st.info(
             "Peak detection requires loaded data with Raman intensity columns. "
             "Adjust **Peaks per serotype** in the sidebar and ensure high-concentration "

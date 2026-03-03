@@ -2,9 +2,18 @@
 Feature Analysis tab — feature distribution plots.
 """
 
+import logging
+
 import streamlit as st
 
 from components.shared_ui import render_figure_stretch
+from sensd_sers_analysis.processing import (
+    BASIC_FEATURE_COLUMNS,
+    get_available_feature_columns,
+    get_feature_metadata_columns,
+    pick_preferred_column,
+)
+from sensd_sers_analysis.visualization import plot_feature_distribution
 from theme import (
     DEFAULT_FIGSIZE_WIDTH,
     PLOT_HEIGHT_DEFAULT,
@@ -12,13 +21,7 @@ from theme import (
     PLOT_HEIGHT_MIN,
 )
 
-from sensd_sers_analysis.processing import (
-    BASIC_FEATURE_COLUMNS,
-    get_feature_metadata_columns,
-    pick_preferred_column,
-)
-from sensd_sers_analysis.processing import get_available_feature_columns
-from sensd_sers_analysis.visualization import plot_feature_distribution
+logger = logging.getLogger(__name__)
 
 
 def render(filtered_features):
@@ -29,6 +32,7 @@ def render(filtered_features):
         if c in filtered_features.columns
     )
     if all_feat_nan:
+        logger.warning("All extracted features are NaN")
         st.warning(
             "All extracted features are NaN. This usually means the loaded data "
             "lacks Raman intensity columns (rs_*) or they contain no valid "
@@ -116,4 +120,5 @@ def render(filtered_features):
         )
         render_figure_stretch(fig_stats)
     except ValueError as e:
+        logger.warning("Feature distribution plot error: %s", e)
         st.error(f"Plot error: {e}")

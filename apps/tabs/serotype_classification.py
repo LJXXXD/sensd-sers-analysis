@@ -2,6 +2,8 @@
 Serotype Classification tab — PCA, ML classification, PDF report.
 """
 
+import logging
+
 import streamlit as st
 
 from components.shared_ui import (
@@ -23,6 +25,8 @@ from sensd_sers_analysis.processing import (
     get_peak_height_columns,
 )
 from sensd_sers_analysis.report import build_phase2_classification_pdf
+
+logger = logging.getLogger(__name__)
 
 
 def render(filtered_features):
@@ -96,6 +100,7 @@ def render(filtered_features):
         fig_pca = plot_pca_classification(phase2_clean)
         render_figure_stretch(fig_pca)
     except (ValueError, KeyError) as e:
+        logger.warning("PCA plot error: %s", e)
         st.error(f"PCA plot error: {e}")
 
     st.markdown("---")
@@ -163,4 +168,5 @@ def render(filtered_features):
             download_label="Download Serotype Classification Report",
         )
     except ValueError as e:
+        logger.warning("Classification error: %s", e)
         st.error(f"Classification error: {e}")

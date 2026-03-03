@@ -2,6 +2,7 @@
 Data loading utilities for SERS Data Explorer.
 """
 
+import logging
 import tempfile
 import uuid
 from pathlib import Path
@@ -10,6 +11,8 @@ import pandas as pd
 import streamlit as st
 
 from sensd_sers_analysis.data import load_sers_data_as_wide_and_tidy
+
+logger = logging.getLogger(__name__)
 
 # Session-state key controlling file_uploader identity. Incrementing it forces
 # the uploader to remount as a new widget, clearing its files.
@@ -24,6 +27,7 @@ def clear_app_data() -> None:
     so filter states, file uploader state, and UI flags are wiped. Sets a new
     uploader reset key so the file_uploader remounts with no files.
     """
+    logger.info("Clearing app data (Reload Data clicked)")
     st.cache_data.clear()
     for key in list(st.session_state.keys()):
         del st.session_state[key]
@@ -45,10 +49,17 @@ def load_from_uploaded(
         Tuple of (wide_df, tidy_df). Empty DataFrames if loading fails.
     """
     if not _files_data:
+        logger.warning("load_from_uploaded called with no files")
         return pd.DataFrame(), pd.DataFrame()
+    logger.info(
+        "Loading %d uploaded file(s): %s", len(_files_data), [n for n, _ in _files_data]
+    )
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         paths = [str(tmp_path / name) for name, _ in _files_data]
         for (name, content), p in zip(_files_data, paths):
             Path(p).write_bytes(content)
-        return load_sers_data_as_wide_and_tidy(paths)
+        wide, tidy = load_sers_data_as_wide_and_tidy(paths)
+        if wide.empty or tidy.empty:
+            logger.warning("load_sers_data_as_wide_and_tidy returned empty DataFrames")
+        return wide, tidy

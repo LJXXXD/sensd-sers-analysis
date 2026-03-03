@@ -2,6 +2,7 @@
 Shared UI components for SERS Data Explorer.
 """
 
+import logging
 from collections.abc import Callable
 
 import pandas as pd
@@ -12,6 +13,8 @@ from theme import (
     FIGURE_WIDTH,
     HIDE_INDEX,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def render_pdf_download_section(
@@ -72,8 +75,10 @@ def render_pdf_download_section(
             try:
                 pdf_bytes = generate_callback()
                 st.session_state[session_key] = pdf_bytes
+                logger.info("PDF report generated successfully: %s", session_key)
                 st.success("Report generated. Click Download below.")
             except Exception as e:
+                logger.error("Report generation failed (%s): %s", session_key, e)
                 st.session_state.pop(session_key, None)
                 st.error(f"Report generation failed: {e}")
 

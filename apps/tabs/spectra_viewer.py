@@ -2,9 +2,13 @@
 Spectra Viewer tab — plot SERS spectra with hue, style, and variance options.
 """
 
+import logging
+
 import streamlit as st
 
 from components.shared_ui import render_figure_stretch
+from sensd_sers_analysis.processing import get_plot_hue_columns, pick_preferred_column
+from sensd_sers_analysis.visualization import VARIANCE_OPTIONS, plot_spectra
 from theme import (
     DEFAULT_FIGSIZE_WIDTH,
     PLOT_HEIGHT_DEFAULT,
@@ -12,11 +16,7 @@ from theme import (
     PLOT_HEIGHT_MIN,
 )
 
-from sensd_sers_analysis.processing import (
-    get_plot_hue_columns,
-    pick_preferred_column,
-)
-from sensd_sers_analysis.visualization import VARIANCE_OPTIONS, plot_spectra
+logger = logging.getLogger(__name__)
 
 
 def render(filtered):
@@ -79,6 +79,7 @@ def render(filtered):
         )
         render_figure_stretch(fig)
     except ValueError as e:
+        logger.warning("Spectra plot error: %s", e)
         st.error(f"Plot error: {e}")
         st.caption(
             "Ensure filtered data has required columns: raman_shift, intensity, "

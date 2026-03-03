@@ -2,6 +2,8 @@
 Model-Based Sensor Consistency tab — regression QA, global assessment, Phase 1 PDF.
 """
 
+import logging
+
 import streamlit as st
 
 from components.shared_ui import (
@@ -27,6 +29,8 @@ from sensd_sers_analysis.visualization import (
     plot_macro_batch_regression,
     plot_multi_sensor_regression,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def render(filtered_features):
@@ -145,6 +149,7 @@ def render(filtered_features):
             )
             render_figure_stretch(fig_mc)
         except ValueError as e:
+            logger.warning("Model consistency plot error: %s", e)
             st.error(f"Plot error: {e}")
 
     st.markdown("---")
@@ -239,6 +244,7 @@ def render(filtered_features):
                 render_figure_stretch(fig_ov)
                 overlay_items.append({"fig": fig_ov, "serotype": sero, "feature": feat})
             except ValueError as e:
+                logger.warning("Overlay plot error (%s, %s): %s", sero, feat, e)
                 st.error(f"Overlay ({sero}, {feat}): {e}")
 
             st.markdown("**Macro batch regression**")
@@ -269,6 +275,9 @@ def render(filtered_features):
                         ]
                     )
             except ValueError as e:
+                logger.warning(
+                    "Macro batch regression error (%s, %s): %s", sero, feat, e
+                )
                 st.error(f"Macro ({sero}, {feat}): {e}")
             st.markdown("---")
 

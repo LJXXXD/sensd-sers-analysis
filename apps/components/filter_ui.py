@@ -2,15 +2,18 @@
 Filter UI components for SERS Data Explorer.
 """
 
+import logging
+
 import streamlit as st
 
 from sensd_sers_analysis.utils import format_column_label
-
 from theme import (
     FILTER_DIVIDER_HTML,
     SECTION_DIVIDER_HTML,
     TITLE_TO_FILTER_DIVIDER_HTML,
 )
+
+logger = logging.getLogger(__name__)
 
 MAIN_FILTER_COUNT = 5  # Serotype, Concentration Group, Date, Sensor ID, Test ID
 
@@ -98,6 +101,7 @@ def render_main_filter_header(container, filter_columns: list[str]) -> None:
             key="reset_all_filters",
             help="Reset all filter selections and Exclude toggles.",
         ):
+            logger.info("Reset all filters for %d columns", len(filter_columns))
             for col in filter_columns:
                 label = format_column_label(col)
                 st.session_state[label] = []
