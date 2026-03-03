@@ -77,6 +77,40 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Sidebar layout: rigid filter elements (no wrap, reflow), consistent button widths
+st.markdown(
+    """
+<style>
+  /* Filter titles and controls: no text wrap, reflow when narrow */
+  [data-testid="stSidebar"] .filters-section [data-testid="stMarkdown"] h3 {
+    white-space: nowrap;
+  }
+  [data-testid="stSidebar"] .filters-section [data-testid="stHorizontalBlock"] {
+    flex-wrap: wrap;
+  }
+  /* Reset and Reset all: same min-width */
+  [data-testid="stSidebar"] .filters-section button {
+    min-width: 5.5rem;
+    width: fit-content;
+  }
+  /* Filters section: same font size as Data Loading (h1) */
+  [data-testid="stSidebar"] .filters-section .filters-header h1 {
+    font-size: 1.5rem;
+    margin-bottom: 0;
+  }
+  /* Filters and Reset all: same font size as Data Loading */
+  [data-testid="stSidebar"] .filters-section .filters-header h1 {
+    font-size: 1.5rem;
+    margin-bottom: 0;
+  }
+  [data-testid="stSidebar"] .filters-section [data-testid="column"]:has(.filters-header) + [data-testid="column"] button {
+    font-size: 1.5rem !important;
+  }
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
 # ---------------------------------------------------------------------------
 # Filter UI (controller uses src.processing.filters)
 # ---------------------------------------------------------------------------
@@ -214,28 +248,31 @@ if tidy_df is None or tidy_df.empty:
 tidy_df = preprocess_metadata(tidy_df)
 wide_df = preprocess_metadata(wide_df)
 
+st.sidebar.success(
+    f"Loaded **{len(uploaded)}** files, **{len(wide_df)}** samples ({len(tidy_df)} tidy rows)."
+)
+
 # ---------------------------------------------------------------------------
 # Raman Shift trimming (apply before feature extraction and plotting)
 # ---------------------------------------------------------------------------
 st.sidebar.markdown("#### Raman Shift window")
-st.sidebar.caption(
-    "Trim spectra to a uniform window. Leave blank for no limit. "
-    "Common default: 400–1800 cm⁻¹."
-)
-rs_min_str = st.sidebar.text_input(
-    "Min Raman Shift (cm⁻¹)",
-    value="",
-    placeholder="e.g. 400",
-    key="raman_shift_min",
-    help="Leave blank for no lower limit.",
-)
-rs_max_str = st.sidebar.text_input(
-    "Max Raman Shift (cm⁻¹)",
-    value="",
-    placeholder="e.g. 1800",
-    key="raman_shift_max",
-    help="Leave blank for no upper limit.",
-)
+rs_col1, rs_col2 = st.sidebar.columns(2)
+with rs_col1:
+    rs_min_str = st.text_input(
+        "Min (cm⁻¹)",
+        value="",
+        placeholder="e.g. 400",
+        key="raman_shift_min",
+        help="Leave blank for no lower limit.",
+    )
+with rs_col2:
+    rs_max_str = st.text_input(
+        "Max (cm⁻¹)",
+        value="",
+        placeholder="e.g. 1800",
+        key="raman_shift_max",
+        help="Leave blank for no upper limit.",
+    )
 # Per-serotype number of peaks (sidebar)
 _serotypes_from_wide = (
     sorted(wide_df["serotype"].dropna().unique().astype(str).tolist())
@@ -247,23 +284,24 @@ _serotypes_from_wide = [s for s in _serotypes_from_wide if s and s != "nan"]
 if _serotypes_from_wide:
     n_peaks = 6
     st.sidebar.markdown("#### Peaks per serotype")
-    st.sidebar.caption(
-        "Number of peaks to extract for each serotype. Different serovars "
-        "may have different numbers of prominent peaks."
-    )
     n_peaks_by_serotype = {}
-    for _s in _serotypes_from_wide:
-        n_peaks_by_serotype[_s] = int(
-            st.sidebar.number_input(
-                f"Peaks ({_s})",
-                min_value=1,
-                max_value=10,
-                value=6,
-                step=1,
-                key=f"n_peaks_{_s}",
-                help=f"Peaks for {_s}",
-            )
-        )
+    # Dynamic 2-column grid: serotypes populate in pairs
+    for i in range(0, len(_serotypes_from_wide), 2):
+        pair = _serotypes_from_wide[i : i + 2]
+        peak_cols = st.sidebar.columns(2)
+        for j, _s in enumerate(pair):
+            with peak_cols[j]:
+                n_peaks_by_serotype[_s] = int(
+                    st.number_input(
+                        f"Peaks ({_s})",
+                        min_value=1,
+                        max_value=10,
+                        value=6,
+                        step=1,
+                        key=f"n_peaks_{_s}",
+                        help=f"Peaks for {_s}",
+                    )
+                )
 else:
     n_peaks_by_serotype = None
     n_peaks = st.sidebar.number_input(
@@ -315,10 +353,6 @@ else:
     st.session_state["peak_default_serotype"] = None
     st.session_state["raman_x"] = np.array([])
 
-st.sidebar.success(
-    f"Loaded **{len(uploaded)}** files, **{len(wide_df)}** samples ({len(tidy_df)} tidy rows)."
-)
-
 st.sidebar.markdown(_SECTION_DIVIDER, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
@@ -326,9 +360,15 @@ st.sidebar.markdown(_SECTION_DIVIDER, unsafe_allow_html=True)
 # ---------------------------------------------------------------------------
 filter_columns = get_filterable_columns(tidy_df)
 
-filter_title_cols = st.sidebar.columns([4, 1])  # Filters left, Reset all right
+st.sidebar.markdown('<div class="filters-section">', unsafe_allow_html=True)
+filter_title_cols = st.sidebar.columns(
+    [1, 1]
+)  # Filters and Reset all, reflow when narrow
 with filter_title_cols[0]:
-    st.markdown("# 🔍 Filters")
+    st.markdown(
+        '<div class="filters-header"><h1>🔍 Filters</h1></div>',
+        unsafe_allow_html=True,
+    )
 with filter_title_cols[1]:
     if st.button(
         "Reset all",
@@ -341,6 +381,7 @@ with filter_title_cols[1]:
             st.session_state[f"{label}_exclude"] = False
         st.rerun()
 
+st.sidebar.markdown('<div class="filters-section">', unsafe_allow_html=True)
 st.sidebar.markdown(_TITLE_TO_FILTER_DIVIDER, unsafe_allow_html=True)
 
 MAIN_FILTER_COUNT = 5  # Serotype, Concentration Group, Date, Sensor ID, Test ID
@@ -381,6 +422,8 @@ with st.sidebar.expander("More Filters", expanded=False):
             reset_button_key=f"reset_more_{col}",
         )
         filter_state[col] = (selected if selected else None, exclude)
+
+st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
 # Build filter_state for columns we didn't render (e.g. signal_index in filter but not in UI)
 filter_state_for_apply = {k: v for k, v in filter_state.items() if k in filter_columns}
