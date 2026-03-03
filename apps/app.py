@@ -12,14 +12,22 @@ from sensd_sers_analysis.processing import (
     extract_basic_features,
     extract_dynamic_peak_features,
     filter_sers_data,
+    get_filter_options,
     get_filterable_columns,
     get_peak_height_columns,
     preprocess_metadata,
     trim_raman_shift,
 )
+from sensd_sers_analysis.utils import format_column_label
 
 from components.data_loading import load_from_uploaded
-from components.filter_ui import render_filters, section_divider
+from components.filter_ui import (
+    _render_filter,
+    _FILTER_DIVIDER,
+    _TITLE_TO_FILTER_DIVIDER,
+    render_main_filter_header,
+    section_divider,
+)
 
 from pages import (
     feature_analysis,
@@ -164,10 +172,54 @@ else:
 st.sidebar.markdown(section_divider(), unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# 2. Render Filters and Apply
+# 2. Render Filter UI -> Apply Filters (dynamic from metadata columns)
 # ---------------------------------------------------------------------------
 filter_columns = get_filterable_columns(tidy_df)
-filter_state_for_apply = render_filters(tidy_df, filter_columns)
+
+render_main_filter_header(st.sidebar, filter_columns)
+st.sidebar.markdown(_TITLE_TO_FILTER_DIVIDER, unsafe_allow_html=True)
+
+MAIN_FILTER_COUNT = 5  # Serotype, Concentration Group, Date, Sensor ID, Test ID
+main_cols = filter_columns[:MAIN_FILTER_COUNT]
+more_cols = filter_columns[MAIN_FILTER_COUNT:]
+
+filter_state: dict[str, tuple[list | None, bool]] = {}
+
+for i, col in enumerate(main_cols):
+    if i > 0:
+        st.sidebar.markdown(_FILTER_DIVIDER, unsafe_allow_html=True)
+    opts_all = get_filter_options(tidy_df, filter_columns, filter_state)
+    help_text = "Binned concentration." if col == "concentration_group" else ""
+    selected, exclude = _render_filter(
+        format_column_label(col),
+        opts_all[col],
+        [],
+        False,
+        st.sidebar,
+        help_text=help_text,
+        reset_button_key=f"reset_{col}",
+    )
+    filter_state[col] = (selected if selected else None, exclude)
+
+with st.sidebar.expander("More Filters", expanded=False):
+    for i, col in enumerate(more_cols):
+        if i > 0:
+            st.markdown(_FILTER_DIVIDER, unsafe_allow_html=True)
+        opts_all = get_filter_options(tidy_df, filter_columns, filter_state)
+        help_text = "Leave empty for no filter." if col == "filename" else ""
+        selected, exclude = _render_filter(
+            format_column_label(col),
+            opts_all[col],
+            [],
+            False,
+            st,
+            help_text=help_text,
+            reset_button_key=f"reset_more_{col}",
+        )
+        filter_state[col] = (selected if selected else None, exclude)
+
+# Build filter_state for columns we didn't render (e.g. signal_index in filter but not in UI)
+filter_state_for_apply = {k: v for k, v in filter_state.items() if k in filter_columns}
 filtered = filter_sers_data(tidy_df, filter_state_for_apply)
 filtered_features = filter_sers_data(features_df, filter_state_for_apply)
 

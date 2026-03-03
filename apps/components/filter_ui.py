@@ -4,25 +4,74 @@ Filter UI components for SERS Data Explorer.
 
 import streamlit as st
 
-from sensd_sers_analysis.processing import get_filter_options
 from sensd_sers_analysis.utils import format_column_label
 
-FILTER_UI_CSS = """
+# Selector for horizontal filter header containers (key=filter_header_*).
+# Scoped to sidebar only; does not affect multiselect, pills, or number inputs below.
+_FILTER_HEADER_SELECTOR = '[data-testid="stSidebar"] [class*="st-key-filter_header"]'
+
+# Selector for main Filters title + Reset All button (key=main_filter_header).
+_MAIN_HEADER_SELECTOR = '[data-testid="stSidebar"] [class*="st-key-main_filter_header"]'
+
+# Combined selector for all horizontal header blocks (filter headers + main header).
+_HEADERS_SELECTOR = f"{_FILTER_HEADER_SELECTOR}, {_MAIN_HEADER_SELECTOR}"
+
+FILTER_UI_CSS = f"""
 <style>
-/* Only filter header rows (label + exclude + reset), not number inputs */
-[data-testid="stSidebar"] [data-testid="stHorizontalBlock"]:has(button):not(:has([data-testid="stNumberInput"])) {
-    flex-wrap: wrap;
-}
-[data-testid="stSidebar"] [data-testid="stHorizontalBlock"]:has(button):not(:has([data-testid="stNumberInput"])) > div {
-    white-space: nowrap;
-    min-width: 0;
-}
-[data-testid="stSidebar"] [data-testid="stHorizontalBlock"]:has(button):not(:has([data-testid="stNumberInput"])) > div:last-child {
-    flex: 0 0 auto;
-}
-[data-testid="stSidebar"] [data-testid="stHorizontalBlock"]:has(button):not(:has([data-testid="stNumberInput"])) button {
-    min-width: 6rem;
-}
+/* 1. Main horizontal wrapper layout */
+{_HEADERS_SELECTOR} [data-testid="stHorizontalBlock"] {{
+    display: flex !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+    gap: 0.75rem !important;
+}}
+
+/* 2. Target Streamlit's hidden column wrappers */
+{_HEADERS_SELECTOR} [data-testid="stHorizontalBlock"] > [data-testid="column"] {{
+    display: flex !important;
+    align-items: center !important;
+    width: auto !important; /* Overrides Streamlit's inline column widths */
+    flex: 0 0 auto !important; /* Make toggle and button rigid by default */
+}}
+
+/* 3. Force the Title column to stretch and push others to the right */
+{_HEADERS_SELECTOR} [data-testid="stHorizontalBlock"] > [data-testid="column"]:first-child {{
+    flex: 1 1 100px !important;
+}}
+
+/* 4. Completely strip Markdown margins and force vertical centering */
+{_HEADERS_SELECTOR} [data-testid="stMarkdownContainer"] {{
+    display: flex !important;
+    align-items: center !important;
+}}
+{_HEADERS_SELECTOR} [data-testid="stMarkdownContainer"] > * {{
+    margin: 0 !important;
+    padding: 0 !important;
+    line-height: 1.2 !important;
+}}
+
+/* 5. Fix Toggle internal alignment */
+{_HEADERS_SELECTOR} [data-testid="stCheckbox"] {{
+    display: flex !important;
+    align-items: center !important;
+}}
+{_HEADERS_SELECTOR} [data-testid="stWidgetLabel"] {{
+    display: flex !important;
+    align-items: center !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}}
+{_HEADERS_SELECTOR} [data-testid="stWidgetLabel"] p {{
+    margin: 0 !important;
+    padding: 0 !important;
+    white-space: nowrap !important;
+}}
+
+/* 6. Fix Button internal alignment */
+{_HEADERS_SELECTOR} [data-testid="stButton"] button {{
+    margin: 0 !important;
+    white-space: nowrap !important;
+}}
 </style>
 """
 
@@ -63,8 +112,16 @@ def _render_filter(
     if not options:
         return [], exclude_default
 
-    title_cols = container.columns([4, 0.6])
-    with title_cols[1]:
+    # Horizontal container: Title | Exclude | [Reset]. No columns; natural flex flow.
+    header = container.container(horizontal=True, key=f"filter_header_{label}")
+    with header:
+        st.markdown(f"### {label}")
+        exclude = st.toggle(
+            "Exclude",
+            value=exclude_default,
+            key=f"{label}_exclude",
+            help="Exclude selected instead of include only.",
+        )
         if reset_button_key and st.button(
             "Reset",
             key=reset_button_key,
@@ -73,17 +130,6 @@ def _render_filter(
             st.session_state[label] = []
             st.session_state[f"{label}_exclude"] = False
             st.rerun()
-    with title_cols[0]:
-        sub = st.columns([2, 1])
-        with sub[0]:
-            st.markdown(f"### {label}")
-        with sub[1]:
-            exclude = st.toggle(
-                "Exclude",
-                value=exclude_default,
-                key=f"{label}_exclude",
-                help="Exclude selected instead of include only.",
-            )
 
     if use_flat:
         selected = container.pills(
@@ -106,19 +152,14 @@ def _render_filter(
     return selected, exclude
 
 
-def render_filters(tidy_df, filter_columns: list[str]) -> dict:
+def render_main_filter_header(container, filter_columns: list[str]) -> None:
     """
-    Render the full filter UI in the sidebar and return filter_state for applying.
-
-    Returns:
-        Dict of column -> (selected_list_or_none, exclude_bool) for filtering.
+    Render the main Filters title and Reset All button in a horizontal container.
+    Uses flex-wrap layout; Reset All stays rigid and wraps to next line when needed.
     """
-    st.markdown(FILTER_UI_CSS, unsafe_allow_html=True)
-
-    filter_title_cols = st.sidebar.columns([4, 0.6])
-    with filter_title_cols[0]:
+    header = container.container(horizontal=True, key="main_filter_header")
+    with header:
         st.markdown("# 🔍 Filters")
-    with filter_title_cols[1]:
         if st.button(
             "Reset all",
             key="reset_all_filters",
@@ -129,47 +170,6 @@ def render_filters(tidy_df, filter_columns: list[str]) -> dict:
                 st.session_state[label] = []
                 st.session_state[f"{label}_exclude"] = False
             st.rerun()
-
-    st.sidebar.markdown(_TITLE_TO_FILTER_DIVIDER, unsafe_allow_html=True)
-
-    main_cols = filter_columns[:MAIN_FILTER_COUNT]
-    more_cols = filter_columns[MAIN_FILTER_COUNT:]
-    filter_state: dict[str, tuple[list | None, bool]] = {}
-
-    for i, col in enumerate(main_cols):
-        if i > 0:
-            st.sidebar.markdown(_FILTER_DIVIDER, unsafe_allow_html=True)
-        opts_all = get_filter_options(tidy_df, filter_columns, filter_state)
-        help_text = "Binned concentration." if col == "concentration_group" else ""
-        selected, exclude = _render_filter(
-            format_column_label(col),
-            opts_all[col],
-            [],
-            False,
-            st.sidebar,
-            help_text=help_text,
-            reset_button_key=f"reset_{col}",
-        )
-        filter_state[col] = (selected if selected else None, exclude)
-
-    with st.sidebar.expander("More Filters", expanded=False):
-        for i, col in enumerate(more_cols):
-            if i > 0:
-                st.markdown(_FILTER_DIVIDER, unsafe_allow_html=True)
-            opts_all = get_filter_options(tidy_df, filter_columns, filter_state)
-            help_text = "Leave empty for no filter." if col == "filename" else ""
-            selected, exclude = _render_filter(
-                format_column_label(col),
-                opts_all[col],
-                [],
-                False,
-                st,
-                help_text=help_text,
-                reset_button_key=f"reset_more_{col}",
-            )
-            filter_state[col] = (selected if selected else None, exclude)
-
-    return {k: v for k, v in filter_state.items() if k in filter_columns}
 
 
 def section_divider() -> str:
