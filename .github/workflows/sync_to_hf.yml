@@ -1,7 +1,7 @@
 name: Sync to HF
 on:
   push:
-    branches: [feature/streamlit-signal-visualization]
+    branches: [streamlit]
   workflow_dispatch:
 jobs:
   sync-to-hub:
