@@ -22,13 +22,15 @@ dependencies = [
     "openpyxl",
     "scipy",
     "streamlit",
+    "reportlab",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "jupyter",
-    "ruff",
+    "pytest",
     "pre-commit",
+    "ruff",
 ]
 
 [tool.setuptools.packages.find]

@@ -23,10 +23,13 @@ DEFAULT_PATTERN = "*.xlsx"
 
 # Column names for sample identification and metadata
 META_COLS = [
+    "sensor_model",
     "sensor_id",
     "test_id",
     "connection_id",
     "serotype",
+    "date",
+    "operator",
     "concentration",
     "filename",
     "signal_index",
@@ -98,6 +101,15 @@ def _parse_embedded_format(
     return metadata, raman_shift, signals, concentrations
 
 
+def _metadata_get(metadata: dict[str, str], *keys: str) -> str:
+    """Look up metadata by multiple possible key variants (e.g., 'sensor model', 'sensor_model')."""
+    for key in keys:
+        val = metadata.get(key, "")
+        if val != "":
+            return str(val).strip()
+    return ""
+
+
 def _load_signal_file(file_path: str | Path) -> pd.DataFrame:
     """Load one SERS Excel file; returns wide-format DataFrame."""
     path = Path(file_path)
@@ -111,10 +123,15 @@ def _load_signal_file(file_path: str | Path) -> pd.DataFrame:
 
     meta_df = pd.DataFrame(
         {
-            "sensor_id": metadata.get("sensor id", ""),
-            "test_id": metadata.get("test id", ""),
-            "connection_id": metadata.get("connection id", ""),
+            "sensor_model": _metadata_get(metadata, "sensor model", "sensor_model"),
+            "sensor_id": metadata.get("sensor id", metadata.get("sensor_id", "")),
+            "test_id": metadata.get("test id", metadata.get("test_id", "")),
+            "connection_id": metadata.get(
+                "connection id", metadata.get("connection_id", "")
+            ),
             "serotype": metadata.get("serotype", ""),
+            "date": _metadata_get(metadata, "date"),
+            "operator": _metadata_get(metadata, "operator"),
             "concentration": concentrations,
             "filename": path.name,
             "signal_index": np.arange(n_signals),
@@ -239,3 +256,42 @@ def wide_to_tidy(df: pd.DataFrame) -> pd.DataFrame:
     )
     tidy["raman_shift"] = tidy["_rs_col"].str[len(RS_COL_PREFIX) :].astype(float)
     return tidy.drop(columns=["_rs_col"])
+
+
+def load_sers_data_as_wide_and_tidy(
+    paths: Union[str, Path, List[Union[str, Path]]],
+    *,
+    serotypes: Optional[List[str]] = None,
+    pattern: str = DEFAULT_PATTERN,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Load SERS data and return both wide and tidy formats.
+
+    Args:
+        paths: File/folder path or list of paths.
+        serotypes: If provided, only load matching serotypes.
+        pattern: Glob pattern for folder scan (default: *.xlsx).
+
+    Returns:
+        Tuple of (wide_df, tidy_df). Both empty if loading fails.
+    """
+    wide = load_sers_data(paths, serotypes=serotypes, pattern=pattern)
+    if wide.empty:
+        return wide, wide
+    tidy = wide_to_tidy(wide)
+    return wide, tidy
+
+
+def count_unique_spectra(df: pd.DataFrame) -> int:
+    """
+    Count unique spectrum traces (filename + signal_index pairs) in a DataFrame.
+
+    Args:
+        df: Tidy or wide DataFrame with filename and signal_index columns.
+
+    Returns:
+        Number of unique spectra.
+    """
+    if df.empty or "filename" not in df.columns or "signal_index" not in df.columns:
+        return 0
+    return len(df.drop_duplicates(subset=["filename", "signal_index"]))

@@ -20,15 +20,16 @@ git clone https://github.com/LJXXXD/sensd-sers-analysis.git
 cd sensd-sers-analysis
 
 # Via uv (recommended)
-uv sync --extra dev
-uv pip install -e ".[dev]"
+uv sync
 uv run pre-commit install   # optional
+uv run streamlit run apps/app.py   # run app
 
 # Or via pip
 python -m venv .venv
 source .venv/bin/activate   # On Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
+pip install -e . --group dev
 pre-commit install   # optional
+streamlit run apps/app.py   # run app
 ```
 
 ---
