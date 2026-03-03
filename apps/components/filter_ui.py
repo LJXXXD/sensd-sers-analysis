@@ -87,14 +87,14 @@ def _render_filter(
 
 def render_main_filter_header(container, filter_columns: list[str]) -> None:
     """
-    Render the main Filters title and Reset All button in a horizontal container.
-    Uses flex-wrap layout; Reset All stays rigid and wraps to next line when needed.
+    Render the main Filters title and Reset All Filters button in a horizontal container.
+    Uses flex-wrap layout; Reset All Filters stays rigid and wraps to next line when needed.
     """
     header = container.container(horizontal=True, key="main_filter_header")
     with header:
         st.markdown("# 🔍 Filters")
         if st.button(
-            "Reset all",
+            "Reset all filters",
             key="reset_all_filters",
             help="Reset all filter selections and Exclude toggles.",
         ):

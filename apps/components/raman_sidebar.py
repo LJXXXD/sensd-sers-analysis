@@ -52,7 +52,7 @@ def render_raman_and_peaks_sidebar(
 
     if serotypes_from_wide:
         n_peaks = N_PEAKS_DEFAULT
-        container.markdown("#### Peaks per serotype")
+        container.markdown("#### Number of peaks by serotype")
         n_peaks_by_serotype = {}
         for i, s in enumerate(serotypes_from_wide):
             if i % 2 == 0:
@@ -60,13 +60,13 @@ def render_raman_and_peaks_sidebar(
             with peak_cols[i % 2]:
                 n_peaks_by_serotype[s] = int(
                     st.number_input(
-                        f"Peaks ({s})",
+                        f"Number of peaks ({s})",
                         min_value=N_PEAKS_MIN,
                         max_value=N_PEAKS_MAX,
                         value=N_PEAKS_DEFAULT,
                         step=1,
                         key=f"n_peaks_{s}",
-                        help=f"Peaks for {s}",
+                        help=f"Expected number of peaks to detect in the mean spectrum for {s}.",
                     )
                 )
     else:

@@ -6,6 +6,7 @@ computed per serovar using only >0 CFU samples. 0 CFU (turkey rinsate matrix)
 is excluded from learning to avoid noise-driven variance inflation.
 """
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -189,10 +190,13 @@ def _compute_peak_windows_for_serotype(
         return [], np.array([])
 
     high_signals = get_signals_matrix(high_conc)
-    if high_signals.size == 0 or not np.any(np.isfinite(high_signals)):
+    n_rows = high_signals.shape[0] if high_signals.ndim else 0
+    if high_signals.size == 0 or n_rows == 0 or not np.any(np.isfinite(high_signals)):
         mean_spec = np.zeros_like(x, dtype=float)
     else:
-        mean_spec = np.nanmean(high_signals, axis=0)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Mean of empty slice")
+            mean_spec = np.nanmean(high_signals, axis=0)
     mean_spec = np.nan_to_num(mean_spec, nan=0.0)
 
     peak_indices = _find_peaks_on_spectrum(x, mean_spec, n_peaks)

@@ -20,7 +20,11 @@ from sensd_sers_analysis.processing import (
 )
 from sensd_sers_analysis.utils import format_column_label
 
-from components.data_loading import load_from_uploaded
+from components.data_loading import (
+    UPLOADER_RESET_KEY,
+    clear_app_data,
+    load_from_uploaded,
+)
 from components.raman_sidebar import render_raman_and_peaks_sidebar
 from components.filter_ui import (
     MAIN_FILTER_COUNT,
@@ -51,11 +55,16 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 # 1. Load Data
 # ---------------------------------------------------------------------------
-st.sidebar.markdown("# 📁 Data Loading")
+header_col, btn_col = st.sidebar.columns([3, 1])
+with header_col:
+    st.markdown("# 📁 Data Loading")
+with btn_col:
+    st.button("Reload Data", type="primary", on_click=clear_app_data)
 uploaded = st.sidebar.file_uploader(
     "Upload Excel (.xlsx) files",
     type=["xlsx", "xls"],
     accept_multiple_files=True,
+    key=f"file_uploader_{st.session_state.get(UPLOADER_RESET_KEY, 'default')}",
 )
 wide_df = None
 tidy_df = None
@@ -64,7 +73,7 @@ if uploaded:
     wide_df, tidy_df = load_from_uploaded(files_data)
 
 if tidy_df is None or tidy_df.empty:
-    st.info("👆 Load data using the sidebar: upload Excel (.xlsx) files.")
+    st.info("Load data using the sidebar: upload Excel (.xlsx) files.")
     st.stop()
 
 tidy_df = preprocess_metadata(tidy_df)
@@ -73,6 +82,7 @@ wide_df = preprocess_metadata(wide_df)
 st.sidebar.success(
     f"Loaded **{len(uploaded)}** files, **{len(wide_df)}** samples ({len(tidy_df)} tidy rows)."
 )
+st.sidebar.markdown(section_divider(), unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Raman shift trimming and peaks per serotype
