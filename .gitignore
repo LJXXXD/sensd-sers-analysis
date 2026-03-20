@@ -7,14 +7,18 @@
 /results/
 /archive/
 
-# Model files and data files
+# Model checkpoints and HDF5 datasets
 *.pth
 *.h5
 *.hdf5
 
-# Excel files (globally ignored)
+# Documentation PDFs
+# Large binary; keep out of git so HF Spaces sync stays small.
+*.pdf
+
+# Excel spreadsheets
 *.xlsx
-# But include example data for demos (must come after *.xlsx)
+# Keep example_data xlsx for demos (must follow *.xlsx above).
 !example_data/**/*.xlsx
 
 # -----------------------------------------------------------------------------

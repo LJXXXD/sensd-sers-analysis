@@ -37,5 +37,5 @@ dev = [
 where = ["src"]
 
 [tool.ruff]
-line-length = 88
+line-length = 100
 target-version = "py312"
