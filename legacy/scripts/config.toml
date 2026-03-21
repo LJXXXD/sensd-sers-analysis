@@ -1,0 +1,47 @@
+# SENS-D Project Configuration
+
+# General Paths
+data_folder = "../Data"
+output_folder = "../output"
+
+
+# Data to use
+[[datasets]]
+config_id = "C07-7-12"
+sensor_id = 2
+test_id = [1, 2, 3, 4]
+
+[[datasets]]
+config_id = "C07-7-12"
+sensor_id = 3
+test_id = [1, 2, 3, 4]
+
+[[datasets]]
+config_id = "C07-7-12"
+sensor_id = 4
+test_id = [1, 2, 3, 4]
+
+[[datasets]]
+config_id = "C07-7-12"
+sensor_id = 5
+test_id = [1, 2, 3, 4]
+
+[[datasets]]
+config_id = "C07-7-12"
+sensor_id = 6
+test_id = [1, 2, 3, 4]
+
+[[datasets]]
+config_id = "C07-7-12"
+sensor_id = 7
+test_id = [1, 2, 4, 5]
+
+[[datasets]]
+config_id = "C07-7-12"
+sensor_id = 8
+test_id = [1, 2]
+
+[[datasets]]
+config_id = "C07-7-12"
+sensor_id = 9
+test_id = [1, 2]

@@ -2,10 +2,10 @@
 # Project-Specific .gitignore
 # -----------------------------------------------------------------------------
 
-# Large datasets, generated outputs and archives
+# Large datasets, generated outputs
 /data/
 /results/
-/archive/
+/outputs/
 
 # Model checkpoints and HDF5 datasets
 *.pth

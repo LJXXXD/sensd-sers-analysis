@@ -1,0 +1,239 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "created": "2025-10-10T23:12:21.358592",
+    "description": "Sample labeled dataset for demonstration",
+    "total_labels": 18,
+    "unique_spectra": 6,
+    "unique_labelers": 1,
+    "serotypes": [
+      "Typhimurium"
+    ],
+    "sensor_ids": [
+      2.0,
+      3.0
+    ],
+    "test_ids": [
+      1.0,
+      2.0
+    ]
+  },
+  "labels": [
+    {
+      "raman_shift": 595.6275446534788,
+      "intensity": 1171.6008657750388,
+      "spectrum_id": "sensor2.0_test2.0_0.0CFU",
+      "concentration": 0.0,
+      "sensor_id": 2.0,
+      "test_id": 2.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358456",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 612.2299395436152,
+      "intensity": 1538.7474588363532,
+      "spectrum_id": "sensor2.0_test2.0_0.0CFU",
+      "concentration": 0.0,
+      "sensor_id": 2.0,
+      "test_id": 2.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358480",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 624.4437003635378,
+      "intensity": 1110.7973561657548,
+      "spectrum_id": "sensor2.0_test2.0_0.0CFU",
+      "concentration": 0.0,
+      "sensor_id": 2.0,
+      "test_id": 2.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358485",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 595.5145083888757,
+      "intensity": 1279.3854524598084,
+      "spectrum_id": "sensor2.0_test2.0_1.0CFU",
+      "concentration": 1.0,
+      "sensor_id": 2.0,
+      "test_id": 2.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358493",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 609.5617251932894,
+      "intensity": 1397.242013958432,
+      "spectrum_id": "sensor2.0_test2.0_1.0CFU",
+      "concentration": 1.0,
+      "sensor_id": 2.0,
+      "test_id": 2.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358496",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 627.1560949114785,
+      "intensity": 1121.31284543006,
+      "spectrum_id": "sensor2.0_test2.0_1.0CFU",
+      "concentration": 1.0,
+      "sensor_id": 2.0,
+      "test_id": 2.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358500",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 592.393893690925,
+      "intensity": 1357.003080659188,
+      "spectrum_id": "sensor3.0_test1.0_0.0CFU",
+      "concentration": 0.0,
+      "sensor_id": 3.0,
+      "test_id": 1.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358506",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 610.5828288876361,
+      "intensity": 1639.156460143192,
+      "spectrum_id": "sensor3.0_test1.0_0.0CFU",
+      "concentration": 0.0,
+      "sensor_id": 3.0,
+      "test_id": 1.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358510",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 622.7863867473916,
+      "intensity": 1013.6419893714816,
+      "spectrum_id": "sensor3.0_test1.0_0.0CFU",
+      "concentration": 0.0,
+      "sensor_id": 3.0,
+      "test_id": 1.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358513",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 594.4507760370097,
+      "intensity": 1134.4858644284495,
+      "spectrum_id": "sensor3.0_test1.0_1.0CFU",
+      "concentration": 1.0,
+      "sensor_id": 3.0,
+      "test_id": 1.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358518",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 608.6103376073974,
+      "intensity": 1434.2201209900493,
+      "spectrum_id": "sensor3.0_test1.0_1.0CFU",
+      "concentration": 1.0,
+      "sensor_id": 3.0,
+      "test_id": 1.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358521",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 626.338491775628,
+      "intensity": 1396.6796146776844,
+      "spectrum_id": "sensor3.0_test1.0_1.0CFU",
+      "concentration": 1.0,
+      "sensor_id": 3.0,
+      "test_id": 1.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358527",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 593.4340593722933,
+      "intensity": 1172.5124781530617,
+      "spectrum_id": "sensor3.0_test2.0_0.0CFU",
+      "concentration": 0.0,
+      "sensor_id": 3.0,
+      "test_id": 2.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358533",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 610.559209473799,
+      "intensity": 1677.6796389297947,
+      "spectrum_id": "sensor3.0_test2.0_0.0CFU",
+      "concentration": 0.0,
+      "sensor_id": 3.0,
+      "test_id": 2.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358536",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 625.9906094487493,
+      "intensity": 1099.704265998392,
+      "spectrum_id": "sensor3.0_test2.0_0.0CFU",
+      "concentration": 0.0,
+      "sensor_id": 3.0,
+      "test_id": 2.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358539",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 594.3258741196491,
+      "intensity": 1066.1757764266092,
+      "spectrum_id": "sensor3.0_test2.0_1.0CFU",
+      "concentration": 1.0,
+      "sensor_id": 3.0,
+      "test_id": 2.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358544",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 611.7840777015041,
+      "intensity": 1555.312839481879,
+      "spectrum_id": "sensor3.0_test2.0_1.0CFU",
+      "concentration": 1.0,
+      "sensor_id": 3.0,
+      "test_id": 2.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358547",
+      "confidence": 0.9
+    },
+    {
+      "raman_shift": 627.4106421711681,
+      "intensity": 1174.0003801168,
+      "spectrum_id": "sensor3.0_test2.0_1.0CFU",
+      "concentration": 1.0,
+      "sensor_id": 3.0,
+      "test_id": 2.0,
+      "serotype": "Typhimurium",
+      "labeler_id": "demo_user",
+      "timestamp": "2025-10-10T23:12:21.358550",
+      "confidence": 0.9
+    }
+  ]
+}
