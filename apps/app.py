@@ -6,9 +6,9 @@ Collaborators can load datasets, filter dynamically, and generate plots without 
 
 import logging
 
-import numpy as np
 import streamlit as st
 
+from cache import apply_cached_filters, build_cached_derived_bundle
 from components.data_loading import (
     UPLOADER_RESET_KEY,
     clear_app_data,
@@ -23,18 +23,14 @@ from components.filter_ui import (
     section_divider,
 )
 from components.raman_sidebar import render_raman_and_peaks_sidebar
-from sensd_sers_analysis.data import count_unique_spectra, wide_to_tidy
-from sensd_sers_analysis.processing import (
-    extract_basic_features,
-    extract_dynamic_peak_features,
-    filter_sers_data,
-    get_filter_options,
-    get_filterable_columns,
-    get_peak_height_columns,
-    preprocess_metadata,
-    trim_raman_shift,
+from sensd_sers_analysis.application import (
+    FilterSelection,
+    build_filter_catalog,
+    compute_filter_options,
+    serialize_filter_state,
 )
 from sensd_sers_analysis.utils import format_column_label
+from state import write_peak_artifacts_to_state
 from tabs import (
     feature_analysis,
     model_consistency,
@@ -73,28 +69,26 @@ uploaded = st.sidebar.file_uploader(
     accept_multiple_files=True,
     key=f"file_uploader_{st.session_state.get(UPLOADER_RESET_KEY, 'default')}",
 )
-wide_df = None
-tidy_df = None
+loaded_bundle = None
 if uploaded:
     files_data = tuple((f.name, f.getvalue()) for f in uploaded)
-    wide_df, tidy_df = load_from_uploaded(files_data)
+    loaded_bundle = load_from_uploaded(files_data)
     logger.info(
         "Loaded %d files: wide_df shape %s, tidy_df shape %s",
         len(uploaded),
-        getattr(wide_df, "shape", None),
-        getattr(tidy_df, "shape", None),
+        getattr(loaded_bundle.wide_df, "shape", None),
+        getattr(loaded_bundle.tidy_df, "shape", None),
     )
 
-if tidy_df is None or tidy_df.empty:
+if loaded_bundle is None or loaded_bundle.tidy_df.empty:
     logger.warning("No data loaded: tidy_df is empty or None")
     st.info("Load data using the sidebar: upload Excel (.xlsx) files.")
     st.stop()
 
-tidy_df = preprocess_metadata(tidy_df)
-wide_df = preprocess_metadata(wide_df)
-
 st.sidebar.success(
-    f"Loaded **{len(uploaded)}** files, **{len(wide_df)}** samples ({len(tidy_df)} tidy rows)."
+    "Loaded "
+    f"**{len(uploaded)}** files, **{len(loaded_bundle.wide_df)}** samples "
+    f"({len(loaded_bundle.tidy_df)} tidy rows)."
 )
 st.sidebar.markdown(section_divider(), unsafe_allow_html=True)
 
@@ -102,68 +96,64 @@ st.sidebar.markdown(section_divider(), unsafe_allow_html=True)
 # Raman shift trimming and peaks per serotype
 # ---------------------------------------------------------------------------
 min_shift, max_shift, n_peaks, n_peaks_by_serotype = render_raman_and_peaks_sidebar(
-    st.sidebar, wide_df
+    st.sidebar, loaded_bundle.wide_df
 )
-wide_df = trim_raman_shift(wide_df, min_shift=min_shift, max_shift=max_shift)
-tidy_df = wide_to_tidy(wide_df)
-tidy_df = preprocess_metadata(tidy_df)
+derived_bundle = build_cached_derived_bundle(
+    loaded_bundle,
+    min_shift=min_shift,
+    max_shift=max_shift,
+    n_peaks=int(n_peaks),
+    n_peaks_by_serotype_items=(
+        tuple(sorted(n_peaks_by_serotype.items())) if n_peaks_by_serotype else ()
+    ),
+)
+write_peak_artifacts_to_state(derived_bundle.peak_artifacts)
 logger.info(
     "Raman shift trimmed: min=%s, max=%s; wide_df %d rows",
     min_shift,
     max_shift,
-    len(wide_df),
+    len(derived_bundle.wide_df),
 )
-
-features_df = extract_basic_features(wide_df)
-
-peak_df, peak_by_sero, mean_by_sero, default_sero, raman_x = (
-    extract_dynamic_peak_features(
-        wide_df, n_peaks=int(n_peaks), n_peaks_by_serotype=n_peaks_by_serotype
-    )
-)
-if peak_by_sero:
-    first_infos = next(iter(peak_by_sero.values()))
-    peak_cols = get_peak_height_columns(first_infos)
-    features_df = features_df.join(peak_df[peak_cols], how="left")
-    st.session_state["peak_infos_by_serotype"] = peak_by_sero
-    st.session_state["mean_spec_by_serotype"] = mean_by_sero
-    st.session_state["peak_default_serotype"] = default_sero
-    st.session_state["raman_x"] = raman_x
+if derived_bundle.peak_artifacts.peak_infos_by_serotype:
     logger.info(
         "Peak extraction: %d serotypes, peak_cols=%s",
-        len(peak_by_sero),
-        len(peak_cols),
+        len(derived_bundle.peak_artifacts.peak_infos_by_serotype),
+        len(
+            next(
+                iter(derived_bundle.peak_artifacts.peak_infos_by_serotype.values()),
+                [],
+            )
+        ),
     )
 else:
-    st.session_state["peak_infos_by_serotype"] = {}
-    st.session_state["mean_spec_by_serotype"] = {}
-    st.session_state["peak_default_serotype"] = None
-    st.session_state["raman_x"] = np.array([])
-    logger.info(
-        "Peak extraction: no serotype-specific peaks, using n_peaks=%d", n_peaks
-    )
+    logger.info("Peak extraction: no serotype-specific peaks, using n_peaks=%d", n_peaks)
 
 st.sidebar.markdown(section_divider(), unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # 2. Render Filter UI -> Apply Filters (dynamic from metadata columns)
 # ---------------------------------------------------------------------------
-filter_columns = get_filterable_columns(tidy_df)
+filter_catalog = build_filter_catalog(
+    derived_bundle.tidy_df,
+    main_filter_count=MAIN_FILTER_COUNT,
+)
 
-render_main_filter_header(st.sidebar, filter_columns)
+render_main_filter_header(st.sidebar, list(filter_catalog.filter_columns))
 st.sidebar.markdown(_TITLE_TO_FILTER_DIVIDER, unsafe_allow_html=True)
 
-main_cols = filter_columns[:MAIN_FILTER_COUNT]
-more_cols = filter_columns[MAIN_FILTER_COUNT:]
+filter_state: dict[str, FilterSelection] = {}
 
-filter_state: dict[str, tuple[list | None, bool]] = {}
-
-for i, col in enumerate(main_cols):
+for i, col in enumerate(filter_catalog.main_columns):
     if i > 0:
         st.sidebar.markdown(_FILTER_DIVIDER, unsafe_allow_html=True)
-    opts_all = get_filter_options(tidy_df, filter_columns, filter_state)
+    opts_all = compute_filter_options(
+        derived_bundle.tidy_df,
+        filter_catalog.filter_columns,
+        filter_state,
+    )
     help_text = "Binned concentration." if col == "concentration_group" else ""
     selected, exclude = _render_filter(
+        col,
         format_column_label(col),
         opts_all[col],
         [],
@@ -172,15 +162,23 @@ for i, col in enumerate(main_cols):
         help_text=help_text,
         reset_button_key=f"reset_{col}",
     )
-    filter_state[col] = (selected if selected else None, exclude)
+    filter_state[col] = FilterSelection(
+        selected_values=tuple(str(value) for value in selected),
+        exclude=exclude,
+    )
 
 with st.sidebar.expander("More Filters", expanded=False):
-    for i, col in enumerate(more_cols):
+    for i, col in enumerate(filter_catalog.more_columns):
         if i > 0:
             st.markdown(_FILTER_DIVIDER, unsafe_allow_html=True)
-        opts_all = get_filter_options(tidy_df, filter_columns, filter_state)
+        opts_all = compute_filter_options(
+            derived_bundle.tidy_df,
+            filter_catalog.filter_columns,
+            filter_state,
+        )
         help_text = "Leave empty for no filter." if col == "filename" else ""
         selected, exclude = _render_filter(
+            col,
             format_column_label(col),
             opts_all[col],
             [],
@@ -189,30 +187,33 @@ with st.sidebar.expander("More Filters", expanded=False):
             help_text=help_text,
             reset_button_key=f"reset_more_{col}",
         )
-        filter_state[col] = (selected if selected else None, exclude)
+        filter_state[col] = FilterSelection(
+            selected_values=tuple(str(value) for value in selected),
+            exclude=exclude,
+        )
 
-# Build filter_state for columns we didn't render (e.g. signal_index in filter but not in UI)
-filter_state_for_apply = {k: v for k, v in filter_state.items() if k in filter_columns}
-filtered = filter_sers_data(tidy_df, filter_state_for_apply)
-filtered_features = filter_sers_data(features_df, filter_state_for_apply)
-n_filtered = count_unique_spectra(filtered)
+filtered_bundle = apply_cached_filters(
+    derived_bundle,
+    serialize_filter_state(filter_state),
+)
 logger.info(
     "Filters applied: %d spectrum traces, %d samples (from %d tidy, %d features)",
-    n_filtered,
-    len(filtered_features),
-    len(tidy_df),
-    len(features_df),
+    filtered_bundle.n_unique_spectra,
+    len(filtered_bundle.filtered_features_df),
+    len(derived_bundle.tidy_df),
+    len(derived_bundle.features_df),
 )
 
 # ---------------------------------------------------------------------------
 # 3. Main: Summary and Tabs
 # ---------------------------------------------------------------------------
 st.caption(
-    f"Filtered to **{n_filtered}** spectrum traces, **{len(filtered_features)}** "
+    f"Filtered to **{filtered_bundle.n_unique_spectra}** spectrum traces, "
+    f"**{len(filtered_bundle.filtered_features_df)}** "
     "samples for feature analysis"
 )
 
-if filtered.empty:
+if filtered_bundle.filtered_tidy_df.empty:
     logger.warning("No data matches selected filters")
     st.warning("No data matches the selected filters. Adjust filters and try again.")
     st.stop()
@@ -236,19 +237,35 @@ if filtered.empty:
 )
 
 with tab_spectra:
-    spectra_viewer.render(filtered)
+    spectra_viewer.render(filtered_bundle.filtered_tidy_df)
 
 with tab_peak_diag:
-    peak_diagnostics.render(filtered_features, wide_df)
+    peak_diagnostics.render(
+        filtered_bundle.filtered_features_df,
+        derived_bundle.wide_df,
+        derived_bundle.peak_artifacts,
+    )
 
 with tab_stats:
-    feature_analysis.render(filtered_features)
+    feature_analysis.render(
+        filtered_bundle.filtered_features_df,
+        derived_bundle.peak_artifacts,
+    )
 
 with tab_assessment:
-    sensor_assessment.render(filtered_features)
+    sensor_assessment.render(
+        filtered_bundle.filtered_features_df,
+        derived_bundle.peak_artifacts,
+    )
 
 with tab_model_consistency:
-    model_consistency.render(filtered_features)
+    model_consistency.render(
+        filtered_bundle.filtered_features_df,
+        derived_bundle.peak_artifacts,
+    )
 
 with tab_phase2:
-    serotype_classification.render(filtered_features)
+    serotype_classification.render(
+        filtered_bundle.filtered_features_df,
+        derived_bundle.peak_artifacts,
+    )

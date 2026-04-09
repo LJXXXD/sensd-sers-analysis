@@ -19,6 +19,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
+from sensd_sers_analysis.config import (
+    PHASE2_RANDOM_STATE,
+    PHASE2_RF_N_ESTIMATORS,
+    PHASE2_TEST_SIZE,
+)
+
 
 @dataclass
 class ClassificationResult:
@@ -44,8 +50,8 @@ def train_classifiers(
     feature_cols: list[str],
     target_col: str = "target",
     *,
-    test_size: float = 0.2,
-    random_state: int = 42,
+    test_size: float = PHASE2_TEST_SIZE,
+    random_state: int = PHASE2_RANDOM_STATE,
 ) -> tuple[ClassificationResult, ClassificationResult]:
     """
     Train Random Forest and SVM with 80/20 stratified split.
@@ -85,7 +91,10 @@ def train_classifiers(
     X_train_s = scaler.fit_transform(X_train)
     X_test_s = scaler.transform(X_test)
 
-    rf = RandomForestClassifier(random_state=random_state, n_estimators=100)
+    rf = RandomForestClassifier(
+        random_state=random_state,
+        n_estimators=PHASE2_RF_N_ESTIMATORS,
+    )
     rf.fit(X_train_s, y_train)
     y_pred_rf = rf.predict(X_test_s)
 
@@ -99,16 +108,10 @@ def train_classifiers(
         y_true=y_test,
         y_pred=y_pred_rf,
         accuracy=float(accuracy_score(y_test, y_pred_rf)),
-        precision=float(
-            precision_score(y_test, y_pred_rf, average="weighted", zero_division=0)
-        ),
-        recall=float(
-            recall_score(y_test, y_pred_rf, average="weighted", zero_division=0)
-        ),
+        precision=float(precision_score(y_test, y_pred_rf, average="weighted", zero_division=0)),
+        recall=float(recall_score(y_test, y_pred_rf, average="weighted", zero_division=0)),
         f1=float(f1_score(y_test, y_pred_rf, average="weighted", zero_division=0)),
-        confusion_matrix=confusion_matrix(y_test, y_pred_rf, labels=class_names).astype(
-            int
-        ),
+        confusion_matrix=confusion_matrix(y_test, y_pred_rf, labels=class_names).astype(int),
         class_names=class_names,
         feature_names=available,
         feature_importances=rf.feature_importances_,
@@ -121,16 +124,10 @@ def train_classifiers(
         y_true=y_test,
         y_pred=y_pred_svm,
         accuracy=float(accuracy_score(y_test, y_pred_svm)),
-        precision=float(
-            precision_score(y_test, y_pred_svm, average="weighted", zero_division=0)
-        ),
-        recall=float(
-            recall_score(y_test, y_pred_svm, average="weighted", zero_division=0)
-        ),
+        precision=float(precision_score(y_test, y_pred_svm, average="weighted", zero_division=0)),
+        recall=float(recall_score(y_test, y_pred_svm, average="weighted", zero_division=0)),
         f1=float(f1_score(y_test, y_pred_svm, average="weighted", zero_division=0)),
-        confusion_matrix=confusion_matrix(
-            y_test, y_pred_svm, labels=class_names
-        ).astype(int),
+        confusion_matrix=confusion_matrix(y_test, y_pred_svm, labels=class_names).astype(int),
         class_names=class_names,
         feature_names=available,
         feature_importances=None,

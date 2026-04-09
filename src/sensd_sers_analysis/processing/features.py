@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from scipy.integrate import trapezoid as scipy_trapezoid
 
-from sensd_sers_analysis.data import get_raman_shift, get_signals_matrix
+from sensd_sers_analysis.data import RS_COL_PREFIX, get_raman_shift, get_signals_matrix
 from sensd_sers_analysis.processing.pca_features import add_pca_features
 from sensd_sers_analysis.processing.peak_features import get_peak_height_columns
 
@@ -142,7 +142,7 @@ def extract_basic_features(df_wide: pd.DataFrame) -> pd.DataFrame:
         integral_area = np.nansum(signals, axis=1).astype(float)
 
     metadata_cols = [
-        c for c in df_wide.columns if not (isinstance(c, str) and c.startswith("rs_"))
+        c for c in df_wide.columns if not (isinstance(c, str) and c.startswith(RS_COL_PREFIX))
     ]
     out = df_wide[metadata_cols].copy()
     out["max_intensity"] = max_intensity.astype(float)
@@ -152,8 +152,6 @@ def extract_basic_features(df_wide: pd.DataFrame) -> pd.DataFrame:
     # Add PCA features (PC1, PC2, variance ratios)
     pca_df = add_pca_features(df_wide)
     if not pca_df.empty:
-        out = out.join(
-            pca_df[["PC1", "PC2", "PC1_var_ratio", "PC2_var_ratio"]], how="left"
-        )
+        out = out.join(pca_df[["PC1", "PC2", "PC1_var_ratio", "PC2_var_ratio"]], how="left")
 
     return out

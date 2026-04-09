@@ -13,6 +13,11 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from sensd_sers_analysis.config import (
+    GLOBAL_QA_IQR_WHIS,
+    GLOBAL_QA_R2_MIN_THRESHOLD,
+    GLOBAL_QA_REJECTION_MULTIPLIER,
+)
 from sensd_sers_analysis.processing import BASIC_FEATURE_COLUMNS
 
 
@@ -97,9 +102,7 @@ def fit_concentration_regression(
     )
 
 
-def _detect_residual_outliers_iqr(
-    residuals: np.ndarray, *, whis: float = 1.5
-) -> np.ndarray:
+def _detect_residual_outliers_iqr(residuals: np.ndarray, *, whis: float = 1.5) -> np.ndarray:
     """
     Identify outlier points using IQR on absolute residuals.
 
@@ -132,7 +135,7 @@ def fit_concentration_regression_cleaned(
     feature_col: str,
     *,
     log_conc_col: str = "log_concentration",
-    iqr_whis: float = 1.5,
+    iqr_whis: float = GLOBAL_QA_IQR_WHIS,
 ) -> Optional[CleanedRegressionResult]:
     """
     Two-pass regression with residual-based outlier removal (excluding 0 CFU).
@@ -356,9 +359,7 @@ def get_global_model_consistency(
             if subset.empty:
                 continue
             for feat in feature_cols:
-                res = fit_concentration_regression(
-                    subset, feat, log_conc_col=log_conc_col
-                )
+                res = fit_concentration_regression(subset, feat, log_conc_col=log_conc_col)
                 if res is not None:
                     rows.append(
                         {
@@ -392,9 +393,9 @@ def get_global_model_consistency_qa(
     sensor_col: str = "sensor_id",
     serotype_col: str = "serotype",
     log_conc_col: str = "log_concentration",
-    rejection_multiplier: float = 2.0,
-    r2_min_threshold: float = 0.80,
-    iqr_whis: float = 1.5,
+    rejection_multiplier: float = GLOBAL_QA_REJECTION_MULTIPLIER,
+    r2_min_threshold: float = GLOBAL_QA_R2_MIN_THRESHOLD,
+    iqr_whis: float = GLOBAL_QA_IQR_WHIS,
 ) -> tuple[pd.DataFrame, dict[tuple[str, str], set[str]]]:
     """
     QA pipeline: cleaned regression per sensor + dual-threshold batch exclusion.
@@ -536,7 +537,7 @@ def compute_macro_batch_regression(
     sensor_col: str = "sensor_id",
     serotype_col: str = "serotype",
     log_conc_col: str = "log_concentration",
-    iqr_whis: float = 1.5,
+    iqr_whis: float = GLOBAL_QA_IQR_WHIS,
 ) -> Optional[MacroRegressionResult]:
     """
     Fit a single macro-regression to pooled inlier data from Pass sensors only.

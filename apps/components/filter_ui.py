@@ -6,7 +6,12 @@ import logging
 
 import streamlit as st
 
-from sensd_sers_analysis.utils import format_column_label
+from state import (
+    clear_all_filter_widget_state,
+    clear_filter_widget_state,
+    get_filter_exclude_widget_key,
+    get_filter_widget_key,
+)
 from theme import (
     FILTER_DIVIDER_HTML,
     SECTION_DIVIDER_HTML,
@@ -24,13 +29,21 @@ _TITLE_TO_FILTER_DIVIDER = TITLE_TO_FILTER_DIVIDER_HTML
 FLAT_OPTIONS_THRESHOLD = 50
 
 
-def _clear_single_filter(lbl: str) -> None:
-    """Clear selection and exclude for a single filter (used by Reset button)."""
-    st.session_state[lbl] = []
-    st.session_state[f"{lbl}_exclude"] = False
+def _clear_single_filter(column: str) -> None:
+    """
+    Clear selection and exclude state for one canonical filter column.
+
+    Parameters
+    ----------
+    column:
+        Canonical dataframe column name.
+    """
+
+    clear_filter_widget_state(column)
 
 
 def _render_filter(
+    column: str,
     label: str,
     options: list,
     default: list,
@@ -49,13 +62,13 @@ def _render_filter(
     if not options:
         return [], exclude_default
 
-    header = container.container(horizontal=True, key=f"filter_header_{label}")
+    header = container.container(horizontal=True, key=f"filter_header_{column}")
     with header:
         st.markdown(f"### {label}")
         exclude = st.toggle(
             "Exclude",
             value=exclude_default,
-            key=f"{label}_exclude",
+            key=get_filter_exclude_widget_key(column),
             help="Exclude selected instead of include only.",
         )
         if reset_button_key:
@@ -64,7 +77,7 @@ def _render_filter(
                 key=reset_button_key,
                 help="Reset selection and Exclude for this filter.",
                 on_click=_clear_single_filter,
-                args=(label,),
+                args=(column,),
             )
 
     if use_flat:
@@ -73,7 +86,7 @@ def _render_filter(
             options=options,
             default=default,
             selection_mode="multi",
-            key=label,
+            key=get_filter_widget_key(column),
             label_visibility=label_visibility,
         )
     else:
@@ -82,7 +95,7 @@ def _render_filter(
             options=options,
             default=default,
             help=help_text or "Leave empty to include all.",
-            key=label,
+            key=get_filter_widget_key(column),
             label_visibility=label_visibility,
         )
     return selected, exclude
@@ -102,10 +115,7 @@ def render_main_filter_header(container, filter_columns: list[str]) -> None:
             help="Reset all filter selections and Exclude toggles.",
         ):
             logger.info("Reset all filters for %d columns", len(filter_columns))
-            for col in filter_columns:
-                label = format_column_label(col)
-                st.session_state[label] = []
-                st.session_state[f"{label}_exclude"] = False
+            clear_all_filter_widget_state(filter_columns)
             st.rerun()
 
 

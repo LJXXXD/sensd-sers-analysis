@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 from scipy import signal as scipy_signal
 
-from sensd_sers_analysis.data import get_raman_shift, get_signals_matrix
+from sensd_sers_analysis.data import RS_COL_PREFIX, get_raman_shift, get_signals_matrix
 
 
 # Concentration label that must be excluded from learning
@@ -84,9 +84,7 @@ def _find_high_conc_subset(
     return df.head(0)
 
 
-def _smooth_spectrum(
-    y: np.ndarray, window_length: int = 11, polyorder: int = 3
-) -> np.ndarray:
+def _smooth_spectrum(y: np.ndarray, window_length: int = 11, polyorder: int = 3) -> np.ndarray:
     """
     Apply Savitzky-Golay smoothing to reduce noise spikes.
 
@@ -97,9 +95,7 @@ def _smooth_spectrum(
     if window_length % 2 == 0:
         window_length -= 1
     polyorder = min(polyorder, window_length - 1)
-    return scipy_signal.savgol_filter(
-        np.asarray(y, dtype=float), window_length, polyorder
-    )
+    return scipy_signal.savgol_filter(np.asarray(y, dtype=float), window_length, polyorder)
 
 
 def _find_peaks_on_spectrum(
@@ -131,9 +127,7 @@ def _find_peaks_on_spectrum(
     prominence = max(prominence_frac * peak_range, 1e-10)
     # Use permissive distance so adjacent peaks aren't suppressed
     distance = min(min_distance, max(1, len(x) // max(1, n_peaks * 3)))
-    peaks, props = scipy_signal.find_peaks(
-        y_clean, prominence=prominence, distance=distance
-    )
+    peaks, props = scipy_signal.find_peaks(y_clean, prominence=prominence, distance=distance)
     if len(peaks) == 0:
         return np.array([], dtype=int)
     prom = props.get("prominences", np.ones(len(peaks)))
@@ -181,9 +175,7 @@ def _compute_peak_windows_for_serotype(
     if df_sero.empty:
         return [], np.array([])
 
-    high_conc = _find_high_conc_subset(
-        df_sero, concentration_group_col, exclude_zero=True
-    )
+    high_conc = _find_high_conc_subset(df_sero, concentration_group_col, exclude_zero=True)
     if high_conc.empty:
         high_conc = _exclude_zero_cfu(df_sero, concentration_group_col)
     if high_conc.empty:
@@ -231,9 +223,7 @@ def _compute_peak_windows_for_serotype(
             0.0,
             1e-10,
         )
-        left_indices[0] = _find_outer_left(
-            mean_spec, int(peak_indices[0]), baseline_left
-        )
+        left_indices[0] = _find_outer_left(mean_spec, int(peak_indices[0]), baseline_left)
 
         # Outer right: Peak k — search right from Ak until baseline
         baseline_right = max(
@@ -241,9 +231,7 @@ def _compute_peak_windows_for_serotype(
             0.0,
             1e-10,
         )
-        right_indices[-1] = _find_outer_right(
-            mean_spec, int(peak_indices[-1]), baseline_right
-        )
+        right_indices[-1] = _find_outer_right(mean_spec, int(peak_indices[-1]), baseline_right)
 
     window_mins = np.array([float(x[left_indices[i]]) for i in range(n_anchors)])
     window_maxs = np.array([float(x[right_indices[i]]) for i in range(n_anchors)])
@@ -427,7 +415,7 @@ def extract_dynamic_peak_features(
                 )
 
     metadata_cols = [
-        c for c in df_wide.columns if not (isinstance(c, str) and c.startswith("rs_"))
+        c for c in df_wide.columns if not (isinstance(c, str) and c.startswith(RS_COL_PREFIX))
     ]
     out = df_wide[metadata_cols].copy()
     for a_idx, col in enumerate(peak_columns):

@@ -3,14 +3,16 @@ Data loading utilities for SERS Data Explorer.
 """
 
 import logging
-import tempfile
 import uuid
-from pathlib import Path
+from zipfile import BadZipFile
 
 import pandas as pd
 import streamlit as st
 
-from sensd_sers_analysis.data import load_sers_data_as_wide_and_tidy
+from sensd_sers_analysis.application.contracts import LoadedDataBundle
+from sensd_sers_analysis.application.dataset_pipeline import load_uploaded_bundle
+
+from state import reset_ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -29,15 +31,14 @@ def clear_app_data() -> None:
     """
     logger.info("Clearing app data (Reload Data clicked)")
     st.cache_data.clear()
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
+    reset_ui_state()
     st.session_state[UPLOADER_RESET_KEY] = str(uuid.uuid4())
 
 
 @st.cache_data
 def load_from_uploaded(
     _files_data: tuple[tuple[str, bytes], ...],
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> LoadedDataBundle:
     """
     Load SERS data from uploaded file bytes and convert to tidy format.
 
@@ -46,20 +47,21 @@ def load_from_uploaded(
             Leading underscore to exclude from Streamlit's cache key display.
 
     Returns:
-        Tuple of (wide_df, tidy_df). Empty DataFrames if loading fails.
+        Parsed upload bundle. Empty dataframes are returned on failure.
     """
     if not _files_data:
         logger.warning("load_from_uploaded called with no files")
-        return pd.DataFrame(), pd.DataFrame()
-    logger.info(
-        "Loading %d uploaded file(s): %s", len(_files_data), [n for n, _ in _files_data]
-    )
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        paths = [str(tmp_path / name) for name, _ in _files_data]
-        for (name, content), p in zip(_files_data, paths):
-            Path(p).write_bytes(content)
-        wide, tidy = load_sers_data_as_wide_and_tidy(paths)
-        if wide.empty or tidy.empty:
-            logger.warning("load_sers_data_as_wide_and_tidy returned empty DataFrames")
-        return wide, tidy
+        return LoadedDataBundle(wide_df=pd.DataFrame(), tidy_df=pd.DataFrame())
+    logger.info("Loading %d uploaded file(s): %s", len(_files_data), [n for n, _ in _files_data])
+    try:
+        bundle = load_uploaded_bundle(_files_data)
+    except (BadZipFile, OSError, ValueError) as exc:
+        logger.warning("Upload parsing failed: %s", exc)
+        return LoadedDataBundle(
+            wide_df=pd.DataFrame(),
+            tidy_df=pd.DataFrame(),
+        )
+
+    if bundle.wide_df.empty or bundle.tidy_df.empty:
+        logger.warning("load_uploaded_bundle returned empty dataframes")
+    return bundle

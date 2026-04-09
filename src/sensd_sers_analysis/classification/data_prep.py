@@ -13,7 +13,7 @@ from sensd_sers_analysis.assessment import (
     fit_concentration_regression_cleaned,
     get_global_model_consistency_qa,
 )
-from sensd_sers_analysis.processing.metadata import _extract_scalar_concentration
+from sensd_sers_analysis.processing import extract_scalar_concentration
 
 
 def prepare_phase2_data(
@@ -82,7 +82,7 @@ def prepare_phase2_data(
 
         # 2. Rinsate: concentration == 0 or concentration_group == "0 CFU" (EXACT)
         if concentration_col in df.columns:
-            conc = _extract_scalar_concentration(subset[concentration_col], subset)
+            conc = extract_scalar_concentration(subset[concentration_col], subset)
             rinsate_mask = conc.notna() & (conc <= 0)
         else:
             rinsate_mask = subset[concentration_group_col].astype(str) == "0 CFU"
@@ -117,7 +117,7 @@ def prepare_phase2_data(
     # 4. Strict 3-class labeling: Rinsate (conc==0 or exact "0 CFU"), ST, SE
     out["target"] = "Unknown"
     if concentration_col in out.columns:
-        conc = _extract_scalar_concentration(out[concentration_col], out)
+        conc = extract_scalar_concentration(out[concentration_col], out)
         rinsate_mask = conc.notna() & (conc <= 0)
     else:
         rinsate_mask = out[concentration_group_col].astype(str) == "0 CFU"

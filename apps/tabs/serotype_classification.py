@@ -6,31 +6,40 @@ import logging
 
 import streamlit as st
 
+from cache import build_cached_phase2_artifacts, build_cached_phase2_dataset
 from components.shared_ui import (
     render_figure_stretch,
     render_metrics_row,
     render_pdf_download_section,
 )
 
-from sensd_sers_analysis.assessment import get_global_model_consistency_qa
+from sensd_sers_analysis.application import build_phase2_pdf_bytes
 from sensd_sers_analysis.classification import (
     plot_confusion_matrix,
     plot_feature_importance,
     plot_pca_classification,
-    prepare_phase2_data,
-    train_classifiers,
 )
+from sensd_sers_analysis.config import PHASE2_INLIER_FEATURE, PHASE2_QA_FEATURES
 from sensd_sers_analysis.processing import (
     PHASE2_FEATURE_BASE,
     get_peak_height_columns,
 )
-from sensd_sers_analysis.report import build_phase2_classification_pdf
 
 logger = logging.getLogger(__name__)
 
 
-def render(filtered_features):
-    """Render the Phase 2 Serotyping & Classification tab."""
+def render(filtered_features, peak_artifacts):
+    """
+    Render the Phase 2 Serotyping & Classification tab.
+
+    Parameters
+    ----------
+    filtered_features:
+        Filtered feature dataframe for the current app state.
+    peak_artifacts:
+        Shared peak artifacts from the derived data bundle.
+    """
+
     st.markdown(
         "#### Phase 2: Serotyping & Classification\n"
         "Uses strictly clean data from Phase 1: Pass sensors only, inlier "
@@ -46,15 +55,10 @@ def render(filtered_features):
         and "PC2" in filtered_features.columns
     )
     phase2_peak_cols = get_peak_height_columns(
-        next(
-            iter(st.session_state.get("peak_infos_by_serotype", {}).values()),
-            [],
-        )
+        next(iter(peak_artifacts.peak_infos_by_serotype.values()), [])
     )
     phase2_feat_cols = [
-        c
-        for c in PHASE2_FEATURE_BASE + phase2_peak_cols
-        if c in filtered_features.columns
+        c for c in PHASE2_FEATURE_BASE + phase2_peak_cols if c in filtered_features.columns
     ]
 
     if not has_phase2_cols:
@@ -71,14 +75,10 @@ def render(filtered_features):
         )
         return
 
-    _, excluded_map_p2 = get_global_model_consistency_qa(
+    phase2_clean = build_cached_phase2_dataset(
         filtered_features,
-        feature_cols=["integral_area"],
-    )
-    phase2_clean = prepare_phase2_data(
-        filtered_features,
-        excluded_map=excluded_map_p2,
-        inlier_feature="integral_area",
+        excluded_map_policy=PHASE2_QA_FEATURES,
+        inlier_feature=PHASE2_INLIER_FEATURE,
     )
 
     if phase2_clean.empty:
@@ -111,32 +111,39 @@ def render(filtered_features):
     )
 
     try:
-        rf_result, svm_result = train_classifiers(
-            phase2_clean, phase2_feat_cols, target_col="target"
+        phase2_artifacts = build_cached_phase2_artifacts(
+            phase2_clean,
+            tuple(phase2_feat_cols),
         )
-        best = rf_result if rf_result.f1 >= svm_result.f1 else svm_result
 
         render_metrics_row(
             [
-                ("Accuracy", f"{best.accuracy:.3f}"),
-                ("Precision (weighted)", f"{best.precision:.3f}"),
-                ("Recall (weighted)", f"{best.recall:.3f}"),
-                ("F1-Score (weighted)", f"{best.f1:.3f}"),
+                ("Accuracy", f"{phase2_artifacts.best_result.accuracy:.3f}"),
+                (
+                    "Precision (weighted)",
+                    f"{phase2_artifacts.best_result.precision:.3f}",
+                ),
+                ("Recall (weighted)", f"{phase2_artifacts.best_result.recall:.3f}"),
+                ("F1-Score (weighted)", f"{phase2_artifacts.best_result.f1:.3f}"),
             ]
         )
 
-        st.markdown(f"**Best model:** {best.model_name} (F1={best.f1:.3f})")
+        st.markdown(
+            "**Best model:** "
+            f"{phase2_artifacts.best_result.model_name} "
+            f"(F1={phase2_artifacts.best_result.f1:.3f})"
+        )
 
         col_cm, col_fi = st.columns(2)
         with col_cm:
             st.markdown("**Confusion Matrix**")
-            fig_cm = plot_confusion_matrix(best)
+            fig_cm = plot_confusion_matrix(phase2_artifacts.best_result)
             render_figure_stretch(fig_cm)
 
         with col_fi:
-            if rf_result.feature_importances is not None:
+            if phase2_artifacts.rf_result.feature_importances is not None:
                 st.markdown("**Feature Importance (Random Forest)**")
-                fig_fi = plot_feature_importance(rf_result)
+                fig_fi = plot_feature_importance(phase2_artifacts.rf_result)
                 render_figure_stretch(fig_fi)
             else:
                 st.info("Feature importance only for Random Forest.")
@@ -145,20 +152,7 @@ def render(filtered_features):
         st.markdown("#### PDF Report")
 
         def _generate_phase2_pdf_bytes() -> bytes:
-            fig_pca_pdf = plot_pca_classification(phase2_clean)
-            fig_fi_pdf = (
-                plot_feature_importance(rf_result)
-                if rf_result.feature_importances is not None
-                else None
-            )
-            fig_cm_pdf = plot_confusion_matrix(best)
-            return build_phase2_classification_pdf(
-                pca_fig=fig_pca_pdf,
-                feature_importance_fig=fig_fi_pdf,
-                confusion_matrix_fig=fig_cm_pdf,
-                accuracy=best.accuracy,
-                f1=best.f1,
-            )
+            return build_phase2_pdf_bytes(phase2_artifacts)
 
         render_pdf_download_section(
             session_key="phase2_pdf",

@@ -15,12 +15,10 @@ _CONC_GROUP_CENTERS_LOG = np.array([0.0, 1.0, 2.0, 3.0])  # log10(1), log10(10),
 _CONC_GROUP_LABELS = ["1 CFU", "10 CFU", "100 CFU", "1000 CFU"]
 
 # Ordered categories for pd.Categorical; pure text ("Unknown") sorts last
-_CONC_CATEGORIES = natural_sort(
-    ["0 CFU", "1 CFU", "10 CFU", "100 CFU", "1000 CFU", "Unknown"]
-)
+_CONC_CATEGORIES = natural_sort(["0 CFU", "1 CFU", "10 CFU", "100 CFU", "1000 CFU", "Unknown"])
 
 
-def _extract_scalar_concentration(series: pd.Series, df: pd.DataFrame) -> pd.Series:
+def extract_scalar_concentration(series: pd.Series, df: pd.DataFrame) -> pd.Series:
     """
     Extract scalar concentration per row from concentration column.
 
@@ -36,6 +34,10 @@ def _extract_scalar_concentration(series: pd.Series, df: pd.DataFrame) -> pd.Ser
             c = c[min(idx, len(c) - 1)]
         conc_vals.append(c)
     return pd.Series(pd.to_numeric(conc_vals, errors="coerce"), index=series.index)
+
+
+# Backwards-compatible alias for existing internal imports.
+_extract_scalar_concentration = extract_scalar_concentration
 
 
 def add_log_concentration(df: pd.DataFrame) -> pd.DataFrame:
@@ -55,7 +57,7 @@ def add_log_concentration(df: pd.DataFrame) -> pd.DataFrame:
     if "concentration" not in out.columns:
         return out
 
-    conc = _extract_scalar_concentration(out["concentration"], out)
+    conc = extract_scalar_concentration(out["concentration"], out)
     log_conc = np.full(len(conc), np.nan, dtype=float)
     pos_mask = conc.notna() & (conc > 0)
     log_conc[pos_mask] = np.log10(conc[pos_mask].astype(float))
@@ -88,7 +90,7 @@ def add_concentration_group(df: pd.DataFrame) -> pd.DataFrame:
     if "concentration" not in out.columns:
         return out
 
-    conc = _extract_scalar_concentration(out["concentration"], out)
+    conc = extract_scalar_concentration(out["concentration"], out)
     valid = conc.notna()
 
     # Concentration 0 -> "0 CFU"
@@ -103,9 +105,7 @@ def add_concentration_group(df: pd.DataFrame) -> pd.DataFrame:
         dists = np.abs(log_conc[:, np.newaxis] - _CONC_GROUP_CENTERS_LOG)
         nearest_idx = np.argmin(dists, axis=1)
         labels = [_CONC_GROUP_LABELS[i] for i in nearest_idx]
-        out.loc[pos_mask, "concentration_group"] = pd.Categorical(
-            labels, dtype=cat_dtype
-        )
+        out.loc[pos_mask, "concentration_group"] = pd.Categorical(labels, dtype=cat_dtype)
 
     return out
 

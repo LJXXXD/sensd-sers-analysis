@@ -6,6 +6,10 @@ import logging
 
 import streamlit as st
 
+from cache import (
+    build_cached_global_qa_artifacts,
+    build_cached_single_sensor_consistency_artifacts,
+)
 from components.shared_ui import (
     render_dataframe_stretch,
     render_figure_stretch,
@@ -13,15 +17,17 @@ from components.shared_ui import (
     render_pdf_download_section,
 )
 
-from sensd_sers_analysis.assessment import (
-    fit_concentration_regression_cleaned,
-    get_global_model_consistency_qa,
-    get_zero_cfu_baseline,
+from sensd_sers_analysis.application import (
+    ModelConsistencySelection,
+    build_overlay_artifacts,
+    build_phase1_pdf_bytes,
 )
-from sensd_sers_analysis.processing import DEFAULT_GLOBAL_QA_FEATURES
-from sensd_sers_analysis.report import build_phase1_qa_pdf
+from sensd_sers_analysis.config import (
+    GLOBAL_QA_R2_MIN_THRESHOLD,
+    GLOBAL_QA_REJECTION_MULTIPLIER,
+)
 from sensd_sers_analysis.processing import (
-    filter_by_selections,
+    DEFAULT_GLOBAL_QA_FEATURES,
     get_available_feature_columns,
 )
 from sensd_sers_analysis.visualization import (
@@ -33,11 +39,21 @@ from sensd_sers_analysis.visualization import (
 logger = logging.getLogger(__name__)
 
 
-def render(filtered_features):
-    """Render the Model-Based Sensor Consistency tab."""
+def render(filtered_features, peak_artifacts):
+    """
+    Render the Model-Based Sensor Consistency tab.
+
+    Parameters
+    ----------
+    filtered_features:
+        Filtered feature dataframe for the current app state.
+    peak_artifacts:
+        Shared peak artifacts from the derived data bundle.
+    """
+
     mc_feat_cols = get_available_feature_columns(
         filtered_features,
-        st.session_state.get("peak_infos_by_serotype", {}),
+        peak_artifacts.peak_infos_by_serotype,
     )
     has_sensor = "sensor_id" in filtered_features.columns
     has_serotype = "serotype" in filtered_features.columns
@@ -69,9 +85,9 @@ def render(filtered_features):
         "are identified via IQR on absolute residuals and excluded from the "
         "clean fit."
     )
-    sensor_opts = sorted(
-        filtered_features["sensor_id"].dropna().unique().astype(str).tolist()
-    ) or ["(none)"]
+    sensor_opts = sorted(filtered_features["sensor_id"].dropna().unique().astype(str).tolist()) or [
+        "(none)"
+    ]
     serotype_opts = sorted(
         filtered_features["serotype"].dropna().unique().astype(str).tolist()
     ) or ["(none)"]
@@ -102,14 +118,24 @@ def render(filtered_features):
     _mc_sensor_ok = model_sensor and model_sensor != "(none)"
     _mc_serotype_ok = model_serotype and model_serotype != "(none)"
     if _mc_sensor_ok and _mc_serotype_ok:
-        model_df = filter_by_selections(
+        single_selection = ModelConsistencySelection(
+            sensor_id=model_sensor,
+            serotype=model_serotype,
+            feature=model_feature,
+        )
+        single_artifacts = build_cached_single_sensor_consistency_artifacts(
             filtered_features,
-            {"sensor_id": model_sensor, "serotype": model_serotype},
+            single_selection,
         )
     else:
-        model_df = filtered_features.iloc[0:0].copy()
+        single_artifacts = None
 
-    if model_df.empty and (_mc_sensor_ok and _mc_serotype_ok):
+    if (
+        single_artifacts is not None
+        and single_artifacts.model_df.empty
+        and _mc_sensor_ok
+        and _mc_serotype_ok
+    ):
         st.warning(
             f"No samples for sensor_id={model_sensor}, serotype={model_serotype}. "
             "Adjust filters or selection."
@@ -117,8 +143,9 @@ def render(filtered_features):
     elif not _mc_sensor_ok or not _mc_serotype_ok:
         st.info("Select a sensor ID and serotype above to run model-based consistency.")
     else:
-        cres = fit_concentration_regression_cleaned(model_df, model_feature)
-        zero_baseline = get_zero_cfu_baseline(model_df, model_feature)
+        assert single_artifacts is not None
+        cres = single_artifacts.regression_result
+        zero_baseline = single_artifacts.zero_cfu_baseline
 
         if cres is not None:
             render_metrics_row(
@@ -139,13 +166,16 @@ def render(filtered_features):
 
         try:
             fig_mc = plot_concentration_regression(
-                model_df,
-                model_feature,
+                single_artifacts.model_df,
+                single_artifacts.selection.feature,
                 regression_result=cres.clean_result if cres else None,
                 raw_regression_result=cres.raw_result if cres else None,
                 zero_cfu_baseline=zero_baseline,
                 outlier_mask=cres.outlier_mask if cres else None,
-                title=f"{model_sensor} — {model_serotype}",
+                title=(
+                    f"{single_artifacts.selection.sensor_id} — "
+                    f"{single_artifacts.selection.serotype}"
+                ),
             )
             render_figure_stretch(fig_mc)
         except ValueError as e:
@@ -155,13 +185,14 @@ def render(filtered_features):
     st.markdown("---")
     st.markdown("#### Global Multi-Sensor Assessment")
     st.caption(
-        "Per-sensor QA with dual threshold. Excluded if: Clean RMSE > 2× batch "
-        "median OR Clean R² < 0.80 (dead/flat sensor)."
+        "Per-sensor QA with dual threshold. Excluded if: Clean RMSE > "
+        f"{GLOBAL_QA_REJECTION_MULTIPLIER:g}× batch median OR Clean R² < "
+        f"{GLOBAL_QA_R2_MIN_THRESHOLD:.2f} (dead/flat sensor)."
     )
 
-    global_qa_default = [
-        f for f in DEFAULT_GLOBAL_QA_FEATURES if f in mc_feat_cols
-    ] or (mc_feat_cols[:5] if mc_feat_cols else [])
+    global_qa_default = [f for f in DEFAULT_GLOBAL_QA_FEATURES if f in mc_feat_cols] or (
+        mc_feat_cols[:5] if mc_feat_cols else []
+    )
     global_qa_selected = st.multiselect(
         "Features for Global QA Table (and PDF)",
         options=mc_feat_cols,
@@ -170,20 +201,18 @@ def render(filtered_features):
     )
     if not global_qa_selected:
         st.info("Select at least one feature to populate the Global QA Table.")
-    global_qa_tbl, excluded_map = get_global_model_consistency_qa(
+    global_qa_artifacts = build_cached_global_qa_artifacts(
         filtered_features,
-        feature_cols=global_qa_selected,
+        tuple(global_qa_selected),
     )
-    if not global_qa_tbl.empty:
+    if not global_qa_artifacts.table.empty:
         render_dataframe_stretch(
-            global_qa_tbl,
+            global_qa_artifacts.table,
             column_config={
                 "outliers": st.column_config.NumberColumn("Outliers"),
                 "raw_rmse": st.column_config.NumberColumn("Raw RMSE", format="%.4f"),
                 "raw_r2": st.column_config.NumberColumn("Raw R²", format="%.4f"),
-                "clean_rmse": st.column_config.NumberColumn(
-                    "Clean RMSE", format="%.4f"
-                ),
+                "clean_rmse": st.column_config.NumberColumn("Clean RMSE", format="%.4f"),
                 "clean_r2": st.column_config.NumberColumn("Clean R²", format="%.4f"),
             },
         )
@@ -218,68 +247,59 @@ def render(filtered_features):
             key="overlay_feature",
         )
 
-    overlay_items: list = []
-    macro_items: list = []
-    for sero in overlay_serotypes:
-        for feat in overlay_features:
-            excluded = excluded_map.get((str(sero), str(feat)), set())
-            all_sens = set(
-                str(s)
-                for s in filtered_features[
-                    filtered_features["serotype"].astype(str) == sero
-                ]["sensor_id"]
-                .dropna()
-                .unique()
+    overlay_artifacts = build_overlay_artifacts(
+        filtered_features,
+        tuple(overlay_serotypes),
+        tuple(overlay_features),
+        global_qa_artifacts.excluded_map,
+    )
+    for artifact in overlay_artifacts:
+        st.markdown(f"**{artifact.serotype} — {artifact.feature}**")
+        try:
+            fig_ov = plot_multi_sensor_regression(
+                filtered_features,
+                artifact.serotype,
+                artifact.feature,
+                excluded_sensors=set(artifact.excluded_sensors),
             )
-            pass_sens = all_sens - excluded
+            render_figure_stretch(fig_ov)
+        except ValueError as e:
+            logger.warning(
+                "Overlay plot error (%s, %s): %s",
+                artifact.serotype,
+                artifact.feature,
+                e,
+            )
+            st.error(f"Overlay ({artifact.serotype}, {artifact.feature}): {e}")
 
-            st.markdown(f"**{sero} — {feat}**")
-            try:
-                fig_ov = plot_multi_sensor_regression(
-                    filtered_features,
-                    sero,
-                    feat,
-                    excluded_sensors=excluded,
+        st.markdown("**Macro batch regression**")
+        try:
+            fig_macro, macro_res = plot_macro_batch_regression(
+                filtered_features,
+                artifact.serotype,
+                artifact.feature,
+                set(artifact.pass_sensors),
+            )
+            render_figure_stretch(fig_macro)
+            if macro_res is not None:
+                render_metrics_row(
+                    [
+                        ("Raw Batch RMSE", f"{macro_res.raw_batch_rmse:.4f}"),
+                        ("Raw Batch R²", f"{macro_res.raw_batch_r2:.4f}"),
+                        ("Clean Batch RMSE", f"{macro_res.clean_batch_rmse:.4f}"),
+                        ("Clean Batch R²", f"{macro_res.clean_batch_r2:.4f}"),
+                        ("Macro Outliers", f"{macro_res.n_macro_outliers}"),
+                    ]
                 )
-                render_figure_stretch(fig_ov)
-                overlay_items.append({"fig": fig_ov, "serotype": sero, "feature": feat})
-            except ValueError as e:
-                logger.warning("Overlay plot error (%s, %s): %s", sero, feat, e)
-                st.error(f"Overlay ({sero}, {feat}): {e}")
-
-            st.markdown("**Macro batch regression**")
-            try:
-                fig_macro, macro_res = plot_macro_batch_regression(
-                    filtered_features,
-                    sero,
-                    feat,
-                    pass_sens,
-                )
-                render_figure_stretch(fig_macro)
-                macro_items.append(
-                    {
-                        "fig": fig_macro,
-                        "macro_result": macro_res,
-                        "serotype": sero,
-                        "feature": feat,
-                    }
-                )
-                if macro_res is not None:
-                    render_metrics_row(
-                        [
-                            ("Raw Batch RMSE", f"{macro_res.raw_batch_rmse:.4f}"),
-                            ("Raw Batch R²", f"{macro_res.raw_batch_r2:.4f}"),
-                            ("Clean Batch RMSE", f"{macro_res.clean_batch_rmse:.4f}"),
-                            ("Clean Batch R²", f"{macro_res.clean_batch_r2:.4f}"),
-                            ("Macro Outliers", f"{macro_res.n_macro_outliers}"),
-                        ]
-                    )
-            except ValueError as e:
-                logger.warning(
-                    "Macro batch regression error (%s, %s): %s", sero, feat, e
-                )
-                st.error(f"Macro ({sero}, {feat}): {e}")
-            st.markdown("---")
+        except ValueError as e:
+            logger.warning(
+                "Macro batch regression error (%s, %s): %s",
+                artifact.serotype,
+                artifact.feature,
+                e,
+            )
+            st.error(f"Macro ({artifact.serotype}, {artifact.feature}): {e}")
+        st.markdown("---")
 
     if not overlay_serotypes or not overlay_features:
         st.info("Select at least one serotype and one feature to generate plots.")
@@ -287,10 +307,10 @@ def render(filtered_features):
     st.markdown("#### PDF Report")
 
     def _generate_phase1_pdf_bytes() -> bytes:
-        return build_phase1_qa_pdf(
-            global_qa_table=global_qa_tbl if not global_qa_tbl.empty else None,
-            overlay_items=overlay_items,
-            macro_items=macro_items,
+        return build_phase1_pdf_bytes(
+            filtered_features,
+            global_qa_artifacts,
+            overlay_artifacts,
             report_title="Sensor Consistency & Quality Assurance Report",
         )
 

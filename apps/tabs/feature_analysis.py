@@ -24,8 +24,18 @@ from theme import (
 logger = logging.getLogger(__name__)
 
 
-def render(filtered_features):
-    """Render the Feature Analysis tab."""
+def render(filtered_features, peak_artifacts):
+    """
+    Render the Feature Analysis tab.
+
+    Parameters
+    ----------
+    filtered_features:
+        Filtered feature dataframe for the current app state.
+    peak_artifacts:
+        Shared peak artifacts from the derived data bundle.
+    """
+
     all_feat_nan = all(
         filtered_features[c].isna().all()
         for c in BASIC_FEATURE_COLUMNS
@@ -50,7 +60,7 @@ def render(filtered_features):
 
     stats_feat_opts = get_available_feature_columns(
         filtered_features,
-        st.session_state.get("peak_infos_by_serotype", {}),
+        peak_artifacts.peak_infos_by_serotype,
     )
 
     col1, col2, col3 = st.columns(3)
@@ -101,11 +111,7 @@ def render(filtered_features):
 
     x_val = (
         None
-        if (
-            not x_col
-            or x_col == "(no grouping)"
-            or x_col not in filtered_features.columns
-        )
+        if (not x_col or x_col == "(no grouping)" or x_col not in filtered_features.columns)
         else x_col
     )
     hue_val = None if hue_col_s == "None" else hue_col_s

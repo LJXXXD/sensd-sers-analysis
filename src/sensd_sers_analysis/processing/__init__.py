@@ -25,6 +25,7 @@ from .filters import (
 from .metadata import (
     add_concentration_group,
     add_log_concentration,
+    extract_scalar_concentration,
     preprocess_metadata,
 )
 from .pca_features import add_pca_features
@@ -49,6 +50,7 @@ __all__ = [
     "add_log_concentration",
     "DEFAULT_FILTER_ORDER",
     "extract_basic_features",
+    "extract_scalar_concentration",
     "trim_raman_shift",
     "filter_by_selections",
     "filter_sers_data",
