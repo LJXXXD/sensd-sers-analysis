@@ -12,7 +12,7 @@ import pandas as pd
 import seaborn as sns
 from scipy import stats
 
-from sensd_sers_analysis.assessment.model_consistency import (
+from sensd_sers_analysis.assessment.sensor_assessment_regression import (
     ConcentrationRegressionResult,
     MacroRegressionResult,
     compute_macro_batch_regression,
@@ -49,9 +49,7 @@ def plot_degradation_trend(
         matplotlib Figure.
     """
     if feature_col not in df.columns or sequence_col not in df.columns:
-        raise ValueError(
-            f"Required columns '{feature_col}' or '{sequence_col}' not in DataFrame."
-        )
+        raise ValueError(f"Required columns '{feature_col}' or '{sequence_col}' not in DataFrame.")
 
     df_clean = df.dropna(subset=[feature_col, sequence_col])
     if df_clean.empty:
@@ -145,9 +143,7 @@ def plot_batch_boxplot(
         matplotlib Figure.
     """
     if feature_col not in df.columns or sensor_col not in df.columns:
-        raise ValueError(
-            f"Required columns '{feature_col}' or '{sensor_col}' not in DataFrame."
-        )
+        raise ValueError(f"Required columns '{feature_col}' or '{sensor_col}' not in DataFrame.")
 
     df_clean = df.dropna(subset=[feature_col])
     if df_clean.empty:
@@ -167,9 +163,7 @@ def plot_batch_boxplot(
         ax=ax,
         palette="muted" if hue else None,
     )
-    ax.tick_params(
-        axis="x", rotation=45 if len(df_clean[sensor_col].unique()) > 5 else 0
-    )
+    ax.tick_params(axis="x", rotation=45 if len(df_clean[sensor_col].unique()) > 5 else 0)
     ax.set_xlabel(sensor_col.replace("_", " ").title())
     ax.set_ylabel(feature_col.replace("_", " ").title())
     if title:
@@ -228,9 +222,7 @@ def plot_concentration_regression(
         matplotlib Figure.
     """
     if feature_col not in df.columns or log_conc_col not in df.columns:
-        raise ValueError(
-            f"Required columns '{feature_col}' or '{log_conc_col}' not in DataFrame."
-        )
+        raise ValueError(f"Required columns '{feature_col}' or '{log_conc_col}' not in DataFrame.")
 
     valid = df[[log_conc_col, feature_col]].notna().all(axis=1)
     df_plot = df.loc[valid]
@@ -270,9 +262,7 @@ def plot_concentration_regression(
                 zorder=4,
             )
     else:
-        ax.scatter(
-            x, y, alpha=0.6, s=50, color="steelblue", edgecolors="white", zorder=3
-        )
+        ax.scatter(x, y, alpha=0.6, s=50, color="steelblue", edgecolors="white", zorder=3)
 
     x_min, x_max = x.min(), x.max()
     x_line = np.linspace(x_min, x_max, 50)
@@ -321,7 +311,7 @@ def plot_concentration_regression(
         ax.set_title(title, fontweight="bold", pad=12)
     else:
         ax.set_title(
-            f"Model-Based Consistency: {feature_col.replace('_', ' ').title()} vs Log Concentration",
+            f"Sensor assessment: {feature_col.replace('_', ' ').title()} vs log concentration",
             fontweight="bold",
             pad=12,
         )
@@ -520,9 +510,7 @@ def plot_macro_batch_regression(
         sub = subset[subset[sensor_col].astype(str) == str(sens)]
         if sub.empty:
             continue
-        cres = fit_concentration_regression_cleaned(
-            sub, feature_col, log_conc_col=log_conc_col
-        )
+        cres = fit_concentration_regression_cleaned(sub, feature_col, log_conc_col=log_conc_col)
         if cres is None:
             continue
         valid = sub[[log_conc_col, feature_col]].notna().all(axis=1)

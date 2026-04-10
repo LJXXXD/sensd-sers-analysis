@@ -112,8 +112,7 @@ def filter_outliers(
     """
     if feature_col not in df.columns:
         raise ValueError(
-            f"feature_col '{feature_col}' not in DataFrame. "
-            f"Available: {list(df.columns)}"
+            f"feature_col '{feature_col}' not in DataFrame. Available: {list(df.columns)}"
         )
 
     vals = df[feature_col].values

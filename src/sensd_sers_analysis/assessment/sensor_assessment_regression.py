@@ -1,5 +1,5 @@
 """
-Model-based sensor consistency: linear regression across concentration spectrum.
+Sensor assessment regression: linear regression across the concentration axis.
 
 Evaluates sensor stability by fitting a regression model (log concentration vs
 feature) and using the residuals (RMSE) as the core consistency metric.

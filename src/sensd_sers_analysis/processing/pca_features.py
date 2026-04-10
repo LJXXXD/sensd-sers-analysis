@@ -70,12 +70,8 @@ def add_pca_features(df_wide: pd.DataFrame, *, n_components: int = 2) -> pd.Data
     var1 = float(var_ratios[0]) if len(var_ratios) > 0 else np.nan
     var2 = float(var_ratios[1]) if len(var_ratios) > 1 else np.nan
 
-    pc1 = (
-        pca_scores[:, 0] if pca_scores.shape[1] >= 1 else np.full(len(df_wide), np.nan)
-    )
-    pc2 = (
-        pca_scores[:, 1] if pca_scores.shape[1] >= 2 else np.full(len(df_wide), np.nan)
-    )
+    pc1 = pca_scores[:, 0] if pca_scores.shape[1] >= 1 else np.full(len(df_wide), np.nan)
+    pc2 = pca_scores[:, 1] if pca_scores.shape[1] >= 2 else np.full(len(df_wide), np.nan)
 
     out = pd.DataFrame(
         index=df_wide.index,

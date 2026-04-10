@@ -1,88 +1,99 @@
 """
-Raman shift and peaks-per-serotype sidebar component.
+Raman shift sidebar component (trim window and global peak count when needed).
 """
+
+from __future__ import annotations
 
 import streamlit as st
 
+from sensd_sers_analysis.processing.metadata import sorted_unique_canonical_serotypes
 from sensd_sers_analysis.utils import parse_raman_shift_bound
 
-from theme import N_PEAKS_DEFAULT, N_PEAKS_MAX, N_PEAKS_MIN
+from theme import (
+    N_PEAKS_DEFAULT,
+    N_PEAKS_MAX,
+    N_PEAKS_MIN,
+    RAMAN_SHIFT_DEFAULT_MAX_CM1,
+    RAMAN_SHIFT_DEFAULT_MIN_CM1,
+)
 
 
-def render_raman_and_peaks_sidebar(
-    container, wide_df
-) -> tuple[float | None, float | None, int, dict | None]:
+def list_serotypes_from_wide_df(wide_df) -> list[str]:
     """
-    Render Raman shift inputs and peaks-per-serotype controls in the sidebar.
+    Return sorted unique serotype labels from a wide dataframe.
 
-    Args:
-        container: Streamlit container (typically st.sidebar).
-        wide_df: Wide-format DataFrame (may be None or empty).
+    Matching is case-insensitive; returned labels are canonical uppercase.
 
-    Returns:
-        Tuple of (min_shift, max_shift, n_peaks, n_peaks_by_serotype).
-        n_peaks_by_serotype is None when no serotypes; otherwise dict of
-        serotype -> int.
+    Parameters
+    ----------
+    wide_df:
+        Wide-format dataframe; may be empty.
+
+    Returns
+    -------
+    list[str]
+        Non-empty canonical serotype strings, sorted.
     """
-    container.markdown("#### Raman Shift window")
+
+    return sorted_unique_canonical_serotypes(wide_df)
+
+
+def render_raman_shift_sidebar(container, wide_df) -> tuple[float | None, float | None, int]:
+    """
+    Render Raman shift trim inputs and, when there is no serotype column, peak count.
+
+    Per-serotype peak counts for **Peak Discovery** are configured in that
+    tab (above each serotype plot). When the data has no ``serotype`` column, a
+    single **Number of peaks** control is shown here.
+
+    Parameters
+    ----------
+    container:
+        Streamlit container (typically ``st.sidebar``).
+    wide_df:
+        Loaded wide dataframe (used only to decide if the global peak control is shown).
+
+    Returns
+    -------
+    tuple[float | None, float | None, int]
+        ``(min_shift, max_shift, n_peaks)``. When serotypes are present, ``n_peaks``
+        is the package default (dynamic counts come from session state in the app).
+        When there are no serotypes, ``n_peaks`` is taken from the sidebar control.
+    """
+
+    container.markdown("#### Raman shift window")
     rs_col1, rs_col2 = container.columns(2)
     with rs_col1:
         rs_min_str = st.text_input(
             "Min (cm⁻¹)",
-            value="",
-            placeholder="e.g. 400",
+            value=str(RAMAN_SHIFT_DEFAULT_MIN_CM1),
             key="raman_shift_min",
-            help="Leave blank for no lower limit.",
+            help="Lower bound for trimming spectra. Clear the field for no lower limit.",
         )
     with rs_col2:
         rs_max_str = st.text_input(
             "Max (cm⁻¹)",
-            value="",
-            placeholder="e.g. 1800",
+            value=str(RAMAN_SHIFT_DEFAULT_MAX_CM1),
             key="raman_shift_max",
-            help="Leave blank for no upper limit.",
+            help="Upper bound for trimming spectra. Clear the field for no upper limit.",
         )
 
-    serotypes_from_wide = (
-        sorted(wide_df["serotype"].dropna().unique().astype(str).tolist())
-        if wide_df is not None and not wide_df.empty and "serotype" in wide_df.columns
-        else []
-    )
-    serotypes_from_wide = [s for s in serotypes_from_wide if s and s != "nan"]
-
-    if serotypes_from_wide:
-        n_peaks = N_PEAKS_DEFAULT
-        container.markdown("#### Number of peaks by serotype")
-        n_peaks_by_serotype = {}
-        for i, s in enumerate(serotypes_from_wide):
-            if i % 2 == 0:
-                peak_cols = container.columns(2)
-            with peak_cols[i % 2]:
-                n_peaks_by_serotype[s] = int(
-                    st.number_input(
-                        f"Number of peaks ({s})",
-                        min_value=N_PEAKS_MIN,
-                        max_value=N_PEAKS_MAX,
-                        value=N_PEAKS_DEFAULT,
-                        step=1,
-                        key=f"n_peaks_{s}",
-                        help=f"Expected number of peaks to detect in the mean spectrum for {s}.",
-                    )
-                )
+    serotypes = list_serotypes_from_wide_df(wide_df)
+    if serotypes:
+        n_peaks = int(N_PEAKS_DEFAULT)
     else:
-        n_peaks_by_serotype = None
         n_peaks = int(
             container.number_input(
-                "Number of Peaks",
+                "Number of peaks",
                 min_value=N_PEAKS_MIN,
                 max_value=N_PEAKS_MAX,
                 value=N_PEAKS_DEFAULT,
                 step=1,
-                key="n_peaks",
-                help="Number of peaks (no serotype column in data).",
+                key="n_peaks_global_no_serotype",
+                help="Number of peaks when the dataset has no serotype column.",
             )
         )
 
     min_shift = parse_raman_shift_bound(rs_min_str)
     max_shift = parse_raman_shift_bound(rs_max_str)
-    return min_shift, max_shift, n_peaks, n_peaks_by_serotype
+    return min_shift, max_shift, n_peaks

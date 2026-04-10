@@ -22,20 +22,24 @@ from components.filter_ui import (
     render_main_filter_header,
     section_divider,
 )
-from components.raman_sidebar import render_raman_and_peaks_sidebar
+from components.raman_sidebar import list_serotypes_from_wide_df, render_raman_shift_sidebar
+from theme import N_PEAKS_DEFAULT, unicode_strikethrough
 from sensd_sers_analysis.application import (
     FilterSelection,
     build_filter_catalog,
     compute_filter_options,
+    merge_targeted_peaks_into_filtered_bundle,
     serialize_filter_state,
 )
+from sensd_sers_analysis.config.targeted_peaks import TARGETED_PEAK_DEFAULT_ANCHORS_CM1
 from sensd_sers_analysis.utils import format_column_label
 from state import write_peak_artifacts_to_state
 from tabs import (
     feature_analysis,
-    model_consistency,
-    peak_diagnostics,
+    peak_discovery,
+    peak_feature_extraction,
     sensor_assessment,
+    sensor_qc_legacy,
     serotype_classification,
     spectra_viewer,
 )
@@ -93,11 +97,22 @@ st.sidebar.success(
 st.sidebar.markdown(section_divider(), unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# Raman shift trimming and peaks per serotype
+# Raman shift trimming; per-serotype peak counts come from Peak Discovery tab
 # ---------------------------------------------------------------------------
-min_shift, max_shift, n_peaks, n_peaks_by_serotype = render_raman_and_peaks_sidebar(
-    st.sidebar, loaded_bundle.wide_df
+min_shift, max_shift, n_peaks = render_raman_shift_sidebar(
+    st.sidebar,
+    loaded_bundle.wide_df,
 )
+serotypes_for_peaks = list_serotypes_from_wide_df(loaded_bundle.wide_df)
+if serotypes_for_peaks:
+    for sero in serotypes_for_peaks:
+        st.session_state.setdefault(f"pvis_n_peaks_{sero}", int(N_PEAKS_DEFAULT))
+    n_peaks_by_serotype = {
+        sero: int(st.session_state[f"pvis_n_peaks_{sero}"]) for sero in serotypes_for_peaks
+    }
+else:
+    n_peaks_by_serotype = None
+
 derived_bundle = build_cached_derived_bundle(
     loaded_bundle,
     min_shift=min_shift,
@@ -220,18 +235,20 @@ if filtered_bundle.filtered_tidy_df.empty:
 
 (
     tab_spectra,
-    tab_peak_diag,
+    tab_peak_viz,
+    tab_peak_features,
     tab_stats,
-    tab_assessment,
-    tab_model_consistency,
+    tab_sensor_qc_legacy,
+    tab_sensor_assessment,
     tab_phase2,
 ) = st.tabs(
     [
         "Spectra Viewer",
-        "Peak Diagnostics",
+        "Peak Discovery",
+        "Peak Feature Extraction",
         "Feature Analysis",
-        "Sensor Assessment",
-        "Model Consistency",
+        f"{unicode_strikethrough('Sensor QC')} (legacy)",
+        "Sensor assessment",
         "Serotype Classification",
     ]
 )
@@ -239,33 +256,52 @@ if filtered_bundle.filtered_tidy_df.empty:
 with tab_spectra:
     spectra_viewer.render(filtered_bundle.filtered_tidy_df)
 
-with tab_peak_diag:
-    peak_diagnostics.render(
+with tab_peak_viz:
+    peak_discovery.render(
         filtered_bundle.filtered_features_df,
         derived_bundle.wide_df,
         derived_bundle.peak_artifacts,
     )
 
+with tab_peak_features:
+    peak_feature_extraction.render(
+        filtered_bundle,
+        derived_bundle,
+        derived_bundle.peak_artifacts,
+    )
+
+targeted_anchors = st.session_state.get(
+    "pfe_targeted_anchors",
+    TARGETED_PEAK_DEFAULT_ANCHORS_CM1,
+)
+if not targeted_anchors:
+    targeted_anchors = TARGETED_PEAK_DEFAULT_ANCHORS_CM1
+filtered_bundle_for_analysis = merge_targeted_peaks_into_filtered_bundle(
+    filtered_bundle,
+    derived_bundle.wide_df,
+    tuple(float(a) for a in targeted_anchors),
+)
+
 with tab_stats:
     feature_analysis.render(
-        filtered_bundle.filtered_features_df,
+        filtered_bundle_for_analysis.filtered_features_df,
         derived_bundle.peak_artifacts,
     )
 
-with tab_assessment:
+with tab_sensor_qc_legacy:
+    sensor_qc_legacy.render(
+        filtered_bundle_for_analysis.filtered_features_df,
+        derived_bundle.peak_artifacts,
+    )
+
+with tab_sensor_assessment:
     sensor_assessment.render(
-        filtered_bundle.filtered_features_df,
-        derived_bundle.peak_artifacts,
-    )
-
-with tab_model_consistency:
-    model_consistency.render(
-        filtered_bundle.filtered_features_df,
+        filtered_bundle_for_analysis.filtered_features_df,
         derived_bundle.peak_artifacts,
     )
 
 with tab_phase2:
     serotype_classification.render(
-        filtered_bundle.filtered_features_df,
+        filtered_bundle_for_analysis.filtered_features_df,
         derived_bundle.peak_artifacts,
     )

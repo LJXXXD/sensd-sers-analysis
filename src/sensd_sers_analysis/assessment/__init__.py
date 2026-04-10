@@ -9,7 +9,7 @@ from .batch_variance import (
     compute_batch_variance,
     identify_deviating_sensors,
 )
-from .model_consistency import (
+from .sensor_assessment_regression import (
     CleanedRegressionResult,
     ConcentrationRegressionResult,
     MacroRegressionResult,

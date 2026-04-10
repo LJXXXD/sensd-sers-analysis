@@ -36,9 +36,7 @@ def _df_to_table_data(
     df_str = df.copy()
     for c in df_str.select_dtypes(include=["float", "floating"]).columns:
         df_str[c] = df_str[c].apply(
-            lambda x: float_fmt.format(x)
-            if pd.notna(x) and isinstance(x, (int, float))
-            else ""
+            lambda x: float_fmt.format(x) if pd.notna(x) and isinstance(x, (int, float)) else ""
         )
     # Convert categorical columns to object so fillna("—") does not raise;
     # Categorical does not allow values outside its categories
@@ -581,9 +579,7 @@ def build_phase2_classification_pdf(
     flow.append(Spacer(1, 0.25 * inch))
 
     if pca_fig is not None:
-        flow.append(
-            Paragraph("1. PCA Scatter (Unsupervised Clustering)", heading_style)
-        )
+        flow.append(Paragraph("1. PCA Scatter (Unsupervised Clustering)", heading_style))
         flow.append(
             Paragraph(
                 "PC1 vs PC2 colored by class (ST, SE, Rinsate). "

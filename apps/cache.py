@@ -16,7 +16,7 @@ from sensd_sers_analysis.application.classification_service import (
 from sensd_sers_analysis.application.contracts import SensorAssessmentSelection
 from sensd_sers_analysis.application.dataset_pipeline import build_derived_bundle
 from sensd_sers_analysis.application.filtering_service import deserialize_filter_state
-from sensd_sers_analysis.application.model_consistency_service import (
+from sensd_sers_analysis.application.sensor_assessment_service import (
     build_global_qa_artifacts,
     build_single_sensor_consistency_artifacts,
 )
@@ -114,14 +114,14 @@ def build_cached_sensor_assessment_artifacts(
 @st.cache_data
 def build_cached_single_sensor_consistency_artifacts(filtered_features, selection):
     """
-    Cache single-sensor model-consistency artifacts.
+    Cache single-sensor sensor-assessment (regression QA) artifacts.
 
     Parameters
     ----------
     filtered_features:
         Filtered feature dataframe.
     selection:
-        Model-consistency selection.
+        Single-sensor regression selection (:class:`ModelConsistencySelection`).
 
     Returns
     -------
@@ -135,7 +135,7 @@ def build_cached_single_sensor_consistency_artifacts(filtered_features, selectio
 @st.cache_data
 def build_cached_global_qa_artifacts(filtered_features, feature_columns: tuple[str, ...]):
     """
-    Cache global model-consistency QA artifacts.
+    Cache global sensor-assessment QA artifacts.
 
     Parameters
     ----------

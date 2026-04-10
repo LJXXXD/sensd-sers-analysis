@@ -4,6 +4,27 @@ Theme constants for SERS Data Explorer UI.
 Centralizes magic numbers, figsize presets, slider limits, and standard HTML.
 """
 
+
+def unicode_strikethrough(text: str) -> str:
+    """
+    Apply a combining long-stroke overlay per character for plain-text UIs.
+
+    Streamlit tab labels do not render HTML/Markdown; this approximates
+    strikethrough so deprecated entries remain visually distinct.
+
+    Parameters
+    ----------
+    text:
+        Substring to strike (for example ``Sensor QC`` on a deprecated tab label).
+
+    Returns
+    -------
+    str
+        Unicode string with U+0336 after each code point of ``text``.
+    """
+    return "".join(f"{ch}\u0336" for ch in text)
+
+
 # ---------------------------------------------------------------------------
 # Streamlit display
 # ---------------------------------------------------------------------------
@@ -27,6 +48,10 @@ PLOT_HEIGHT_DEFAULT = 10
 N_PEAKS_MIN = 1
 N_PEAKS_MAX = 10
 N_PEAKS_DEFAULT = 6
+
+# Default Raman-shift trim (cm⁻¹) for the sidebar text inputs on first load.
+RAMAN_SHIFT_DEFAULT_MIN_CM1 = 450
+RAMAN_SHIFT_DEFAULT_MAX_CM1 = 1800
 
 # ---------------------------------------------------------------------------
 # Matplotlib aesthetics

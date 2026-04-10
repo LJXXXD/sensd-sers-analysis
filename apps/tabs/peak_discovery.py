@@ -1,5 +1,5 @@
 """
-Peak Detection Diagnostics tab — serotype-specific peak verification.
+Peak Discovery tab — exploratory serotype-specific peak verification.
 """
 
 import logging
@@ -25,6 +25,9 @@ from theme import (
     DEFAULT_FIGSIZE_WIDE,
     GRID_ALPHA,
     LEGEND_FONTSIZE,
+    N_PEAKS_DEFAULT,
+    N_PEAKS_MAX,
+    N_PEAKS_MIN,
     SPAN_ALPHA_ANCHOR,
     SPAN_ALPHA_SIGNAL,
 )
@@ -34,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 def render(filtered_features, wide_df, peak_artifacts):
     """
-    Render the Peak Detection Diagnostics tab.
+    Render the Peak Discovery tab.
 
     Parameters
     ----------
@@ -57,15 +60,17 @@ def render(filtered_features, wide_df, peak_artifacts):
         logger.info("Peak diagnostics skipped: no peak data (peak_artifacts empty)")
         st.info(
             "Peak detection requires loaded data with Raman intensity columns. "
-            "Adjust **Peaks per serotype** in the sidebar and ensure high-concentration "
-            "samples are present (>0 CFU, serotype-specific)."
+            "Use **Number of peaks** above each serotype plot (when available) and "
+            "ensure high-concentration samples are present (>0 CFU, serotype-specific)."
         )
         return
 
     st.markdown(
-        "Visual verification of dynamic peak extraction: serotype-specific "
-        "anchors, search windows, and detection success rates (0 CFU excluded from "
-        "learning). Each serotype uses its own peak count from the sidebar."
+        "**Exploratory only:** visual verification of dynamic peak discovery "
+        "(serotype-specific anchors, search windows, and detection rates; 0 CFU "
+        "excluded from learning). Adjust **Number of peaks** above each serotype "
+        "plot to change discovery; downstream ML uses fixed anchors from "
+        "**Peak Feature Extraction**."
     )
 
     for overview in build_peak_anchor_overviews(peak_artifacts):
@@ -73,6 +78,18 @@ def render(filtered_features, wide_df, peak_artifacts):
             f"**{overview.serotype}** — Mean spectrum & diagnostics",
             expanded=True,
         ):
+            st.number_input(
+                f"Number of peaks ({overview.serotype})",
+                min_value=N_PEAKS_MIN,
+                max_value=N_PEAKS_MAX,
+                value=int(N_PEAKS_DEFAULT),
+                step=1,
+                key=f"pvis_n_peaks_{overview.serotype}",
+                help=(
+                    f"How many peaks to detect in the mean spectrum for {overview.serotype}. "
+                    "Changing this value retriggers dynamic peak extraction on the next run."
+                ),
+            )
             fig_anchor = plot_peak_anchor_summary(
                 peak_artifacts.raman_x,
                 overview.mean_spectrum,

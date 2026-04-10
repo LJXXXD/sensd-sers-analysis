@@ -36,13 +36,13 @@ from .filtering_service import (
     normalize_filter_state,
     serialize_filter_state,
 )
-from .model_consistency_service import (
+from .sensor_assessment_service import (
     build_global_qa_artifacts,
     build_overlay_artifacts,
     build_phase1_pdf_bytes,
     build_single_sensor_consistency_artifacts,
 )
-from .peak_diagnostics_service import (
+from .peak_discovery_service import (
     PeakAnchorOverview,
     PeakDiagnosticContext,
     PeakSignalOptions,
@@ -54,6 +54,7 @@ from .peak_diagnostics_service import (
     build_signal_selection_options,
     build_signal_verification_artifact,
 )
+from .targeted_peak_service import merge_targeted_peaks_into_filtered_bundle
 
 __all__ = [
     "DerivedDataBundle",
@@ -94,6 +95,7 @@ __all__ = [
     "compute_filter_options",
     "deserialize_filter_state",
     "load_uploaded_bundle",
+    "merge_targeted_peaks_into_filtered_bundle",
     "normalize_filter_state",
     "run_phase2_classification",
     "serialize_filter_state",

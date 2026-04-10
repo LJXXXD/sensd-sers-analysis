@@ -44,8 +44,7 @@ def prepare_degradation_data(
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(
-            f"prepare_degradation_data: missing columns {missing}. "
-            f"Available: {list(df.columns)}"
+            f"prepare_degradation_data: missing columns {missing}. Available: {list(df.columns)}"
         )
 
     # Use test_id if present, else date for temporal grouping
@@ -113,13 +112,11 @@ def compute_degradation(
     """
     if feature_col not in df.columns:
         raise ValueError(
-            f"feature_col '{feature_col}' not in DataFrame. "
-            f"Available: {list(df.columns)}"
+            f"feature_col '{feature_col}' not in DataFrame. Available: {list(df.columns)}"
         )
     if sequence_col not in df.columns:
         raise ValueError(
-            f"sequence_col '{sequence_col}' not in DataFrame. "
-            f"Available: {list(df.columns)}"
+            f"sequence_col '{sequence_col}' not in DataFrame. Available: {list(df.columns)}"
         )
 
     def _fit_group(g: pd.DataFrame) -> pd.Series:
@@ -158,9 +155,7 @@ def compute_degradation(
                 interp = "improvement"
         else:
             interp = (
-                "stable"
-                if abs(slope) < 1e-10
-                else ("degradation" if slope < 0 else "improvement")
+                "stable" if abs(slope) < 1e-10 else ("degradation" if slope < 0 else "improvement")
             )
 
         return pd.Series(
@@ -182,9 +177,7 @@ def compute_degradation(
 
     missing = [c for c in group_cols if c not in df.columns]
     if missing:
-        raise ValueError(
-            f"group_cols {missing} not in DataFrame. Available: {list(df.columns)}"
-        )
+        raise ValueError(f"group_cols {missing} not in DataFrame. Available: {list(df.columns)}")
 
     return (
         df.groupby(group_cols, dropna=False, observed=True)

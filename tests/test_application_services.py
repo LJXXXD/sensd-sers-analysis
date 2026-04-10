@@ -24,7 +24,7 @@ from sensd_sers_analysis.application.contracts import (
 )
 from sensd_sers_analysis.application.dataset_pipeline import build_derived_bundle
 from sensd_sers_analysis.application.filtering_service import apply_filters
-from sensd_sers_analysis.application.model_consistency_service import (
+from sensd_sers_analysis.application.sensor_assessment_service import (
     build_global_qa_artifacts,
     build_overlay_artifacts,
     build_single_sensor_consistency_artifacts,
@@ -47,7 +47,6 @@ from sensd_sers_analysis.processing import (
     extract_basic_features,
     extract_dynamic_peak_features,
     filter_sers_data,
-    get_peak_height_columns,
     preprocess_metadata,
     snap_spectra_to_master_grid,
     trim_raman_shift,
@@ -264,11 +263,6 @@ class ApplicationServiceTests(unittest.TestCase):
             n_peaks=1,
             n_peaks_by_serotype={"ST": 1, "SE": 1},
         )
-        if manual_peak_by_sero:
-            first_infos = next(iter(manual_peak_by_sero.values()))
-            peak_cols = get_peak_height_columns(first_infos)
-            manual_features = manual_features.join(manual_peak_df[peak_cols], how="left")
-
         bundle = build_derived_bundle(
             loaded_bundle,
             min_shift=450.0,

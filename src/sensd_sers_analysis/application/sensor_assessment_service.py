@@ -1,5 +1,5 @@
 """
-Application-layer orchestration for model-consistency workflows.
+Application-layer orchestration for sensor assessment (regression QA) workflows.
 """
 
 from __future__ import annotations

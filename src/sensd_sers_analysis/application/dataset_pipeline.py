@@ -18,7 +18,6 @@ from sensd_sers_analysis.data import load_sers_data_as_wide_and_tidy, wide_to_ti
 from sensd_sers_analysis.processing import (
     extract_basic_features,
     extract_dynamic_peak_features,
-    get_peak_height_columns,
     preprocess_metadata,
     snap_spectra_to_master_grid,
     trim_raman_shift,
@@ -117,11 +116,6 @@ def build_derived_bundle(
             n_peaks_by_serotype=n_peaks_by_serotype,
         )
     )
-
-    if peak_by_serotype:
-        first_infos = next(iter(peak_by_serotype.values()))
-        peak_cols = get_peak_height_columns(first_infos)
-        features_df = features_df.join(peak_df[peak_cols], how="left")
 
     peak_artifacts = PeakArtifacts(
         peak_infos_by_serotype=peak_by_serotype,

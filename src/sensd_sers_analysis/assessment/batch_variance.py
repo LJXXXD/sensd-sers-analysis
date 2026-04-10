@@ -36,8 +36,7 @@ def compute_batch_variance(
     """
     if feature_col not in df.columns:
         raise ValueError(
-            f"feature_col '{feature_col}' not in DataFrame. "
-            f"Available: {list(df.columns)}"
+            f"feature_col '{feature_col}' not in DataFrame. Available: {list(df.columns)}"
         )
     if sensor_col not in df.columns:
         raise ValueError(
@@ -123,9 +122,7 @@ def identify_deviating_sensors(
     if "z_from_batch" not in batch_df.columns:
         return pd.DataFrame()
 
-    mask = np.isfinite(batch_df["z_from_batch"]) & (
-        np.abs(batch_df["z_from_batch"]) > z_threshold
-    )
+    mask = np.isfinite(batch_df["z_from_batch"]) & (np.abs(batch_df["z_from_batch"]) > z_threshold)
     out = batch_df.loc[mask].copy()
     out["abs_z"] = np.abs(out["z_from_batch"])
     return out.sort_values("abs_z", ascending=False).drop(columns=["abs_z"])

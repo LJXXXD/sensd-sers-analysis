@@ -70,9 +70,7 @@ def plot_spectra(
 
     spectrum_id = df[FILENAME_COL].astype(str) + "_" + df[SIGNAL_INDEX_COL].astype(str)
 
-    hue_is_numeric = (
-        hue is not None and hue in df.columns and df[hue].dtype.kind in ("i", "f")
-    )
+    hue_is_numeric = hue is not None and hue in df.columns and df[hue].dtype.kind in ("i", "f")
 
     if hue_is_numeric:
         norm = _prepare_continuous_hue(df, hue, vmin, vmax)
@@ -129,9 +127,7 @@ def plot_spectra(
     if resolved_title is None:
         base = "SERS Spectra"
         if hue and style:
-            resolved_title = (
-                f"{base} by {_hue_to_label(hue)} and {_hue_to_label(style)}"
-            )
+            resolved_title = f"{base} by {_hue_to_label(hue)} and {_hue_to_label(style)}"
         elif hue:
             resolved_title = f"{base} by {_hue_to_label(hue)}"
         elif style:
@@ -193,9 +189,7 @@ def _validate_data(df: pd.DataFrame) -> None:
     required = [RAMAN_SHIFT_COL, INTENSITY_COL, FILENAME_COL, SIGNAL_INDEX_COL]
     missing = [c for c in required if c not in df.columns]
     if missing:
-        raise ValueError(
-            f"DataFrame must contain columns {required}. Missing: {missing}"
-        )
+        raise ValueError(f"DataFrame must contain columns {required}. Missing: {missing}")
     if df.empty:
         raise ValueError("DataFrame is empty")
 
@@ -237,11 +231,7 @@ def _filter_legend_to_style_only(ax: plt.Axes, df: pd.DataFrame, style: str) -> 
         return
     style_values = set(str(v) for v in df[style].dropna().unique())
     handles, labels = ax.get_legend_handles_labels()
-    filtered = [
-        (handle, label)
-        for handle, label in zip(handles, labels)
-        if label in style_values
-    ]
+    filtered = [(handle, label) for handle, label in zip(handles, labels) if label in style_values]
     if not filtered:
         return
     seen: set[str] = set()

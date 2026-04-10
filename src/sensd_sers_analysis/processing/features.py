@@ -12,7 +12,9 @@ from scipy.integrate import trapezoid as scipy_trapezoid
 
 from sensd_sers_analysis.data import RS_COL_PREFIX, get_raman_shift, get_signals_matrix
 from sensd_sers_analysis.processing.pca_features import add_pca_features
-from sensd_sers_analysis.processing.peak_features import get_peak_height_columns
+from sensd_sers_analysis.processing.targeted_peak_features import (
+    list_targeted_peak_feature_columns,
+)
 
 # Column names produced by extract_basic_features; use for stats plots and validation.
 BASIC_FEATURE_COLUMNS = [
@@ -28,12 +30,11 @@ PREFERRED_FEATURE_ORDER = [
     "integral_area",
     "mean_intensity",
     "max_intensity",
-    "Peak_1_Height",
-    "Peak_2_Height",
-    "Peak_3_Height",
-    "Peak_4_Height",
-    "Peak_5_Height",
-    "Peak_6_Height",
+    "peak_near_501_8",
+    "peak_near_613_7",
+    "peak_near_809_7",
+    "peak_near_1066_5",
+    "peak_near_1196_8",
     "PC1",
     "PC2",
 ]
@@ -41,10 +42,9 @@ PREFERRED_FEATURE_ORDER = [
 # Default features for Global QA Table multiselect.
 DEFAULT_GLOBAL_QA_FEATURES = [
     "integral_area",
-    "Peak_3_Height",
-    "Peak_4_Height",
-    "Peak_5_Height",
-    "Peak_6_Height",
+    "peak_near_501_8",
+    "peak_near_809_7",
+    "peak_near_1066_5",
 ]
 
 # Base feature columns for Phase 2 classification (ML input).
@@ -59,22 +59,28 @@ PHASE2_FEATURE_BASE = [
 
 def get_available_feature_columns(
     df: pd.DataFrame,
-    peak_infos_by_serotype: dict,
+    peak_infos_by_serotype: dict | None = None,
 ) -> list[str]:
     """
-    Return ordered feature columns available in df (basic + dynamic peaks).
+    Return ordered feature columns available in ``df`` (basic + targeted peaks).
 
-    Args:
-        df: DataFrame with feature columns.
-        peak_infos_by_serotype: Dict of serotype -> list of PeakWindowInfo.
+    Parameters
+    ----------
+    df:
+        DataFrame with feature columns (including ``peak_near_*`` when present).
+    peak_infos_by_serotype:
+        Unused; retained for backward-compatible call sites.
 
-    Returns:
-        List of column names in preferred display order.
+    Returns
+    -------
+    list[str]
+        Column names in preferred display order.
     """
+    del peak_infos_by_serotype
     basic = [c for c in BASIC_FEATURE_COLUMNS if c in df.columns]
-    peak_infos = next(iter(peak_infos_by_serotype.values()), [])
-    peak_cols = [c for c in get_peak_height_columns(peak_infos) if c in df.columns]
-    return order_features_by_preference(basic + peak_cols)
+    targeted = list_targeted_peak_feature_columns(df.columns)
+    targeted = [c for c in targeted if c in df.columns]
+    return order_features_by_preference(basic + targeted)
 
 
 def order_features_by_preference(

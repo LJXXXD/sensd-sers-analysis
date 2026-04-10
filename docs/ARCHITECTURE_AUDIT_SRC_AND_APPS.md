@@ -135,7 +135,7 @@
 - `compute_batch_variance` — per-sensor aggregates + batch z-scores.
 - `identify_deviating_sensors` — threshold on `|z_from_batch|`.
 
-#### `assessment/model_consistency.py`
+#### `assessment/sensor_assessment_regression.py`
 
 - **Dataclasses:** `ConcentrationRegressionResult`, `CleanedRegressionResult`, `MacroRegressionResult`.
 - **Functions:**
@@ -233,7 +233,7 @@
   5. `extract_basic_features`, `extract_dynamic_peak_features`, join peak columns into `features_df`
   6. Writes peak context into `st.session_state` (`peak_infos_by_serotype`, `mean_spec_by_serotype`, `peak_default_serotype`, `raman_x`)
   7. Renders filter UI (`get_filterable_columns`, `get_filter_options`, `_render_filter`, `filter_sers_data`)
-  8. Dispatches six tabs: `spectra_viewer`, `peak_diagnostics`, `feature_analysis`, `sensor_assessment`, `model_consistency`, `serotype_classification`
+  8. Dispatches seven tabs: `spectra_viewer`, `peak_discovery`, `peak_feature_extraction`, `feature_analysis`, `sensor_qc_legacy`, `sensor_assessment`, `serotype_classification`
 
 #### `apps/theme.py`
 
@@ -264,7 +264,7 @@
 
 - Widgets for hue/style/variance/height; calls `plot_spectra` + `render_figure_stretch`.
 
-#### `apps/tabs/peak_diagnostics.py`
+#### `apps/tabs/peak_discovery.py`
 
 - Reads peak artifacts from `session_state`; builds **matplotlib figures inline** (mean spectrum with anchors/windows; single-spectrum verification); uses `get_raman_shift`, `get_signals_matrix`; builds diagnostic `pd.DataFrame` from `PeakWindowInfo` fields.
 
@@ -272,11 +272,11 @@
 
 - Validates non-NaN basic features; widgets for feature/x/hue/plot type/height; `plot_feature_distribution`.
 
-#### `apps/tabs/sensor_assessment.py`
+#### `apps/tabs/sensor_qc_legacy.py`
 
 - Widgets for serotype/concentration/feature/outlier method; `filter_by_selections`; runs consistency, degradation, batch variance pipelines; `_build_assessment_pdf` duplicates computations for PDF; `render_pdf_download_section`.
 
-#### `apps/tabs/model_consistency.py`
+#### `apps/tabs/sensor_assessment.py`
 
 - Per-sensor regression UI; global QA table via `get_global_model_consistency_qa`; nested loops for overlay + macro plots; accumulates `overlay_items` / `macro_items` for PDF; Phase 1 PDF generation.
 
@@ -318,24 +318,24 @@
 
 ---
 
-### 2.2 Domain plotting and array logic embedded in `apps/tabs/peak_diagnostics.py`
+### 2.2 Domain plotting and array logic embedded in `apps/tabs/peak_discovery.py`
 
 **Issue:** The tab contains substantial **figure construction** and **numerical indexing** that is not reusable from CLI/tests:
 
-- Mean spectrum plot with `axvline` / `axvspan` per `PeakWindowInfo` (```62:93:apps/tabs/peak_diagnostics.py```).
-- Diagnostic table construction (```95:104:apps/tabs/peak_diagnostics.py```).
-- Signal-level plot: mask construction, local max for star markers, baseline/window logic intertwined with UI-selected rows (```221:274:apps/tabs/peak_diagnostics.py```).
+- Mean spectrum plot with `axvline` / `axvspan` per `PeakWindowInfo` (```62:93:apps/tabs/peak_discovery.py```).
+- Diagnostic table construction (```95:104:apps/tabs/peak_discovery.py```).
+- Signal-level plot: mask construction, local max for star markers, baseline/window logic intertwined with UI-selected rows (```221:274:apps/tabs/peak_discovery.py```).
 
 **Decouple by moving (same matplotlib outputs, same inputs):**
 
-- Functions such as `plot_peak_anchor_diagnostic(raman_x, mean_spec, peak_infos, **style_from_theme)` and `plot_single_spectrum_peak_verification(x, y, row_peak_infos, filtered_features_row, ...)` into `src/sensd_sers_analysis/visualization/` (or a new `visualization/peak_diagnostics_plots.py`).
+- Functions such as `plot_peak_anchor_diagnostic(raman_x, mean_spec, peak_infos, **style_from_theme)` and `plot_single_spectrum_peak_verification(x, y, row_peak_infos, filtered_features_row, ...)` into `src/sensd_sers_analysis/visualization/` (or a new `visualization/peak_discovery_plots.py`).
 - Keep the tab limited to: load `session_state` keys, `st.selectbox` values, call visualization + `render_figure_stretch`.
 
 ---
 
-### 2.3 PDF generation duplicates on-screen computations: `apps/tabs/sensor_assessment.py`
+### 2.3 PDF generation duplicates on-screen computations: `apps/tabs/sensor_qc_legacy.py`
 
-**Issue:** On-screen path computes consistency table, degradation table/figure, batch table/figure. `_build_assessment_pdf` **recomputes** the same structures for PDF bytes (```253:335:apps/tabs/sensor_assessment.py```).
+**Issue:** On-screen path computes consistency table, degradation table/figure, batch table/figure. `_build_assessment_pdf` **recomputes** the same structures for PDF bytes (```253:335:apps/tabs/sensor_qc_legacy.py```).
 
 **SoC impact:** Business rules drift risk (two call sites for one report); doubled CPU on PDF generation; harder testing.
 
@@ -343,12 +343,12 @@
 
 ---
 
-### 2.4 Phase 1 tab mixes orchestration, plotting, and PDF assembly: `apps/tabs/model_consistency.py`
+### 2.4 Phase 1 tab mixes orchestration, plotting, and PDF assembly: `apps/tabs/sensor_assessment.py`
 
 **Issues:**
 
-- Computes `global_qa_tbl, excluded_map = get_global_model_consistency_qa(...)` unconditionally when prerequisites pass (```173:176:apps/tabs/model_consistency.py```).
-- Nested loops over serotypes × features build plots **and** collect `overlay_items` / `macro_items` for PDF (```221:282:apps/tabs/model_consistency.py```), mixing UX concerns with report payload construction.
+- Computes `global_qa_tbl, excluded_map = get_global_model_consistency_qa(...)` unconditionally when prerequisites pass (```173:176:apps/tabs/sensor_assessment.py```).
+- Nested loops over serotypes × features build plots **and** collect `overlay_items` / `macro_items` for PDF (```221:282:apps/tabs/sensor_assessment.py```), mixing UX concerns with report payload construction.
 
 **Decouple:** Extract functions:
 
@@ -364,7 +364,7 @@ The tab should render from the view model; PDF uses the same artifact container.
 **Issues:**
 
 - Calls `get_global_model_consistency_qa(filtered_features, feature_cols=["integral_area"])` **only** (```74:77:apps/tabs/serotype_classification.py```). That policy (“Phase 2 cleanliness follows integral_area QA map”) is embedded in the UI layer.
-- User-facing message says to “Run Model-Based Sensor Consistency first” but Phase 2 does **not** consume cached results from that tab — it recomputes QA (```60:65:apps/tabs/serotype_classification.py``` vs. ```173:176:apps/tabs/model_consistency.py```).
+- User-facing message says to “Run Model-Based Sensor Consistency first” but Phase 2 does **not** consume cached results from that tab — it recomputes QA (```60:65:apps/tabs/serotype_classification.py``` vs. ```173:176:apps/tabs/sensor_assessment.py```).
 
 **Decouple:** Move “Phase 2 prerequisites + excluded map source” into `src` (e.g. `classification.phase2_bridge.get_phase2_exclusion_map(df, strategy=...)`) so UI only passes `filtered_features` and explicit user choices. *Same default feature list — just not hardcoded only in Streamlit.*
 
@@ -390,7 +390,7 @@ The tab should render from the view model; PDF uses the same artifact container.
 
 ### 3.1 Session state as a hidden global data bus
 
-**Peak pipeline outputs** are stored in `st.session_state` in `app.py` (e.g. `peak_infos_by_serotype`, `mean_spec_by_serotype`, `raman_x`, `peak_default_serotype`) — see ```124:144:apps/app.py```. Tabs read these globals (`peak_diagnostics`, `feature_analysis`, `sensor_assessment`, `model_consistency`, `serotype_classification`).
+**Peak pipeline outputs** are stored in `st.session_state` in `app.py` (e.g. `peak_infos_by_serotype`, `mean_spec_by_serotype`, `raman_x`, `peak_default_serotype`) — see ```124:144:apps/app.py```. Tabs read these globals (`peak_discovery`, `feature_analysis`, `sensor_qc_legacy`, `sensor_assessment`, `serotype_classification`).
 
 **Risks:**
 
@@ -434,7 +434,7 @@ The tab should render from the view model; PDF uses the same artifact container.
 
 **Expensive tab bodies:**
 
-- `model_consistency.render`: global QA + potentially many overlay/macro plots each rerun.
+- `sensor_assessment.render`: global QA + potentially many overlay/macro plots each rerun.
 - `serotype_classification.render`: `get_global_model_consistency_qa` + `train_classifiers` + multiple plots each rerun.
 
 **Improvement (non-algorithmic):**
@@ -447,7 +447,7 @@ The tab should render from the view model; PDF uses the same artifact container.
 
 ### 3.5 Inefficient / fragile data alignment assumptions
 
-- `peak_diagnostics` uses `wide_df.loc[filtered_features.index]` (```113:115:apps/tabs/peak_diagnostics.py```). This assumes **index alignment** between wide and feature tables as loaded/joined in `app.py`. If future refactors reindex or reset, this will break silently.
+- `peak_discovery` uses `wide_df.loc[filtered_features.index]` (```113:115:apps/tabs/peak_discovery.py```). This assumes **index alignment** between wide and feature tables as loaded/joined in `app.py`. If future refactors reindex or reset, this will break silently.
 
 **Improvement:** Explicit merge keys (`filename`, `signal_index`) in a library helper used by both spectra and diagnostics.
 
@@ -455,7 +455,7 @@ The tab should render from the view model; PDF uses the same artifact container.
 
 ### 3.6 PDF artifact accumulation without lazy evaluation
 
-`model_consistency.render` builds `overlay_items` and `macro_items` lists while drawing plots (```221:266:apps/tabs/model_consistency.py```). Even users who never click “Generate Report” pay the cost of **constructing PDF-oriented structures** (figure handles stored).
+`sensor_assessment.render` builds `overlay_items` and `macro_items` lists while drawing plots (```221:266:apps/tabs/sensor_assessment.py```). Even users who never click “Generate Report” pay the cost of **constructing PDF-oriented structures** (figure handles stored).
 
 **Improvement:** Build PDF collections only inside the generate callback (or cache figures separately).
 
@@ -477,7 +477,7 @@ The tab should render from the view model; PDF uses the same artifact container.
 
 Examples:
 
-- `identify_deviating_sensors(..., z_threshold=2.0)` in `sensor_assessment` (```209:211:apps/tabs/sensor_assessment.py```) — should be config-driven (YAML/TOML) for **operational** tuning without touching algorithms.
+- `identify_deviating_sensors(..., z_threshold=2.0)` in `sensor_assessment` (```209:211:apps/tabs/sensor_qc_legacy.py```) — should be config-driven (YAML/TOML) for **operational** tuning without touching algorithms.
 - `FLAT_OPTIONS_THRESHOLD = 50` in `filter_ui.py` (```24:24:apps/components/filter_ui.py```).
 - Theme holds reasonable UI constants, but assessment thresholds live inline.
 
@@ -487,21 +487,21 @@ Examples:
 
 - `metadata._extract_scalar_concentration` uses Python `for i in range(len(series))` (```30:38:src/sensd_sers_analysis/processing/metadata.py```) — architectural debt for large tables; vectorization is an implementation efficiency change **without** altering outputs if done carefully.
 - `extract_dynamic_peak_features` uses per-row Python loop for sample extraction (```386:410:src/sensd_sers_analysis/processing/peak_features.py```) — same note.
-- `get_global_model_consistency_qa` triple nested loops over sensors × serotypes × features (```447:473:src/sensd_sers_analysis/assessment/model_consistency.py```) — consider batching/grouped operations **as engineering**, preserving outputs.
+- `get_global_model_consistency_qa` triple nested loops over sensors × serotypes × features (```447:473:src/sensd_sers_analysis/assessment/sensor_assessment_regression.py```) — consider batching/grouped operations **as engineering**, preserving outputs.
 
 ---
 
 ### 4.4 Defensive programming gaps
 
 - `shared_ui.render_pdf_download_section`: bare `Exception` (Section 2.6).
-- `peak_diagnostics`: assumes `filtered_features` index ⊆ `wide_df.index` (Section 3.5).
+- `peak_discovery`: assumes `filtered_features` index ⊆ `wide_df.index` (Section 3.5).
 - `serotype_classification`: messaging implies ordering dependency on another tab, but code path recomputes QA independently (Section 2.5) — **logical UX inconsistency**, not math.
 
 ---
 
 ### 4.5 Visualization ↔ assessment coupling
 
-`visualization/assessment_plots.py` imports fitting functions from `assessment.model_consistency` (```15:20:src/sensd_sers_analysis/visualization/assessment_plots.py```). This creates a dependency from visualization layer into core analytics.
+`visualization/assessment_plots.py` imports fitting functions from `assessment.sensor_assessment_regression` (```15:20:src/sensd_sers_analysis/visualization/assessment_plots.py```). This creates a dependency from visualization layer into core analytics.
 
 **Debt:** Harder to swap plotting backend or run headless analytics without matplotlib/scipy plotting side effects.
 
@@ -557,7 +557,7 @@ Root `sensd_sers_analysis/__init__.py` does not expose `processing`, while the S
 
 **`src/sensd_sers_analysis` (30 files):** all Python modules under `data/`, `processing/`, `assessment/`, `classification/`, `visualization/`, `report/`, `utils/`, and package `__init__.py` — each summarized in Section 1.
 
-**`apps` (14 files):** `app.py`, `theme.py`, `components/{__init__,data_loading,filter_ui,raman_sidebar,shared_ui}.py`, `tabs/{__init__,spectra_viewer,peak_diagnostics,feature_analysis,sensor_assessment,model_consistency,serotype_classification}.py`.
+**`apps` (14 files):** `app.py`, `theme.py`, `components/{__init__,data_loading,filter_ui,raman_sidebar,shared_ui}.py`, `tabs/{__init__,spectra_viewer,peak_discovery,peak_feature_extraction,feature_analysis,sensor_qc_legacy,sensor_assessment,serotype_classification}.py`.
 
 ---
 
@@ -566,10 +566,10 @@ Root `sensd_sers_analysis/__init__.py` does not expose `processing`, while the S
 | Key | Written in | Read in |
 |-----|------------|---------|
 | `_uploader_reset` | `data_loading.clear_app_data` | `app.py` uploader key |
-| `peak_infos_by_serotype` | `app.py` | `peak_diagnostics`, `feature_analysis`, `sensor_assessment`, `model_consistency`, `serotype_classification` |
-| `mean_spec_by_serotype` | `app.py` | `peak_diagnostics` |
-| `peak_default_serotype` | `app.py` | `peak_diagnostics` |
-| `raman_x` | `app.py` | `peak_diagnostics` |
+| `peak_infos_by_serotype` | `app.py` | `peak_discovery`, `feature_analysis`, `sensor_qc_legacy`, `sensor_assessment`, `serotype_classification` |
+| `mean_spec_by_serotype` | `app.py` | `peak_discovery` |
+| `peak_default_serotype` | `app.py` | `peak_discovery` |
+| `raman_x` | `app.py` | `peak_discovery` |
 | `assessment_pdf`, `phase1_qa_pdf`, `phase2_pdf` | `shared_ui.render_pdf_download_section` | same (download buttons) |
 | Filter widgets | `filter_ui._render_filter` / reset | implicit via widget state |
 

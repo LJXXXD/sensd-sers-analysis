@@ -27,12 +27,21 @@ from .metadata import (
     add_log_concentration,
     extract_scalar_concentration,
     preprocess_metadata,
+    sorted_unique_canonical_serotypes,
 )
 from .pca_features import add_pca_features
 from .peak_features import (
     PeakWindowInfo,
     extract_dynamic_peak_features,
     get_peak_height_columns,
+)
+from .targeted_peak_features import (
+    compute_targeted_peak_positions_on_mean,
+    detect_targeted_peaks_on_spectrum_row,
+    extract_targeted_peak_height_features,
+    list_targeted_peak_feature_columns,
+    parse_feature_name_to_anchor,
+    target_anchor_to_feature_name,
 )
 
 __all__ = [
@@ -45,8 +54,14 @@ __all__ = [
     "PHASE2_FEATURE_BASE",
     "PREFERRED_FEATURE_ORDER",
     "PeakWindowInfo",
+    "compute_targeted_peak_positions_on_mean",
+    "detect_targeted_peaks_on_spectrum_row",
     "extract_dynamic_peak_features",
+    "extract_targeted_peak_height_features",
     "get_peak_height_columns",
+    "list_targeted_peak_feature_columns",
+    "parse_feature_name_to_anchor",
+    "target_anchor_to_feature_name",
     "add_log_concentration",
     "DEFAULT_FILTER_ORDER",
     "extract_basic_features",
@@ -61,4 +76,5 @@ __all__ = [
     "get_plot_hue_columns",
     "pick_preferred_column",
     "preprocess_metadata",
+    "sorted_unique_canonical_serotypes",
 ]

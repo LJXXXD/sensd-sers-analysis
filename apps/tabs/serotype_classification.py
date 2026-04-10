@@ -22,7 +22,7 @@ from sensd_sers_analysis.classification import (
 from sensd_sers_analysis.config import PHASE2_INLIER_FEATURE, PHASE2_QA_FEATURES
 from sensd_sers_analysis.processing import (
     PHASE2_FEATURE_BASE,
-    get_peak_height_columns,
+    list_targeted_peak_feature_columns,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,8 +37,11 @@ def render(filtered_features, peak_artifacts):
     filtered_features:
         Filtered feature dataframe for the current app state.
     peak_artifacts:
-        Shared peak artifacts from the derived data bundle.
+        Reserved for a uniform tab signature (classification uses ``peak_near_*``
+        columns already merged into ``filtered_features``).
     """
+
+    _ = peak_artifacts
 
     st.markdown(
         "#### Phase 2: Serotyping & Classification\n"
@@ -54,9 +57,7 @@ def render(filtered_features, peak_artifacts):
         and "PC1" in filtered_features.columns
         and "PC2" in filtered_features.columns
     )
-    phase2_peak_cols = get_peak_height_columns(
-        next(iter(peak_artifacts.peak_infos_by_serotype.values()), [])
-    )
+    phase2_peak_cols = list_targeted_peak_feature_columns(filtered_features.columns)
     phase2_feat_cols = [
         c for c in PHASE2_FEATURE_BASE + phase2_peak_cols if c in filtered_features.columns
     ]
@@ -64,7 +65,7 @@ def render(filtered_features, peak_artifacts):
     if not has_phase2_cols:
         st.warning(
             "Phase 2 requires **sensor_id**, **serotype**, **concentration_group**, "
-            "**PC1**, and **PC2**. Run Model-Based Sensor Consistency first "
+            "**PC1**, and **PC2**. Run **Sensor assessment** first "
             "(which computes Pass/Excluded) and ensure data has PCA features."
         )
         return
@@ -107,7 +108,7 @@ def render(filtered_features, peak_artifacts):
     st.markdown("##### 2. Baseline ML Classification")
     st.caption(
         "80/20 stratified split. Features: integral_area, max_intensity, "
-        "mean_intensity, PC1, PC2, plus dynamic peak heights."
+        "mean_intensity, PC1, PC2, plus targeted ``peak_near_*`` heights."
     )
 
     try:

@@ -17,6 +17,62 @@ _CONC_GROUP_LABELS = ["1 CFU", "10 CFU", "100 CFU", "1000 CFU"]
 # Ordered categories for pd.Categorical; pure text ("Unknown") sorts last
 _CONC_CATEGORIES = natural_sort(["0 CFU", "1 CFU", "10 CFU", "100 CFU", "1000 CFU", "Unknown"])
 
+_INVALID_SEROTYPE_STRINGS = frozenset(("", "NAN", "NONE"))
+
+
+def sorted_unique_canonical_serotypes(df: pd.DataFrame, *, column: str = "serotype") -> list[str]:
+    """
+    Return sorted unique serotype labels with case-insensitive de-duplication.
+
+    Labels are normalized to stripped uppercase ASCII (e.g. ``"st"`` and
+    ``"ST"`` both become ``"ST"``).
+
+    Parameters
+    ----------
+    df:
+        Dataframe that may contain a serotype column.
+    column:
+        Metadata column name.
+
+    Returns
+    -------
+    list[str]
+        Sorted canonical labels; empty when the column is missing or all invalid.
+    """
+
+    if df is None or df.empty or column not in df.columns:
+        return []
+    sero = df[column].dropna()
+    if sero.empty:
+        return []
+    normed = sero.astype(str).str.strip().str.upper()
+    normed = normed.mask(normed.isin(_INVALID_SEROTYPE_STRINGS), pd.NA).dropna()
+    if normed.empty:
+        return []
+    return sorted(pd.unique(normed).tolist())
+
+
+def _normalize_serotype_column_inplace(out: pd.DataFrame) -> None:
+    """
+    Canonicalize ``serotype`` strings in-place (strip + uppercase).
+
+    Empty or placeholder strings become missing.
+
+    Parameters
+    ----------
+    out:
+        Dataframe copy that may contain ``serotype``.
+    """
+
+    if "serotype" not in out.columns:
+        return
+    mask = out["serotype"].notna()
+    if not mask.any():
+        return
+    coerced = out.loc[mask, "serotype"].astype(str).str.strip().str.upper()
+    coerced = coerced.mask(coerced.isin(_INVALID_SEROTYPE_STRINGS), pd.NA)
+    out.loc[mask, "serotype"] = coerced
+
 
 def extract_scalar_concentration(series: pd.Series, df: pd.DataFrame) -> pd.Series:
     """
@@ -114,6 +170,9 @@ def preprocess_metadata(df: pd.DataFrame) -> pd.DataFrame:
     """
     Add log_concentration, concentration_group, and normalize date.
 
+    Serotype values (``serotype`` column) are case-insensitive: strings are
+    stripped and uppercased so labels such as ``"st"`` and ``"ST"`` merge.
+
     Works on wide or tidy format. For wide DataFrames, concentration may be
     a list per row (one per signal); uses signal_index to pick the scalar.
 
@@ -128,6 +187,7 @@ def preprocess_metadata(df: pd.DataFrame) -> pd.DataFrame:
         Copy of df with added columns.
     """
     out = df.copy()
+    _normalize_serotype_column_inplace(out)
     out = add_log_concentration(out)
     out = add_concentration_group(out)
 

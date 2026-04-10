@@ -1,5 +1,5 @@
 """
-Application-layer helpers for peak-diagnostics orchestration.
+Application-layer helpers for peak discovery orchestration.
 """
 
 from __future__ import annotations
@@ -126,6 +126,8 @@ def build_peak_diagnostic_context(
     filtered_features: pd.DataFrame,
     wide_df: pd.DataFrame,
     peak_artifacts: PeakArtifacts,
+    *,
+    require_non_empty_peak_artifacts: bool = True,
 ) -> PeakDiagnosticContext | None:
     """
     Build the shared context used by the peak-diagnostics tab.
@@ -138,6 +140,9 @@ def build_peak_diagnostic_context(
         Wide dataframe from the main application pipeline.
     peak_artifacts:
         Shared peak-extraction artifacts.
+    require_non_empty_peak_artifacts:
+        When True (default), return None if ``peak_artifacts`` is empty.
+        Set False for workflows that only need index-aligned wide rows.
 
     Returns
     -------
@@ -150,7 +155,7 @@ def build_peak_diagnostic_context(
         If `filtered_features` is not index-aligned with `wide_df`.
     """
 
-    if peak_artifacts.is_empty:
+    if require_non_empty_peak_artifacts and peak_artifacts.is_empty:
         return None
 
     if filtered_features.empty:

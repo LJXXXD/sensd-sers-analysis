@@ -90,8 +90,7 @@ def compute_consistency_metrics(
     """
     if feature_col not in df.columns:
         raise ValueError(
-            f"feature_col '{feature_col}' not in DataFrame. "
-            f"Available: {list(df.columns)}"
+            f"feature_col '{feature_col}' not in DataFrame. Available: {list(df.columns)}"
         )
 
     def _row_metrics(g: pd.DataFrame) -> pd.Series:
@@ -134,9 +133,7 @@ def compute_consistency_metrics(
 
     missing = [c for c in group_cols if c not in df.columns]
     if missing:
-        raise ValueError(
-            f"group_cols {missing} not in DataFrame. Available: {list(df.columns)}"
-        )
+        raise ValueError(f"group_cols {missing} not in DataFrame. Available: {list(df.columns)}")
 
     return (
         df.groupby(group_cols, dropna=False, observed=True)

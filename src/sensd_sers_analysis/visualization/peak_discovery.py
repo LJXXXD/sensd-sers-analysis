@@ -1,12 +1,12 @@
 """
-Peak-diagnostics plotting helpers for Streamlit verification views.
+Peak discovery plotting helpers for Streamlit verification views.
 """
 
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
 
-from sensd_sers_analysis.application.peak_diagnostics_service import SignalVerificationArtifact
+from sensd_sers_analysis.application.peak_discovery_service import SignalVerificationArtifact
 from sensd_sers_analysis.processing import PeakWindowInfo
 
 

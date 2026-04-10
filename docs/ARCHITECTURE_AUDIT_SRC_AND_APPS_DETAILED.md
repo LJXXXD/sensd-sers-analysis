@@ -64,13 +64,13 @@ These data structures are the real application contract today:
 
 | Name | Shape / type | Produced in | Consumed by |
 | --- | --- | --- | --- |
-| `wide_df` | `pd.DataFrame` with metadata + `rs_*` columns | `data/io.py`, then trimmed in `app.py` | `extract_basic_features`, `extract_dynamic_peak_features`, `peak_diagnostics` |
+| `wide_df` | `pd.DataFrame` with metadata + `rs_*` columns | `data/io.py`, then trimmed in `app.py` | `extract_basic_features`, `extract_dynamic_peak_features`, `peak_discovery` |
 | `tidy_df` | `pd.DataFrame` with metadata + `raman_shift` + `intensity` | `data/io.py`, regenerated in `app.py` after trim | filter UI, spectra viewer |
 | `features_df` | metadata + scalar features + PCA + peak heights | `app.py` | most tabs |
 | `peak_df` | metadata + `Peak_i_Height` columns | `extract_dynamic_peak_features()` | joined into `features_df` |
-| `peak_infos_by_serotype` | `dict[str, list[PeakWindowInfo]]` | `app.py` via peak extraction | `peak_diagnostics`, feature availability in tabs |
-| `mean_spec_by_serotype` | `dict[str, np.ndarray]` | `app.py` via peak extraction | `peak_diagnostics` |
-| `raman_x` | `np.ndarray` | `app.py` via peak extraction | `peak_diagnostics` |
+| `peak_infos_by_serotype` | `dict[str, list[PeakWindowInfo]]` | `app.py` via peak extraction | `peak_discovery`, feature availability in tabs |
+| `mean_spec_by_serotype` | `dict[str, np.ndarray]` | `app.py` via peak extraction | `peak_discovery` |
+| `raman_x` | `np.ndarray` | `app.py` via peak extraction | `peak_discovery` |
 | `excluded_map` | `dict[tuple[str, str], set[str]]` | model consistency QA functions | model consistency plots, Phase 2 data prep |
 | `phase2_clean` | cleaned feature dataframe with `target` | `classification/data_prep.py` | `train_classifiers`, PCA/classification plots |
 | `ClassificationResult` | dataclass | `classification/models.py` | confusion matrix / feature-importance rendering |
@@ -316,7 +316,7 @@ These data structures are the real application contract today:
   - `DegradationResult` is similarly defined but not used as the outward API.
   - `prepare_degradation_data()` is a good orchestration helper and should be consumed through an application service, not from the tab directly.
 
-#### `src/sensd_sers_analysis/assessment/model_consistency.py`
+#### `src/sensd_sers_analysis/assessment/sensor_assessment_regression.py`
 - Purpose: perform regression-based model QA and pooled macro-regression.
 - Core dataclasses:
   - `ConcentrationRegressionResult`
@@ -453,7 +453,7 @@ These data structures are the real application contract today:
   - `plot_multi_sensor_regression()`
   - `plot_macro_batch_regression()`
 - Dependencies:
-  - `assessment.model_consistency` functions and dataclasses
+  - `assessment.sensor_assessment_regression` functions and dataclasses
   - `numpy`, `pandas`, `matplotlib`, `seaborn`, `scipy.stats`
 - Architectural note:
   - `plot_macro_batch_regression()` redoes pooled-inlier collection before calling `compute_macro_batch_regression()`. That is duplicated orchestration inside a visualization module.
@@ -575,7 +575,7 @@ These data structures are the real application contract today:
 - Architectural note:
   - This is one of the cleaner tabs: it mostly collects view settings and delegates to plotting.
 
-#### `apps/tabs/peak_diagnostics.py`
+#### `apps/tabs/peak_discovery.py`
 - Purpose: validate peak windows and per-signal detections.
 - Core function:
   - `render(filtered_features, wide_df)`
@@ -596,7 +596,7 @@ These data structures are the real application contract today:
 - Architectural note:
   - Mostly thin and acceptable.
 
-#### `apps/tabs/sensor_assessment.py`
+#### `apps/tabs/sensor_qc_legacy.py`
 - Purpose: render consistency, degradation, batch stability, and PDF report controls.
 - Core functions:
   - `render(filtered_features)`
@@ -608,7 +608,7 @@ These data structures are the real application contract today:
 - Architectural note:
   - The computational primitives live in `src`, but the orchestration should also move there.
 
-#### `apps/tabs/model_consistency.py`
+#### `apps/tabs/sensor_assessment.py`
 - Purpose: render per-sensor regression QA, global QA, multi-sensor overlays, macro regression, and Phase 1 PDF.
 - Core function:
   - `render(filtered_features)`
@@ -643,17 +643,17 @@ This section focuses only on architectural placement, not on whether the formula
 | --- | --- | --- | --- | --- |
 | High | `apps/app.py:93-127` | `preprocess_metadata()`, `trim_raman_shift()`, `wide_to_tidy()`, `extract_basic_features()`, `extract_dynamic_peak_features()` are all run in the top-level app script | The entrypoint is performing the full derivation pipeline on every rerun; this is application-service logic, not view logic | New application module such as `src/sensd_sers_analysis/application/dataset_pipeline.py` |
 | High | `apps/app.py:151-198` | `get_filterable_columns()`, `get_filter_options()`, and `filter_sers_data()` are orchestrated directly inside the entrypoint | Filter-state derivation and filtered-view construction should be a stable backend contract, not a hand-built script section | `src/sensd_sers_analysis/application/filtering_service.py` |
-| High | `apps/tabs/peak_diagnostics.py:113-274` | Direct dataframe alignment, spectrum reconstruction, Raman extraction, argmax search inside windows, manual plotting | This tab contains domain-specific verification logic and figure construction, not just widget collection | Data extraction in `src/sensd_sers_analysis/application/peak_diagnostics_service.py`; plotting in `src/sensd_sers_analysis/visualization/peak_diagnostics.py` |
+| High | `apps/tabs/peak_discovery.py:113-274` | Direct dataframe alignment, spectrum reconstruction, Raman extraction, argmax search inside windows, manual plotting | This tab contains domain-specific verification logic and figure construction, not just widget collection | Data extraction in `src/sensd_sers_analysis/application/peak_discovery_service.py`; plotting in `src/sensd_sers_analysis/visualization/peak_discovery.py` |
 | High | `apps/tabs/serotype_classification.py:74-116` | `get_global_model_consistency_qa()`, `prepare_phase2_data()`, `train_classifiers()` are executed inside the tab render path | Clean-data preparation and model training are backend workflows and should be wrapped in a service API | `src/sensd_sers_analysis/application/classification_service.py` |
 
 ### 2.2 Medium-severity SoC violations
 
 | Severity | Location | Evidence | Why this is a SoC violation | Suggested destination in `src/` |
 | --- | --- | --- | --- | --- |
-| Medium | `apps/tabs/sensor_assessment.py:104-225` | `filter_by_selections()`, `get_consistency_summary_table()`, `prepare_degradation_data()`, `compute_degradation()`, `compute_batch_variance()`, `identify_deviating_sensors()` are coordinated in the tab | The primitives are in `src`, but the orchestration is duplicated and therefore not reusable outside Streamlit | `src/sensd_sers_analysis/application/assessment_service.py` |
-| Medium | `apps/tabs/sensor_assessment.py:253-335` | `_build_assessment_pdf()` recomputes assessment tables and figures already computed in `render()` | Report artifact preparation should be backend orchestration, not a UI callback concern | Same `assessment_service.py`, plus report artifact builder |
-| Medium | `apps/tabs/model_consistency.py:104-176` | `fit_concentration_regression_cleaned()`, `get_zero_cfu_baseline()`, `get_global_model_consistency_qa()` are coordinated inside the tab | The tab is acting as a workflow controller instead of consuming a service result object | `src/sensd_sers_analysis/application/model_consistency_service.py` |
-| Medium | `apps/tabs/model_consistency.py:221-281` | nested loops across serotypes and features build overlays and macro regressions inline | Cross-product orchestration belongs in a backend service so it can be cached and tested independently | same model-consistency service |
+| Medium | `apps/tabs/sensor_qc_legacy.py:104-225` | `filter_by_selections()`, `get_consistency_summary_table()`, `prepare_degradation_data()`, `compute_degradation()`, `compute_batch_variance()`, `identify_deviating_sensors()` are coordinated in the tab | The primitives are in `src`, but the orchestration is duplicated and therefore not reusable outside Streamlit | `src/sensd_sers_analysis/application/assessment_service.py` |
+| Medium | `apps/tabs/sensor_qc_legacy.py:253-335` | `_build_assessment_pdf()` recomputes assessment tables and figures already computed in `render()` | Report artifact preparation should be backend orchestration, not a UI callback concern | Same `assessment_service.py`, plus report artifact builder |
+| Medium | `apps/tabs/sensor_assessment.py:104-176` | `fit_concentration_regression_cleaned()`, `get_zero_cfu_baseline()`, `get_global_model_consistency_qa()` are coordinated inside the tab | The tab is acting as a workflow controller instead of consuming a service result object | `src/sensd_sers_analysis/application/sensor_assessment_service.py` |
+| Medium | `apps/tabs/sensor_assessment.py:221-281` | nested loops across serotypes and features build overlays and macro regressions inline | Cross-product orchestration belongs in a backend service so it can be cached and tested independently | same model-consistency service |
 
 ### 2.3 Low-severity or acceptable UI/backend mixing
 
@@ -678,20 +678,20 @@ The most important migrations are:
      - `build_filter_catalog(tidy_df) -> FilterCatalog`
      - `apply_filter_state(bundle, filter_state) -> FilteredBundle`
 
-3. `apps/tabs/peak_diagnostics.py:113-274`
+3. `apps/tabs/peak_discovery.py:113-274`
    - Move selected-spectrum lookup, local peak-position extraction, and diagnostic plotting preparation into `src`.
    - Proposed API:
      - `build_peak_diagnostic_view(filtered_features, wide_df, peak_artifacts, selection) -> PeakDiagnosticArtifacts`
      - `plot_peak_windows(...)`
      - `plot_signal_level_peak_verification(...)`
 
-4. `apps/tabs/sensor_assessment.py:104-225` and `253-335`
+4. `apps/tabs/sensor_qc_legacy.py:104-225` and `253-335`
    - Move assessment artifact assembly and PDF-input construction into `src`.
    - Proposed API:
      - `build_sensor_assessment_artifacts(filtered_features, selection) -> SensorAssessmentArtifacts`
      - `build_sensor_assessment_report_inputs(artifacts) -> ...`
 
-5. `apps/tabs/model_consistency.py:104-176` and `221-281`
+5. `apps/tabs/sensor_assessment.py:104-176` and `221-281`
    - Move model-consistency artifact assembly and overlay batch generation into `src`.
    - Proposed API:
      - `build_model_consistency_artifacts(filtered_features, selection, overlay_request) -> ModelConsistencyArtifacts`
@@ -711,10 +711,10 @@ The app is currently using `st.session_state` as a raw cross-module message bus.
 | Key pattern | Set in | Read in | Problem |
 | --- | --- | --- | --- |
 | `_uploader_reset` | `components/data_loading.py:34` | `app.py:74` | Fine for uploader reset, but global session clearing is too broad |
-| `peak_infos_by_serotype` | `app.py:128` / `app.py:138` | `peak_diagnostics.py`, `feature_analysis.py`, `sensor_assessment.py`, `model_consistency.py`, `serotype_classification.py` | Hidden cross-tab dependency with no typed contract |
-| `mean_spec_by_serotype` | `app.py:129` / `app.py:139` | `peak_diagnostics.py` | Same issue |
-| `peak_default_serotype` | `app.py:130` / `app.py:140` | `peak_diagnostics.py` | Same issue |
-| `raman_x` | `app.py:131` / `app.py:141` | `peak_diagnostics.py` | Same issue |
+| `peak_infos_by_serotype` | `app.py:128` / `app.py:138` | `peak_discovery.py`, `feature_analysis.py`, `sensor_qc_legacy.py`, `sensor_assessment.py`, `serotype_classification.py` | Hidden cross-tab dependency with no typed contract |
+| `mean_spec_by_serotype` | `app.py:129` / `app.py:139` | `peak_discovery.py` | Same issue |
+| `peak_default_serotype` | `app.py:130` / `app.py:140` | `peak_discovery.py` | Same issue |
+| `raman_x` | `app.py:131` / `app.py:141` | `peak_discovery.py` | Same issue |
 | filter widget keys based on labels | `filter_ui.py` | implicitly by Streamlit widget state and reset handlers | Keys depend on display labels rather than stable column IDs |
 | PDF byte buffers such as `assessment_pdf`, `phase1_qa_pdf`, `phase2_pdf` | `shared_ui.py` | `shared_ui.py` | Acceptable, but still raw stringly typed state |
 
@@ -785,7 +785,7 @@ What is still missing:
    - This is operationally simple but too blunt as the app grows.
 
 4. Cross-tab hidden coupling through session state
-   - `feature_analysis`, `sensor_assessment`, `model_consistency`, and `serotype_classification` all indirectly depend on peak metadata being prepared in `app.py`.
+   - `feature_analysis`, `sensor_qc_legacy`, `sensor_assessment`, and `serotype_classification` all indirectly depend on peak metadata being prepared in `app.py`.
    - That dependency is not visible in function signatures.
 
 5. Caching only the cheapest stable boundary
@@ -806,8 +806,8 @@ The upload path itself is reasonable, but the overall data lifecycle is not opti
 ### 4.1 Duplication and DRY violations
 
 #### Duplicate assessment work for PDF generation
-- `apps/tabs/sensor_assessment.py:142-225` computes assessment tables and figures for display.
-- `apps/tabs/sensor_assessment.py:253-335` recomputes those same artifacts for PDF generation.
+- `apps/tabs/sensor_qc_legacy.py:142-225` computes assessment tables and figures for display.
+- `apps/tabs/sensor_qc_legacy.py:253-335` recomputes those same artifacts for PDF generation.
 - This is not just repetitive code; it creates two independent orchestration paths that can drift.
 
 #### Duplicate Phase 2 plotting for PDF generation
@@ -815,12 +815,12 @@ The upload path itself is reasonable, but the overall data lifecycle is not opti
 - `apps/tabs/serotype_classification.py:147-161` regenerates those figures inside the PDF callback.
 
 #### Duplicate macro-regression pooling logic
-- `src/sensd_sers_analysis/assessment/model_consistency.py:530-657` builds pooled macro-regression inputs.
+- `src/sensd_sers_analysis/assessment/sensor_assessment_regression.py:530-657` builds pooled macro-regression inputs.
 - `src/sensd_sers_analysis/visualization/assessment_plots.py:514-562` repeats similar pass-sensor pooling before calling `compute_macro_batch_regression()`.
 
 #### Duplicate/parallel outlier logic
 - `src/sensd_sers_analysis/assessment/outliers.py` has generic IQR logic.
-- `src/sensd_sers_analysis/assessment/model_consistency.py:100-127` has residual-specific IQR logic.
+- `src/sensd_sers_analysis/assessment/sensor_assessment_regression.py:100-127` has residual-specific IQR logic.
 - The split may be justified semantically, but it still represents duplicated thresholding machinery.
 
 #### Repeated "metadata columns excluding spectral columns" logic
@@ -876,11 +876,11 @@ In `apps/`:
   - `FLAT_OPTIONS_THRESHOLD = 50`
 - `apps/components/shared_ui.py`
   - button colors `#28a745`, `#fd7e14`
-- `apps/tabs/peak_diagnostics.py`
+- `apps/tabs/peak_discovery.py`
   - marker size `s=200`
   - manual green/darkgreen colors
   - modulo-9 color cycling
-- `apps/tabs/sensor_assessment.py`
+- `apps/tabs/sensor_qc_legacy.py`
   - `z_threshold=2.0`
 - `apps/tabs/serotype_classification.py`
   - hardcoded QA feature `["integral_area"]`
@@ -891,7 +891,7 @@ In `src/`:
   - `random_state=42`
   - `n_estimators=100`
   - `min_per_class = 2`
-- `assessment/model_consistency.py`
+- `assessment/sensor_assessment_regression.py`
   - `rejection_multiplier=2.0`
   - `r2_min_threshold=0.80`
 - `assessment/degradation.py`
@@ -915,7 +915,7 @@ Architectural impact:
 - But there is no outer UI-specific error boundary around the call itself if parsing raises unexpectedly.
 
 #### Index alignment assumption in peak diagnostics
-- `apps/tabs/peak_diagnostics.py:113-115` does:
+- `apps/tabs/peak_discovery.py:113-115` does:
   - `wide_filtered = wide_df.loc[filtered_features.index]`
 - This assumes the indices remain aligned across the wide dataframe and the filtered feature dataframe.
 - That is currently true by convention, but it is an implicit contract, not a defended one.
@@ -944,7 +944,7 @@ These are not necessarily wrong, but because the UI reruns them frequently, thei
 
 #### QA recomputation across tabs
 - `get_global_model_consistency_qa()` is executed in:
-  - `apps/tabs/model_consistency.py:173-176`
+  - `apps/tabs/sensor_assessment.py:173-176`
   - `apps/tabs/serotype_classification.py:74-77`
 - That means a high-cost QA path is recomputed in multiple tabs instead of being shared.
 
@@ -971,9 +971,9 @@ src/sensd_sers_analysis/
     contracts.py
     dataset_pipeline.py
     filtering_service.py
-    peak_diagnostics_service.py
+    peak_discovery_service.py
     assessment_service.py
-    model_consistency_service.py
+    sensor_assessment_service.py
     classification_service.py
 ```
 
@@ -1074,7 +1074,7 @@ Outcome:
 
 #### Step 4: Move peak diagnostics logic out of the tab
 
-Split `apps/tabs/peak_diagnostics.py` into:
+Split `apps/tabs/peak_discovery.py` into:
 
 - UI-only tab:
   - collects serotype/sensor/concentration/signal selections
@@ -1108,7 +1108,7 @@ Outcome:
 
 #### Step 6: Create a model-consistency service
 
-Create `src/sensd_sers_analysis/application/model_consistency_service.py` with:
+Create `src/sensd_sers_analysis/application/sensor_assessment_service.py` with:
 
 - `build_single_sensor_consistency_artifacts(...)`
 - `build_global_qa_artifacts(...)`

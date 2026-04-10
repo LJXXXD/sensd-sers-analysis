@@ -94,9 +94,7 @@ def _parse_embedded_format(
 
     missing = REQUIRED_METADATA_KEYS - metadata.keys()
     if missing:
-        raise ValueError(
-            f"Required metadata {sorted(missing)} not found in {file_path.name}"
-        )
+        raise ValueError(f"Required metadata {sorted(missing)} not found in {file_path.name}")
 
     return metadata, raman_shift, signals, concentrations
 
@@ -126,9 +124,7 @@ def _load_signal_file(file_path: str | Path) -> pd.DataFrame:
             "sensor_model": _metadata_get(metadata, "sensor model", "sensor_model"),
             "sensor_id": metadata.get("sensor id", metadata.get("sensor_id", "")),
             "test_id": metadata.get("test id", metadata.get("test_id", "")),
-            "connection_id": metadata.get(
-                "connection id", metadata.get("connection_id", "")
-            ),
+            "connection_id": metadata.get("connection id", metadata.get("connection_id", "")),
             "serotype": metadata.get("serotype", ""),
             "date": _metadata_get(metadata, "date"),
             "operator": _metadata_get(metadata, "operator"),
@@ -141,9 +137,7 @@ def _load_signal_file(file_path: str | Path) -> pd.DataFrame:
     return pd.concat([meta_df, signals_df], axis=1)
 
 
-def _collect_files(
-    paths: Union[str, Path, List[Union[str, Path]]], pattern: str
-) -> List[Path]:
+def _collect_files(paths: Union[str, Path, List[Union[str, Path]]], pattern: str) -> List[Path]:
     """Resolve paths to a flat list of Excel files. Handles file/folder or mix."""
     if not isinstance(paths, list):
         paths = [paths]
@@ -192,8 +186,11 @@ def load_sers_data(
             df = _load_signal_file(f)
             if df.empty:
                 continue
-            if serotypes is not None and df["serotype"].iloc[0] not in serotypes:
-                continue
+            if serotypes is not None:
+                file_sero = str(df["serotype"].iloc[0]).strip().upper()
+                allowed = {str(s).strip().upper() for s in serotypes}
+                if file_sero not in allowed:
+                    continue
             dfs.append(df)
         except (FileNotFoundError, ValueError) as e:
             logger.warning("Skipping file %s: %s", f.name, e)
@@ -203,9 +200,7 @@ def load_sers_data(
 
 def _get_raman_columns(df: pd.DataFrame) -> list:
     """Return sorted list of Raman shift column names (rs_* cols)."""
-    rs_cols = [
-        c for c in df.columns if isinstance(c, str) and c.startswith(RS_COL_PREFIX)
-    ]
+    rs_cols = [c for c in df.columns if isinstance(c, str) and c.startswith(RS_COL_PREFIX)]
     return sorted(rs_cols, key=lambda c: float(c[len(RS_COL_PREFIX) :]))
 
 
@@ -218,9 +213,7 @@ def get_signals_matrix(df: pd.DataFrame) -> np.ndarray:
     """
     rs_cols = _get_raman_columns(df)
     if not rs_cols:
-        raise ValueError(
-            "DataFrame has no Raman intensity columns; expected wide format"
-        )
+        raise ValueError("DataFrame has no Raman intensity columns; expected wide format")
     return df[rs_cols].values
 
 
@@ -228,9 +221,7 @@ def get_raman_shift(df: pd.DataFrame) -> np.ndarray:
     """Return the Raman shift (wavenumber) array for the spectral grid."""
     rs_cols = _get_raman_columns(df)
     if not rs_cols:
-        raise ValueError(
-            "DataFrame has no Raman intensity columns; expected wide format"
-        )
+        raise ValueError("DataFrame has no Raman intensity columns; expected wide format")
     return np.array([float(c[len(RS_COL_PREFIX) :]) for c in rs_cols])
 
 

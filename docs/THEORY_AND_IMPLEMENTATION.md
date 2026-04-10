@@ -209,10 +209,10 @@ The full pipeline, from raw Excel upload to classification results, proceeds thr
 │  assessment/consistency.py → assessment/degradation.py           │
 ├─────────────────────────────────────────────────────────────────┤
 │  Stage 6: Model-Based Sensor QA (Two-Pass Regression)           │
-│  assessment/model_consistency.py                                │
+│  assessment/sensor_assessment_regression.py                                │
 ├─────────────────────────────────────────────────────────────────┤
 │  Stage 7: Batch-Level Multi-Sensor Exclusion                    │
-│  assessment/model_consistency.py → assessment/batch_variance.py  │
+│  assessment/sensor_assessment_regression.py → assessment/batch_variance.py  │
 ├─────────────────────────────────────────────────────────────────┤
 │  Stage 8: Phase 2 — ML Classification                           │
 │  classification/data_prep.py → classification/models.py          │
@@ -477,7 +477,7 @@ The 0.5% relative threshold prevents labeling negligible trends as significant. 
 
 Rather than assessing sensor quality by summary statistics alone, the model-based approach evaluates whether a sensor produces a **consistent dose-response relationship**. A well-functioning sensor should show a predictable relationship between pathogen concentration and spectral feature intensity. Sensors with poor fit (high RMSE or low R²) are likely malfunctioning or degraded.
 
-### 11.2 Single-pass regression (`assessment/model_consistency.py`)
+### 11.2 Single-pass regression (`assessment/sensor_assessment_regression.py`)
 
 `fit_concentration_regression(df, feature_col)` fits:
 
@@ -519,7 +519,7 @@ This targets points that deviate more from the regression line than expected, no
 
 ## 12. Stage 7: Batch-level assessment & multi-sensor exclusion
 
-### 12.1 Global QA pipeline (`assessment/model_consistency.py`)
+### 12.1 Global QA pipeline (`assessment/sensor_assessment_regression.py`)
 
 `get_global_model_consistency_qa(df, feature_cols)` applies the two-pass regression (§11.3) to every combination of `(sensor_id, serotype, feature)` and then applies a **dual-threshold exclusion rule**:
 
@@ -622,7 +622,7 @@ Random Forest is an **ensemble of decision trees** trained on bootstrap samples 
 
 ### 14.1 Architecture
 
-The `apps/` directory contains a single Streamlit application (`app.py`) with six tabs. It uses a layered architecture:
+The `apps/` directory contains a single Streamlit application (`app.py`) with seven tabs. It uses a layered architecture:
 
 ```text
 apps/app.py                     ← Entry point, layout, tab dispatch
@@ -636,10 +636,11 @@ apps/components/                ← Reusable UI components
   shared_ui.py                  ← PDF download, metric rows, figure rendering
 apps/tabs/                      ← Tab-specific rendering
   spectra_viewer.py             ← Plot spectra with hue/style/variance
-  peak_diagnostics.py           ← Visual peak verification
-  feature_analysis.py           ← Feature distribution box/violin plots
-  sensor_assessment.py          ← Consistency, degradation, batch analysis
-  model_consistency.py          ← Regression QA, global assessment, overlay
+  peak_discovery.py             ← Peak discovery (mean spectrum + signal checks)
+  peak_feature_extraction.py    ← Targeted anchor peak heights
+  feature_analysis.py           ← Distributions, correlations, vs log concentration
+  sensor_qc_legacy.py           ← Legacy CV-style sensor QC + PDF
+  sensor_assessment.py          ← Regression QA, global assessment, overlay + PDF
   serotype_classification.py    ← PCA scatter, RF/SVM, confusion matrix
 ```
 
@@ -711,7 +712,7 @@ src/sensd_sers_analysis/
 │   ├── outliers.py                       # IQR and z-score detection
 │   ├── consistency.py                    # CV and replicate consistency
 │   ├── degradation.py                    # Linear trend / temporal analysis
-│   ├── model_consistency.py              # Two-pass regression, global QA
+│   ├── sensor_assessment_regression.py   # Two-pass regression, global QA
 │   └── batch_variance.py                 # Inter-sensor z-score analysis
 ├── classification/
 │   ├── __init__.py
@@ -727,15 +728,15 @@ src/sensd_sers_analysis/
 │   ├── dataset_pipeline.py               # Upload → derived bundle orchestration
 │   ├── filtering_service.py              # Filter state serialization/application
 │   ├── assessment_service.py             # Sensor assessment orchestration
-│   ├── model_consistency_service.py      # Regression QA orchestration
+│   ├── sensor_assessment_service.py      # Regression QA orchestration
 │   ├── classification_service.py         # Phase 2 dataset + training orchestration
-│   └── peak_diagnostics_service.py       # Peak verification data preparation
+│   └── peak_discovery_service.py         # Peak discovery data preparation
 ├── visualization/
 │   ├── __init__.py
 │   ├── plots.py                          # Spectra line plots (seaborn)
 │   ├── stats.py                          # Feature distribution box/violin
 │   ├── assessment_plots.py               # Degradation, batch, regression plots
-│   └── peak_diagnostics.py              # Peak anchor and signal-level plots
+│   └── peak_discovery.py                # Peak anchor and signal-level plots
 ├── report/
 │   ├── __init__.py
 │   └── pdf_builder.py                    # ReportLab PDF assembly
@@ -828,7 +829,7 @@ src/sensd_sers_analysis/
 - **`compute_degradation(df, feature_col, sequence_col, group_cols)`** — `scipy.stats.linregress` per group.
 - **`add_sequence_column(df)`** — Ensures a numeric sequence exists for the X-axis.
 
-### `model_consistency.py`
+### `sensor_assessment_regression.py`
 
 - **`ConcentrationRegressionResult`** — Single-pass: slope, intercept, R², RMSE, fitted values.
 - **`CleanedRegressionResult`** — Two-pass: raw + clean metrics, outlier mask.
@@ -874,9 +875,9 @@ Centralized policy constants. No logic—only values:
 
 | Constant | Value | Used by |
 |----------|-------|---------|
-| `GLOBAL_QA_REJECTION_MULTIPLIER` | 2.0 | `model_consistency.py` — RMSE exclusion threshold |
-| `GLOBAL_QA_R2_MIN_THRESHOLD` | 0.80 | `model_consistency.py` — R² exclusion threshold |
-| `GLOBAL_QA_IQR_WHIS` | 1.5 | `model_consistency.py` — Residual outlier IQR multiplier |
+| `GLOBAL_QA_REJECTION_MULTIPLIER` | 2.0 | `sensor_assessment_regression.py` — RMSE exclusion threshold |
+| `GLOBAL_QA_R2_MIN_THRESHOLD` | 0.80 | `sensor_assessment_regression.py` — R² exclusion threshold |
+| `GLOBAL_QA_IQR_WHIS` | 1.5 | `sensor_assessment_regression.py` — Residual outlier IQR multiplier |
 | `BATCH_DEVIATION_Z_THRESHOLD` | 2.0 | `application/assessment_service.py` — Deviating sensor z-score cutoff used in app-facing batch summaries |
 | `PHASE2_INLIER_FEATURE` | `"integral_area"` | `classification_service.py` — Feature for inlier filtering |
 | `PHASE2_QA_FEATURES` | `("integral_area",)` | `classification_service.py` — Features for exclusion map |
@@ -911,7 +912,7 @@ Typed dataclasses for all inter-layer data transfer (see §14.4 for the complete
 - **`build_sensor_assessment_artifacts(filtered_features, selection)`** — Orchestrates consistency, degradation, batch analysis → `SensorAssessmentArtifacts`.
 - **`build_sensor_assessment_pdf_bytes(artifacts)`** — Generates PDF via ReportLab.
 
-### `model_consistency_service.py`
+### `sensor_assessment_service.py`
 
 - **`build_single_sensor_consistency_artifacts(filtered_features, selection)`** — Two-pass regression for one sensor × serotype → `SingleSensorConsistencyArtifacts`.
 - **`build_global_qa_artifacts(filtered_features, feature_columns)`** — Full QA table + exclusion map → `GlobalQaArtifacts`.
@@ -924,7 +925,7 @@ Typed dataclasses for all inter-layer data transfer (see §14.4 for the complete
 - **`run_phase2_classification(phase2_clean, feature_columns)`** — `train_classifiers` → selects best by F1 → `Phase2Artifacts`.
 - **`build_phase2_pdf_bytes(phase2_artifacts)`** — Phase 2 classification report PDF.
 
-### `peak_diagnostics_service.py`
+### `peak_discovery_service.py`
 
 - **`build_peak_diagnostic_context(...)`** — Aligns wide/features DataFrames for signal-level peak verification.
 - **`build_peak_anchor_overviews(peak_artifacts)`** — Per-serotype mean spectrum + peak info summaries.
@@ -934,7 +935,7 @@ Typed dataclasses for all inter-layer data transfer (see §14.4 for the complete
 
 ## 22. Module reference: `visualization/`
 
-The visualization modules are mostly matplotlib/seaborn wrappers intended to be safe to import from notebooks or scripts. One exception is `assessment_plots.py`, which intentionally imports regression-related helpers from `assessment.model_consistency` so it can render those views directly.
+The visualization modules are mostly matplotlib/seaborn wrappers intended to be safe to import from notebooks or scripts. One exception is `assessment_plots.py`, which intentionally imports regression-related helpers from `assessment.sensor_assessment_regression` so it can render those views directly.
 
 ### `plots.py`
 
@@ -953,7 +954,7 @@ The visualization modules are mostly matplotlib/seaborn wrappers intended to be 
 - **`plot_multi_sensor_regression(df, serotype, feature_col, excluded_sensors)`** — Multiple regression lines (solid = pass, dashed gray = excluded).
 - **`plot_macro_batch_regression(df, serotype, feature_col, pass_sensors)`** — Pooled regression with macro outlier markers.
 
-### `peak_diagnostics.py`
+### `peak_discovery.py`
 
 - **`plot_peak_anchor_summary(raman_x, mean_spectrum, peak_infos, serotype, ...)`** — Mean spectrum with shaded peak windows and anchor markers.
 - **`plot_signal_level_peak_verification(verification_artifact, ...)`** — Single-spectrum plot with per-peak windows and detected peak markers.
@@ -1022,10 +1023,11 @@ UI constants: figure sizes, slider limits, matplotlib aesthetics, HTML dividers.
 Each tab module exposes a `render(...)` function. Most tabs receive the filtered feature dataframe and, where needed, peak artifacts or the wide dataframe:
 
 - `spectra_viewer.py` — Hue, style, variance radio buttons → `plot_spectra`.
-- `peak_diagnostics.py` — Anchor overview + signal-level peak verification.
-- `feature_analysis.py` — Feature distribution plots with selectable axes and plot type.
-- `sensor_assessment.py` — Consistency, degradation, batch stability + PDF.
-- `model_consistency.py` — Single sensor regression, global QA table, multi-sensor overlay, macro batch, PDF.
+- `peak_discovery.py` — Anchor overview + signal-level peak verification.
+- `peak_feature_extraction.py` — Targeted anchor peak heights and verification plots.
+- `feature_analysis.py` — Feature distributions, correlation heatmap, vs log concentration.
+- `sensor_qc_legacy.py` — Legacy CV-style consistency, degradation, batch stability + PDF.
+- `sensor_assessment.py` — Single-sensor regression, global QA table, multi-sensor overlay, macro batch, PDF.
 - `serotype_classification.py` — PCA scatter, RF/SVM training, confusion matrix, feature importance, PDF.
 
 ---
@@ -1034,7 +1036,7 @@ Each tab module exposes a `render(...)` function. Most tabs receive the filtered
 
 Under `tests/`:
 
-- **`test_application_services.py`** — Integration tests for the application layer: synthetic `LoadedDataBundle` construction, `build_derived_bundle`, `apply_filters`, `build_sensor_assessment_artifacts`, model consistency / Phase 2 parity.
+- **`test_application_services.py`** — Integration tests for the application layer: synthetic `LoadedDataBundle` construction, `build_derived_bundle`, `apply_filters`, `build_sensor_assessment_artifacts`, sensor assessment regression / Phase 2 parity.
 
 Current test coverage is still light. Right now the explicit checked-in test module is the application-service parity test above.
 

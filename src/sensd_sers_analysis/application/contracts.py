@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from sensd_sers_analysis.assessment.model_consistency import (
+from sensd_sers_analysis.assessment.sensor_assessment_regression import (
     CleanedRegressionResult,
 )
 from sensd_sers_analysis.classification.models import ClassificationResult
@@ -36,18 +36,18 @@ class LoadedDataBundle:
 @dataclass(slots=True)
 class PeakArtifacts:
     """
-    Peak-extraction artifacts shared across multiple tabs.
+    Dynamic peak-discovery artifacts for exploratory visualization tabs.
 
     Parameters
     ----------
     peak_infos_by_serotype:
-        Mapping of serotype to extracted peak-window metadata.
+        Mapping of serotype to peak-window metadata (search windows, centers).
     mean_spec_by_serotype:
         Mapping of serotype to mean spectrum used during anchor discovery.
     default_serotype:
         Fallback serotype for 0 CFU rows.
     raman_x:
-        Raman-shift grid associated with the peak artifacts.
+        Raman-shift grid associated with the dynamic peak discovery UI.
     """
 
     peak_infos_by_serotype: dict[str, list[PeakWindowInfo]]
@@ -77,7 +77,7 @@ class DerivedDataBundle:
     peak_df:
         Peak-height dataframe returned by dynamic peak extraction.
     peak_artifacts:
-        Shared peak metadata for diagnostics and feature availability.
+        Shared peak metadata for exploratory peak discovery (not ML features).
     """
 
     wide_df: pd.DataFrame
@@ -243,7 +243,7 @@ class SensorAssessmentArtifacts:
 @dataclass(frozen=True, slots=True)
 class ModelConsistencySelection:
     """
-    User selection for single-sensor model consistency.
+    User selection for single-sensor regression QA (sensor assessment).
 
     Parameters
     ----------
