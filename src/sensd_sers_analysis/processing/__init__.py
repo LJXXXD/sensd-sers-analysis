@@ -2,7 +2,7 @@
 SERS signal processing: feature extraction and preprocessing.
 """
 
-from .alignment import trim_raman_shift
+from .alignment import snap_spectra_to_master_grid, trim_raman_shift
 from .features import (
     BASIC_FEATURE_COLUMNS,
     DEFAULT_GLOBAL_QA_FEATURES,
@@ -51,6 +51,7 @@ __all__ = [
     "DEFAULT_FILTER_ORDER",
     "extract_basic_features",
     "extract_scalar_concentration",
+    "snap_spectra_to_master_grid",
     "trim_raman_shift",
     "filter_by_selections",
     "filter_sers_data",

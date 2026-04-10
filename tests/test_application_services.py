@@ -49,6 +49,7 @@ from sensd_sers_analysis.processing import (
     filter_sers_data,
     get_peak_height_columns,
     preprocess_metadata,
+    snap_spectra_to_master_grid,
     trim_raman_shift,
 )
 
@@ -248,6 +249,7 @@ class ApplicationServiceTests(unittest.TestCase):
         loaded_bundle = _make_sample_loaded_bundle()
 
         manual_wide = preprocess_metadata(loaded_bundle.wide_df)
+        manual_wide = snap_spectra_to_master_grid(manual_wide)
         manual_wide = trim_raman_shift(manual_wide, min_shift=450.0, max_shift=750.0)
         manual_tidy = preprocess_metadata(wide_to_tidy(manual_wide))
         manual_features = extract_basic_features(manual_wide)
@@ -289,6 +291,31 @@ class ApplicationServiceTests(unittest.TestCase):
             manual_mean_by_sero.keys(),
         )
         self.assertTrue(np.allclose(bundle.peak_artifacts.raman_x, manual_raman_x))
+
+    def test_snap_spectra_to_master_grid_respects_native_bounds(self) -> None:
+        wide_df = pd.DataFrame(
+            {
+                "sensor_id": ["wide", "narrow"],
+                "rs_400.0": [1.0, np.nan],
+                "rs_500.0": [2.0, 20.0],
+                "rs_600.0": [3.0, 30.0],
+                "rs_700.0": [4.0, np.nan],
+                "rs_800.0": [5.0, np.nan],
+            }
+        )
+        snapped = snap_spectra_to_master_grid(wide_df)
+        narrow = snapped.loc[snapped["sensor_id"] == "narrow"].iloc[0]
+        rs_cols = sorted(
+            (c for c in snapped.columns if isinstance(c, str) and c.startswith("rs_")),
+            key=lambda c: float(c[3:]),
+        )
+        for col in rs_cols:
+            shift = float(col[3:])
+            val = narrow[col]
+            if 500.0 <= shift <= 600.0:
+                self.assertTrue(np.isfinite(val), msg=col)
+            else:
+                self.assertTrue(pd.isna(val), msg=col)
 
     def test_apply_filters_matches_processing_layer(self) -> None:
         loaded_bundle = _make_sample_loaded_bundle()

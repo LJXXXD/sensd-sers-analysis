@@ -20,6 +20,7 @@ from sensd_sers_analysis.processing import (
     extract_dynamic_peak_features,
     get_peak_height_columns,
     preprocess_metadata,
+    snap_spectra_to_master_grid,
     trim_raman_shift,
 )
 
@@ -102,6 +103,7 @@ def build_derived_bundle(
         )
 
     wide_df = preprocess_metadata(loaded_bundle.wide_df)
+    wide_df = snap_spectra_to_master_grid(wide_df)
     wide_df = trim_raman_shift(wide_df, min_shift=min_shift, max_shift=max_shift)
 
     tidy_df = wide_to_tidy(wide_df)

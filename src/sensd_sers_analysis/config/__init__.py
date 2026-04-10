@@ -13,6 +13,7 @@ from .model_policies import (
     PHASE2_RF_N_ESTIMATORS,
     PHASE2_TEST_SIZE,
 )
+from .spectral_policies import SNAP_SHIFT_DEDUPE_ATOL, SNAP_SHIFT_DEDUPE_RTOL
 
 __all__ = [
     "BATCH_DEVIATION_Z_THRESHOLD",
@@ -24,4 +25,6 @@ __all__ = [
     "PHASE2_RANDOM_STATE",
     "PHASE2_RF_N_ESTIMATORS",
     "PHASE2_TEST_SIZE",
+    "SNAP_SHIFT_DEDUPE_ATOL",
+    "SNAP_SHIFT_DEDUPE_RTOL",
 ]
