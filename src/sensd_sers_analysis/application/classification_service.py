@@ -108,11 +108,16 @@ def build_phase2_pdf_bytes(artifacts: Phase2Artifacts) -> bytes:
     feature_importance_fig = None
     if artifacts.rf_result.feature_importances is not None:
         feature_importance_fig = plot_feature_importance(artifacts.rf_result)
-    confusion_matrix_fig = plot_confusion_matrix(artifacts.best_result)
+    rf_cm_fig = plot_confusion_matrix(artifacts.rf_result)
+    svm_cm_fig = plot_confusion_matrix(artifacts.svm_result)
     return build_phase2_classification_pdf(
         pca_fig=pca_fig,
         feature_importance_fig=feature_importance_fig,
-        confusion_matrix_fig=confusion_matrix_fig,
-        accuracy=artifacts.best_result.accuracy,
-        f1=artifacts.best_result.f1,
+        rf_confusion_matrix_fig=rf_cm_fig,
+        svm_confusion_matrix_fig=svm_cm_fig,
+        rf_accuracy=artifacts.rf_result.accuracy,
+        rf_f1=artifacts.rf_result.f1,
+        svm_accuracy=artifacts.svm_result.accuracy,
+        svm_f1=artifacts.svm_result.f1,
+        best_model_name=artifacts.best_result.model_name,
     )

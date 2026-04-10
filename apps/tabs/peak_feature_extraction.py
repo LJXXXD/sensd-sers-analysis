@@ -35,6 +35,7 @@ from sensd_sers_analysis.visualization import (
 )
 from theme import (
     AXVLINE_ALPHA,
+    DATAFRAME_WIDTH,
     DEFAULT_FIGSIZE_ANCHOR,
     DEFAULT_FIGSIZE_WIDE,
     GRID_ALPHA,
@@ -283,5 +284,5 @@ def render(filtered_bundle, derived_bundle, peak_artifacts) -> None:
         st.markdown("**Stored feature values (baseline-adjusted heights)**")
         st.dataframe(
             data=[value_map],
-            use_container_width=True,
+            width=DATAFRAME_WIDTH,
         )

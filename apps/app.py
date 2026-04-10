@@ -105,10 +105,11 @@ min_shift, max_shift, n_peaks = render_raman_shift_sidebar(
 )
 serotypes_for_peaks = list_serotypes_from_wide_df(loaded_bundle.wide_df)
 if serotypes_for_peaks:
-    for sero in serotypes_for_peaks:
-        st.session_state.setdefault(f"pvis_n_peaks_{sero}", int(N_PEAKS_DEFAULT))
+    # Do not setdefault pvis_n_peaks_* here: Peak Discovery number_input uses the
+    # same keys with value=, which triggers Streamlit's session-state duplication warning.
     n_peaks_by_serotype = {
-        sero: int(st.session_state[f"pvis_n_peaks_{sero}"]) for sero in serotypes_for_peaks
+        sero: int(st.session_state.get(f"pvis_n_peaks_{sero}", N_PEAKS_DEFAULT))
+        for sero in serotypes_for_peaks
     }
 else:
     n_peaks_by_serotype = None

@@ -521,9 +521,13 @@ def build_phase2_classification_pdf(
     *,
     pca_fig: Optional[Any] = None,
     feature_importance_fig: Optional[Any] = None,
-    confusion_matrix_fig: Optional[Any] = None,
-    accuracy: Optional[float] = None,
-    f1: Optional[float] = None,
+    rf_confusion_matrix_fig: Optional[Any] = None,
+    svm_confusion_matrix_fig: Optional[Any] = None,
+    rf_accuracy: Optional[float] = None,
+    rf_f1: Optional[float] = None,
+    svm_accuracy: Optional[float] = None,
+    svm_f1: Optional[float] = None,
+    best_model_name: Optional[str] = None,
     report_title: str = "Phase 2: Serotyping & Classification Report",
     output_path: Optional[str | Path] = None,
 ) -> bytes:
@@ -533,9 +537,13 @@ def build_phase2_classification_pdf(
     Args:
         pca_fig: PCA scatter (PC1 vs PC2 by class).
         feature_importance_fig: RF feature importance bar chart.
-        confusion_matrix_fig: Confusion matrix heatmap.
-        accuracy: Overall accuracy.
-        f1: Weighted F1-score.
+        rf_confusion_matrix_fig: Random Forest confusion matrix heatmap.
+        svm_confusion_matrix_fig: SVM confusion matrix heatmap.
+        rf_accuracy: RF accuracy on the held-out test split.
+        rf_f1: RF weighted F1 on the held-out test split.
+        svm_accuracy: SVM accuracy on the held-out test split.
+        svm_f1: SVM weighted F1 on the held-out test split.
+        best_model_name: Model with higher weighted F1 (for summary text).
         report_title: Title on first page.
         output_path: If provided, save PDF to path.
 
@@ -607,17 +615,43 @@ def build_phase2_classification_pdf(
         flow.append(img)
         flow.append(Spacer(1, 0.3 * inch))
 
-    if confusion_matrix_fig is not None:
-        flow.append(Paragraph("3. Confusion Matrix", heading_style))
-        if accuracy is not None or f1 is not None:
-            metrics_parts = []
-            if accuracy is not None:
-                metrics_parts.append(f"Accuracy: {accuracy:.3f}")
-            if f1 is not None:
-                metrics_parts.append(f"F1-Score (weighted): {f1:.3f}")
-            flow.append(Paragraph(" | ".join(metrics_parts), body_style))
+    if best_model_name and (
+        rf_confusion_matrix_fig is not None or svm_confusion_matrix_fig is not None
+    ):
+        flow.append(
+            Paragraph(
+                f"Best model by weighted F1 on the held-out split: <b>{best_model_name}</b>.",
+                body_style,
+            )
+        )
+        flow.append(Spacer(1, 0.15 * inch))
+
+    if rf_confusion_matrix_fig is not None:
+        flow.append(Paragraph("3. Random Forest — Confusion matrix", heading_style))
+        rf_metrics: list[str] = []
+        if rf_accuracy is not None:
+            rf_metrics.append(f"Accuracy: {rf_accuracy:.3f}")
+        if rf_f1 is not None:
+            rf_metrics.append(f"F1 (weighted): {rf_f1:.3f}")
+        if rf_metrics:
+            flow.append(Paragraph(" | ".join(rf_metrics), body_style))
         flow.append(Spacer(1, 0.1 * inch))
-        img_bytes = _figure_to_image_bytes(confusion_matrix_fig)
+        img_bytes = _figure_to_image_bytes(rf_confusion_matrix_fig)
+        img = Image(io.BytesIO(img_bytes), width=4.5 * inch, height=4 * inch)
+        flow.append(img)
+        flow.append(Spacer(1, 0.25 * inch))
+
+    if svm_confusion_matrix_fig is not None:
+        flow.append(Paragraph("4. SVM (RBF) — Confusion matrix", heading_style))
+        svm_metrics: list[str] = []
+        if svm_accuracy is not None:
+            svm_metrics.append(f"Accuracy: {svm_accuracy:.3f}")
+        if svm_f1 is not None:
+            svm_metrics.append(f"F1 (weighted): {svm_f1:.3f}")
+        if svm_metrics:
+            flow.append(Paragraph(" | ".join(svm_metrics), body_style))
+        flow.append(Spacer(1, 0.1 * inch))
+        img_bytes = _figure_to_image_bytes(svm_confusion_matrix_fig)
         img = Image(io.BytesIO(img_bytes), width=4.5 * inch, height=4 * inch)
         flow.append(img)
 
