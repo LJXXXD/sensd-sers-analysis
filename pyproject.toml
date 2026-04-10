@@ -23,6 +23,7 @@ dependencies = [
     "scipy",
     "streamlit",
     "reportlab",
+    "torch",
 ]
 
 [dependency-groups]

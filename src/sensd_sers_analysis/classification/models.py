@@ -171,6 +171,131 @@ def _fit_svc(
     return svm, None
 
 
+def _classification_results_from_scaled(
+    X_train_s: np.ndarray,
+    X_test_s: np.ndarray,
+    y_train: np.ndarray,
+    y_test: np.ndarray,
+    feature_names: list[str],
+    scaler: StandardScaler,
+    *,
+    random_state: int,
+) -> tuple[ClassificationResult, ClassificationResult]:
+    """
+    Fit RF + SVM on scaled training rows and evaluate on scaled test rows.
+
+    Parameters
+    ----------
+    X_train_s, X_test_s:
+        Standardized feature matrices.
+    y_train, y_test:
+        String class labels.
+    feature_names:
+        Feature names aligned with columns of ``X_*``.
+    scaler:
+        Fitted ``StandardScaler`` used to produce ``X_train_s`` / ``X_test_s``.
+    random_state:
+        Random seed for estimators and search.
+
+    Returns
+    -------
+    tuple[ClassificationResult, ClassificationResult]
+        ``(rf_result, svm_result)``.
+    """
+    class_names = sorted(pd.unique(np.concatenate([y_train, y_test])).tolist())
+
+    run_hp = _should_run_hyperparameter_search(len(X_train_s), y_train)
+
+    rf, rf_params = _fit_random_forest(
+        X_train_s, y_train, random_state, run_hyperparameter_search=run_hp
+    )
+    y_pred_rf = rf.predict(X_test_s)
+
+    svm, svm_params = _fit_svc(X_train_s, y_train, random_state, run_hyperparameter_search=run_hp)
+    y_pred_svm = svm.predict(X_test_s)
+
+    rf_result = ClassificationResult(
+        model_name="Random Forest",
+        model=rf,
+        y_true=y_test,
+        y_pred=y_pred_rf,
+        accuracy=float(accuracy_score(y_test, y_pred_rf)),
+        precision=float(precision_score(y_test, y_pred_rf, average="weighted", zero_division=0)),
+        recall=float(recall_score(y_test, y_pred_rf, average="weighted", zero_division=0)),
+        f1=float(f1_score(y_test, y_pred_rf, average="weighted", zero_division=0)),
+        confusion_matrix=confusion_matrix(y_test, y_pred_rf, labels=class_names).astype(int),
+        class_names=class_names,
+        feature_names=feature_names,
+        feature_importances=rf.feature_importances_,
+        scaler=scaler,
+        best_params=rf_params,
+    )
+
+    svm_result = ClassificationResult(
+        model_name="SVM (RBF)",
+        model=svm,
+        y_true=y_test,
+        y_pred=y_pred_svm,
+        accuracy=float(accuracy_score(y_test, y_pred_svm)),
+        precision=float(precision_score(y_test, y_pred_svm, average="weighted", zero_division=0)),
+        recall=float(recall_score(y_test, y_pred_svm, average="weighted", zero_division=0)),
+        f1=float(f1_score(y_test, y_pred_svm, average="weighted", zero_division=0)),
+        confusion_matrix=confusion_matrix(y_test, y_pred_svm, labels=class_names).astype(int),
+        class_names=class_names,
+        feature_names=feature_names,
+        feature_importances=None,
+        scaler=scaler,
+        best_params=svm_params,
+    )
+
+    return rf_result, svm_result
+
+
+def train_classifiers_on_arrays(
+    X_train: np.ndarray,
+    X_test: np.ndarray,
+    y_train: np.ndarray,
+    y_test: np.ndarray,
+    feature_names: list[str],
+    *,
+    random_state: int = PHASE2_RANDOM_STATE,
+) -> tuple[ClassificationResult, ClassificationResult]:
+    """
+    Train Phase 2 classifiers on a caller-defined train/test feature split.
+
+    Use when the split is already fixed (e.g. group-by-sensor holdout). Fits a
+    new ``StandardScaler`` on the training rows only.
+
+    Parameters
+    ----------
+    X_train, X_test:
+        Unscaled feature matrices (same columns as ``feature_names``).
+    y_train, y_test:
+        String class labels (e.g. serotype names and ``Rinsate``).
+    feature_names:
+        Names aligned with columns of ``X_train`` / ``X_test``.
+    random_state:
+        Random seed.
+
+    Returns
+    -------
+    tuple[ClassificationResult, ClassificationResult]
+        ``(rf_result, svm_result)``.
+    """
+    scaler = StandardScaler()
+    X_train_s = scaler.fit_transform(X_train)
+    X_test_s = scaler.transform(X_test)
+    return _classification_results_from_scaled(
+        X_train_s,
+        X_test_s,
+        y_train,
+        y_test,
+        feature_names,
+        scaler,
+        random_state=random_state,
+    )
+
+
 def train_classifiers(
     df: pd.DataFrame,
     feature_cols: list[str],
@@ -194,7 +319,7 @@ def train_classifiers(
     feature_cols:
         Feature column names.
     target_col:
-        Target column (ST, SE, Rinsate).
+        Target column (dynamic serotypes + ``Rinsate``).
     test_size:
         Fraction for test set.
     random_state:
@@ -231,48 +356,12 @@ def train_classifiers(
     X_train_s = scaler.fit_transform(X_train)
     X_test_s = scaler.transform(X_test)
 
-    run_hp = _should_run_hyperparameter_search(len(X_train_s), y_train)
-
-    rf, rf_params = _fit_random_forest(
-        X_train_s, y_train, random_state, run_hyperparameter_search=run_hp
+    return _classification_results_from_scaled(
+        X_train_s,
+        X_test_s,
+        y_train,
+        y_test,
+        available,
+        scaler,
+        random_state=random_state,
     )
-    y_pred_rf = rf.predict(X_test_s)
-
-    svm, svm_params = _fit_svc(X_train_s, y_train, random_state, run_hyperparameter_search=run_hp)
-    y_pred_svm = svm.predict(X_test_s)
-
-    rf_result = ClassificationResult(
-        model_name="Random Forest",
-        model=rf,
-        y_true=y_test,
-        y_pred=y_pred_rf,
-        accuracy=float(accuracy_score(y_test, y_pred_rf)),
-        precision=float(precision_score(y_test, y_pred_rf, average="weighted", zero_division=0)),
-        recall=float(recall_score(y_test, y_pred_rf, average="weighted", zero_division=0)),
-        f1=float(f1_score(y_test, y_pred_rf, average="weighted", zero_division=0)),
-        confusion_matrix=confusion_matrix(y_test, y_pred_rf, labels=class_names).astype(int),
-        class_names=class_names,
-        feature_names=available,
-        feature_importances=rf.feature_importances_,
-        scaler=scaler,
-        best_params=rf_params,
-    )
-
-    svm_result = ClassificationResult(
-        model_name="SVM (RBF)",
-        model=svm,
-        y_true=y_test,
-        y_pred=y_pred_svm,
-        accuracy=float(accuracy_score(y_test, y_pred_svm)),
-        precision=float(precision_score(y_test, y_pred_svm, average="weighted", zero_division=0)),
-        recall=float(recall_score(y_test, y_pred_svm, average="weighted", zero_division=0)),
-        f1=float(f1_score(y_test, y_pred_svm, average="weighted", zero_division=0)),
-        confusion_matrix=confusion_matrix(y_test, y_pred_svm, labels=class_names).astype(int),
-        class_names=class_names,
-        feature_names=available,
-        feature_importances=None,
-        scaler=scaler,
-        best_params=svm_params,
-    )
-
-    return rf_result, svm_result

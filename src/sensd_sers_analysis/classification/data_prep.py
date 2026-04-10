@@ -2,7 +2,8 @@
 Phase 2 data preparation: strictly clean data from Phase 1.
 
 Filters to Pass sensors only, drops outlier-flagged points from intra-sensor
-regression, and assigns 3-class target: ST, SE, Rinsate.
+regression, and assigns ``(N + 1)``-class targets: ``N`` serotypes observed on
+positive-CFU rows plus the **Rinsate** class (zero CFU).
 """
 
 from typing import Optional
@@ -33,7 +34,10 @@ def prepare_phase2_data(
 
     - Only rows from sensors marked Pass in Global Assessment (integral_area).
     - Re-runs intra-sensor outlier detection on integral_area; keeps inliers only.
-    - Strict 3-class labeling: Rinsate (conc==0), ST, SE. Drops all others.
+    - **Rinsate** when concentration is zero (or ``concentration_group`` is
+      exactly ``"0 CFU"`` when no numeric concentration is available).
+    - Positive-CFU rows: ``target`` is the row's ``serotype`` string; rows with
+      missing or unusable serotype labels are dropped.
 
     Args:
         df: Filtered feature DataFrame from Phase 1.
@@ -47,7 +51,8 @@ def prepare_phase2_data(
         concentration_col: Raw concentration column (used when available).
 
     Returns:
-        DataFrame with "target" column (ST, SE, Rinsate). No merges; no dropna.
+        DataFrame with ``target`` column (serotype names on positive CFU,
+        ``"Rinsate"`` on zero CFU). No merges; no dropna on feature columns.
     """
     required = [sensor_col, serotype_col, concentration_group_col]
     if any(c not in df.columns for c in required):
@@ -114,7 +119,7 @@ def prepare_phase2_data(
 
     out = df.loc[list(keep_indices)].copy()
 
-    # 4. Strict 3-class labeling: Rinsate (conc==0 or exact "0 CFU"), ST, SE
+    # 4. (N + 1)-class labeling: Rinsate vs serotype string on positive CFU
     out["target"] = "Unknown"
     if concentration_col in out.columns:
         conc = extract_scalar_concentration(out[concentration_col], out)
@@ -122,9 +127,12 @@ def prepare_phase2_data(
     else:
         rinsate_mask = out[concentration_group_col].astype(str) == "0 CFU"
     out.loc[rinsate_mask, "target"] = "Rinsate"
-    st_mask = (out["target"] == "Unknown") & (out[serotype_col].astype(str) == "ST")
-    se_mask = (out["target"] == "Unknown") & (out[serotype_col].astype(str) == "SE")
-    out.loc[st_mask, "target"] = "ST"
-    out.loc[se_mask, "target"] = "SE"
+
+    pos_unknown = out["target"] == "Unknown"
+    if serotype_col in out.columns:
+        sero_str = out[serotype_col].astype(str).str.strip()
+        valid_sero = sero_str.notna() & (sero_str != "") & ~sero_str.str.lower().eq("nan")
+        use = pos_unknown & valid_sero
+        out.loc[use, "target"] = sero_str.loc[use].values
     out = out[out["target"] != "Unknown"].copy()
     return out

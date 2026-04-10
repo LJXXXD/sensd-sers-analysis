@@ -662,3 +662,144 @@ def build_phase2_classification_pdf(
         Path(output_path).write_bytes(pdf_bytes)
 
     return pdf_bytes
+
+
+def build_regression_concentration_pdf(
+    *,
+    paradigm_title: str,
+    metrics_table: Optional[pd.DataFrame] = None,
+    scatter_fig: Optional[Any] = None,
+    residual_fig: Optional[Any] = None,
+    extra_figures: Optional[list[tuple[str, Any]]] = None,
+    caption_lines: Optional[tuple[str, ...]] = None,
+    report_title: str = "Concentration regression report",
+    output_path: Optional[str | Path] = None,
+) -> bytes:
+    """
+    Compile concentration-regression metrics and figures into a compact PDF.
+
+    First iteration: metrics table plus actual-vs-predicted and residual plots.
+
+    Parameters
+    ----------
+    paradigm_title:
+        Short paradigm label (shown as section text).
+    metrics_table:
+        Optional summary table (e.g. model comparison).
+    scatter_fig, residual_fig:
+        Matplotlib figures.
+    extra_figures:
+        Optional list of ``(section_title, figure)`` pairs.
+    caption_lines:
+        Optional bullet-style notes rendered as paragraphs.
+    report_title:
+        Document title on the cover line.
+    output_path:
+        If set, write bytes to this path.
+
+    Returns
+    -------
+    bytes
+        PDF file contents.
+    """
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        rightMargin=0.75 * inch,
+        leftMargin=0.75 * inch,
+        topMargin=0.75 * inch,
+        bottomMargin=0.75 * inch,
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "RegReportTitle",
+        parent=styles["Heading1"],
+        fontSize=18,
+        spaceAfter=12,
+    )
+    heading_style = ParagraphStyle(
+        "RegSectionHeading",
+        parent=styles["Heading2"],
+        fontSize=14,
+        spaceBefore=16,
+        spaceAfter=8,
+    )
+    body_style = styles["Normal"]
+
+    flow: list = []
+    flow.append(Paragraph(report_title, title_style))
+    flow.append(
+        Paragraph(
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            body_style,
+        )
+    )
+    flow.append(Spacer(1, 0.12 * inch))
+    flow.append(Paragraph(f"<b>{paradigm_title}</b>", heading_style))
+    flow.append(
+        Paragraph(
+            "Evaluation uses a <b>group holdout by sensor_id</b>: test rows come from "
+            "sensors not seen during training. Target is log10 concentration (positive CFU; "
+            "positive-CFU rows only).",
+            body_style,
+        )
+    )
+    if caption_lines:
+        for line in caption_lines:
+            flow.append(Paragraph(line, body_style))
+    flow.append(Spacer(1, 0.15 * inch))
+
+    if metrics_table is not None and not metrics_table.empty:
+        flow.append(Paragraph("Metrics summary", heading_style))
+        tdata = _df_to_table_data(metrics_table)
+        tw = _compute_table_col_widths(tdata, doc.width)
+        tbl = Table(tdata, colWidths=tw, repeatRows=1)
+        tbl.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 9),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ]
+            )
+        )
+        flow.append(tbl)
+        flow.append(Spacer(1, 0.25 * inch))
+
+    if scatter_fig is not None:
+        flow.append(Paragraph("Actual vs predicted", heading_style))
+        flow.append(Spacer(1, 0.08 * inch))
+        img_bytes = _figure_to_image_bytes(scatter_fig)
+        img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=4.2 * inch)
+        flow.append(img)
+        flow.append(Spacer(1, 0.22 * inch))
+
+    if residual_fig is not None:
+        flow.append(Paragraph("Residuals", heading_style))
+        flow.append(Spacer(1, 0.08 * inch))
+        img_bytes = _figure_to_image_bytes(residual_fig)
+        img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=3.4 * inch)
+        flow.append(img)
+        flow.append(Spacer(1, 0.22 * inch))
+
+    if extra_figures:
+        for sec_title, fig in extra_figures:
+            if fig is None:
+                continue
+            flow.append(Paragraph(sec_title, heading_style))
+            flow.append(Spacer(1, 0.08 * inch))
+            img_bytes = _figure_to_image_bytes(fig)
+            img = Image(io.BytesIO(img_bytes), width=4.8 * inch, height=4 * inch)
+            flow.append(img)
+            flow.append(Spacer(1, 0.2 * inch))
+
+    doc.build(flow)
+    pdf_bytes = buffer.getvalue()
+
+    if output_path is not None:
+        Path(output_path).write_bytes(pdf_bytes)
+
+    return pdf_bytes

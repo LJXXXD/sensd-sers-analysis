@@ -6,7 +6,7 @@ ML models for 3-class classification: ST, SE, Rinsate.
 """
 
 from .data_prep import prepare_phase2_data
-from .models import ClassificationResult, train_classifiers
+from .models import ClassificationResult, train_classifiers, train_classifiers_on_arrays
 from .plots import (
     plot_confusion_matrix,
     plot_feature_importance,
@@ -20,4 +20,5 @@ __all__ = [
     "plot_feature_importance",
     "plot_pca_classification",
     "train_classifiers",
+    "train_classifiers_on_arrays",
 ]

@@ -23,7 +23,7 @@ def plot_pca_classification(
     ax: Optional[plt.Axes] = None,
 ) -> plt.Figure:
     """
-    PCA scatter colored by target (ST, SE, Rinsate).
+    PCA scatter colored by target (dynamic serotypes + Rinsate).
 
     Args:
         df: DataFrame with PC1, PC2, and target.
@@ -51,10 +51,13 @@ def plot_pca_classification(
     else:
         fig = ax.get_figure()
 
-    hue_order = ["ST", "SE", "Rinsate"]
-    present = [c for c in hue_order if c in subset[target_col].unique()]
+    rinsate_label = "Rinsate"
+    uniq = subset[target_col].astype(str).unique().tolist()
+    sero_like = sorted(c for c in uniq if c != rinsate_label)
+    hue_order = sero_like + ([rinsate_label] if rinsate_label in uniq else [])
+    present = [c for c in hue_order if c in uniq]
     if not present:
-        present = sorted(subset[target_col].unique().tolist())
+        present = sorted(uniq)
 
     sns.scatterplot(
         data=subset,

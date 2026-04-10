@@ -22,9 +22,6 @@ ZERO_CFU_LABEL = "0 CFU"
 # Preferred concentration groups for anchor discovery (highest signal first)
 _HIGH_CONC_PREFERENCE = ["1000 CFU", "100 CFU", "10 CFU", "1 CFU"]
 
-# Default serotype for 0 CFU rows (when extracting background)
-_DEFAULT_SEROTYPE_PREFERENCE = ("ST", "SE")
-
 # Outer boundary: baseline threshold (fraction of peak height) when searching
 # left/right from first/last anchor
 OUTER_BASELINE_FRAC = 0.05
@@ -250,14 +247,16 @@ def _compute_peak_windows_for_serotype(
     return info_list, mean_spec
 
 
-def _pick_default_serotype(
-    available: list[str], preference: tuple[str, ...] = _DEFAULT_SEROTYPE_PREFERENCE
-) -> str | None:
-    """Pick default serotype for 0 CFU rows (e.g. ST, then SE)."""
-    for p in preference:
-        if p in available:
-            return p
-    return available[0] if available else None
+def _pick_default_serotype(available: list[str]) -> str | None:
+    """
+    Pick a deterministic default serotype for 0 CFU rows (peak window routing).
+
+    Uses lexicographic order so behavior depends only on serotypes present in the
+    filtered dataframe, not on fixed pathogen codes.
+    """
+    if not available:
+        return None
+    return sorted(available)[0]
 
 
 def extract_dynamic_peak_features(

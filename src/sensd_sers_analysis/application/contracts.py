@@ -14,6 +14,9 @@ from sensd_sers_analysis.assessment.sensor_assessment_regression import (
 )
 from sensd_sers_analysis.classification.models import ClassificationResult
 from sensd_sers_analysis.processing.peak_features import PeakWindowInfo
+from sensd_sers_analysis.regression.models_global import SingleRegressorResult
+from sensd_sers_analysis.regression.models_mtl import MtlRegressionOutputs
+from sensd_sers_analysis.regression.models_two_stage import TwoStageRegressionOutputs
 
 
 @dataclass(slots=True)
@@ -324,6 +327,60 @@ class OverlayArtifact:
     feature: str
     excluded_sensors: frozenset[str]
     pass_sensors: frozenset[str]
+
+
+@dataclass(slots=True)
+class GlobalRegressionArtifacts:
+    """
+    Paradigm 1: pooled global regressors evaluated on held-out sensors.
+
+    Parameters
+    ----------
+    regression_clean:
+        Clean positive-CFU rows (dynamic serotypes) used for training and evaluation.
+    feature_columns:
+        Feature names passed to the models.
+    train_indices, test_indices:
+        Positional indices after ``reset_index`` on ``regression_clean``.
+    rf_result, svm_result:
+        Random Forest and SVR results on the test split.
+    best_result:
+        Model with lower test RMSE.
+    """
+
+    regression_clean: pd.DataFrame
+    feature_columns: tuple[str, ...]
+    train_indices: np.ndarray
+    test_indices: np.ndarray
+    rf_result: SingleRegressorResult
+    svm_result: SingleRegressorResult
+    best_result: SingleRegressorResult
+
+
+@dataclass(slots=True)
+class TwoStageRegressionArtifacts:
+    """
+    Paradigm 2: multi-class serotype routing + serotype-specific regressors.
+    """
+
+    regression_clean: pd.DataFrame
+    feature_columns: tuple[str, ...]
+    train_indices: np.ndarray
+    test_indices: np.ndarray
+    outputs: TwoStageRegressionOutputs
+
+
+@dataclass(slots=True)
+class MtlRegressionArtifacts:
+    """
+    Paradigm 3: shared-trunk multi-task network outputs.
+    """
+
+    regression_clean: pd.DataFrame
+    feature_columns: tuple[str, ...]
+    train_indices: np.ndarray
+    test_indices: np.ndarray
+    outputs: MtlRegressionOutputs
 
 
 @dataclass(frozen=True, slots=True)

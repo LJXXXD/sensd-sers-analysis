@@ -52,8 +52,9 @@ def render(filtered_features, peak_artifacts):
     st.markdown(
         "#### Phase 2: Serotyping & Classification\n"
         "Uses strictly clean data from Phase 1: Pass sensors only, inlier "
-        "points only. Trains baseline ML models for 3-class classification: "
-        "**ST**, **SE**, **Rinsate** (0 CFU)."
+        "points only. Trains baseline ML models for **(N + 1)-class** "
+        "classification: **N** serotypes on positive-CFU rows plus **Rinsate** (0 CFU), "
+        "where **N** is determined by the current filter."
     )
 
     has_phase2_cols = (
@@ -91,7 +92,7 @@ def render(filtered_features, peak_artifacts):
     if phase2_clean.empty:
         st.warning(
             "No clean data for Phase 2. Ensure Phase 1 has Pass sensors and "
-            "inlier points. Check that ST, SE, and Rinsate (0 CFU) samples exist."
+            "inlier points. Check that positive-CFU serotypes and Rinsate (0 CFU) samples exist."
         )
         return
 

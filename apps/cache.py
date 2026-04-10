@@ -13,6 +13,12 @@ from sensd_sers_analysis.application.classification_service import (
     build_phase2_dataset,
     run_phase2_classification,
 )
+from sensd_sers_analysis.application.regression_service import (
+    build_concentration_regression_dataset,
+    run_global_concentration_regression,
+    run_mtl_concentration_regression,
+    run_two_stage_concentration_regression,
+)
 from sensd_sers_analysis.application.contracts import SensorAssessmentSelection
 from sensd_sers_analysis.application.dataset_pipeline import build_derived_bundle
 from sensd_sers_analysis.application.filtering_service import deserialize_filter_state
@@ -204,3 +210,47 @@ def build_cached_phase2_artifacts(phase2_clean, feature_columns: tuple[str, ...]
     """
 
     return run_phase2_classification(phase2_clean, feature_columns)
+
+
+@st.cache_data
+def build_cached_concentration_regression_dataset(
+    filtered_features,
+    *,
+    excluded_map_policy: tuple[str, ...],
+    inlier_feature: str,
+):
+    """
+    Cache clean positive-CFU rows (dynamic serotypes) for concentration regression.
+
+    Returns
+    -------
+    pd.DataFrame
+        Regression-ready dataframe (may be empty).
+    """
+
+    return build_concentration_regression_dataset(
+        filtered_features,
+        excluded_map_policy=excluded_map_policy,
+        inlier_feature=inlier_feature,
+    )
+
+
+@st.cache_data
+def build_cached_global_regression_artifacts(regression_clean, feature_columns: tuple[str, ...]):
+    """Cache Paradigm 1 (global) training and test metrics."""
+
+    return run_global_concentration_regression(regression_clean, feature_columns)
+
+
+@st.cache_data
+def build_cached_two_stage_regression_artifacts(regression_clean, feature_columns: tuple[str, ...]):
+    """Cache Paradigm 2 (two-stage) pipeline outputs."""
+
+    return run_two_stage_concentration_regression(regression_clean, feature_columns)
+
+
+@st.cache_data
+def build_cached_mtl_regression_artifacts(regression_clean, feature_columns: tuple[str, ...]):
+    """Cache Paradigm 3 (MTL) training and test metrics."""
+
+    return run_mtl_concentration_regression(regression_clean, feature_columns)

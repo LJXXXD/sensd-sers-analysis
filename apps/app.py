@@ -38,6 +38,9 @@ from tabs import (
     feature_analysis,
     peak_discovery,
     peak_feature_extraction,
+    regression_global,
+    regression_mtl,
+    regression_two_stage,
     sensor_assessment,
     sensor_qc_legacy,
     serotype_classification,
@@ -242,6 +245,9 @@ if filtered_bundle.filtered_tidy_df.empty:
     tab_sensor_qc_legacy,
     tab_sensor_assessment,
     tab_phase2,
+    tab_reg_v1,
+    tab_reg_v2,
+    tab_reg_v3,
 ) = st.tabs(
     [
         "Spectra Viewer",
@@ -251,6 +257,9 @@ if filtered_bundle.filtered_tidy_df.empty:
         f"{unicode_strikethrough('Sensor QC')} (legacy)",
         "Sensor assessment",
         "Serotype Classification",
+        "Regression V1: Global",
+        "Regression V2: Two-Stage",
+        "Regression V3: MTL",
     ]
 )
 
@@ -303,6 +312,24 @@ with tab_sensor_assessment:
 
 with tab_phase2:
     serotype_classification.render(
+        filtered_bundle_for_analysis.filtered_features_df,
+        derived_bundle.peak_artifacts,
+    )
+
+with tab_reg_v1:
+    regression_global.render(
+        filtered_bundle_for_analysis.filtered_features_df,
+        derived_bundle.peak_artifacts,
+    )
+
+with tab_reg_v2:
+    regression_two_stage.render(
+        filtered_bundle_for_analysis.filtered_features_df,
+        derived_bundle.peak_artifacts,
+    )
+
+with tab_reg_v3:
+    regression_mtl.render(
         filtered_bundle_for_analysis.filtered_features_df,
         derived_bundle.peak_artifacts,
     )
