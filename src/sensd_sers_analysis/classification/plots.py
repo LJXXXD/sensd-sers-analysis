@@ -1,5 +1,5 @@
 """
-Phase 2 classification visualizations.
+Serotype classification visualizations.
 """
 
 from typing import Optional

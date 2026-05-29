@@ -1,5 +1,5 @@
 """
-Phase 2 baseline ML: Random Forest and SVM classifiers.
+Baseline serotype classification: Random Forest and SVM classifiers.
 """
 
 from __future__ import annotations
@@ -23,18 +23,18 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
 from sensd_sers_analysis.config import (
-    PHASE2_HYPERPARAMETER_TUNING,
-    PHASE2_RANDOM_STATE,
-    PHASE2_RF_N_ESTIMATORS,
-    PHASE2_RF_SEARCH_MAX_DEPTH,
-    PHASE2_RF_SEARCH_MIN_SAMPLES_LEAF,
-    PHASE2_RF_SEARCH_N_ESTIMATORS,
-    PHASE2_SVM_SEARCH_C,
-    PHASE2_SVM_SEARCH_GAMMA,
-    PHASE2_TEST_SIZE,
-    PHASE2_TUNING_CV_SPLITS,
-    PHASE2_TUNING_MIN_TRAIN_SAMPLES,
-    PHASE2_TUNING_RANDOM_SEARCH_ITER,
+    CLASSIFICATION_HYPERPARAMETER_TUNING,
+    CLASSIFICATION_RANDOM_STATE,
+    CLASSIFICATION_RF_N_ESTIMATORS,
+    CLASSIFICATION_RF_SEARCH_MAX_DEPTH,
+    CLASSIFICATION_RF_SEARCH_MIN_SAMPLES_LEAF,
+    CLASSIFICATION_RF_SEARCH_N_ESTIMATORS,
+    CLASSIFICATION_SVM_SEARCH_C,
+    CLASSIFICATION_SVM_SEARCH_GAMMA,
+    CLASSIFICATION_TEST_SIZE,
+    CLASSIFICATION_TUNING_CV_SPLITS,
+    CLASSIFICATION_TUNING_MIN_TRAIN_SAMPLES,
+    CLASSIFICATION_TUNING_RANDOM_SEARCH_ITER,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ClassificationResult:
-    """Results from training a Phase 2 classifier."""
+    """Results from training a serotype classifier."""
 
     model_name: str
     model: object
@@ -77,18 +77,18 @@ def _effective_cv_splits(y_train: np.ndarray, requested: int) -> int:
 
 
 def _should_run_hyperparameter_search(n_train: int, y_train: np.ndarray) -> bool:
-    if not PHASE2_HYPERPARAMETER_TUNING:
+    if not CLASSIFICATION_HYPERPARAMETER_TUNING:
         return False
-    if n_train < PHASE2_TUNING_MIN_TRAIN_SAMPLES:
+    if n_train < CLASSIFICATION_TUNING_MIN_TRAIN_SAMPLES:
         logger.info(
-            "Phase 2 hyperparameter search skipped: train size %d < %d",
+            "Classification hyperparameter search skipped: train size %d < %d",
             n_train,
-            PHASE2_TUNING_MIN_TRAIN_SAMPLES,
+            CLASSIFICATION_TUNING_MIN_TRAIN_SAMPLES,
         )
         return False
-    if _effective_cv_splits(y_train, PHASE2_TUNING_CV_SPLITS) == 0:
+    if _effective_cv_splits(y_train, CLASSIFICATION_TUNING_CV_SPLITS) == 0:
         logger.info(
-            "Phase 2 hyperparameter search skipped: need at least 2 training samples "
+            "Classification hyperparameter search skipped: need at least 2 training samples "
             "per class for stratified CV."
         )
         return False
@@ -103,7 +103,7 @@ def _fit_random_forest(
     run_hyperparameter_search: bool,
 ) -> tuple[RandomForestClassifier, Optional[dict[str, Any]]]:
     if run_hyperparameter_search:
-        n_splits = _effective_cv_splits(y_train, PHASE2_TUNING_CV_SPLITS)
+        n_splits = _effective_cv_splits(y_train, CLASSIFICATION_TUNING_CV_SPLITS)
         cv = StratifiedKFold(
             n_splits=n_splits,
             shuffle=True,
@@ -111,14 +111,14 @@ def _fit_random_forest(
         )
         base = RandomForestClassifier(random_state=random_state)
         param_distributions = {
-            "n_estimators": list(PHASE2_RF_SEARCH_N_ESTIMATORS),
-            "max_depth": list(PHASE2_RF_SEARCH_MAX_DEPTH),
-            "min_samples_leaf": list(PHASE2_RF_SEARCH_MIN_SAMPLES_LEAF),
+            "n_estimators": list(CLASSIFICATION_RF_SEARCH_N_ESTIMATORS),
+            "max_depth": list(CLASSIFICATION_RF_SEARCH_MAX_DEPTH),
+            "min_samples_leaf": list(CLASSIFICATION_RF_SEARCH_MIN_SAMPLES_LEAF),
         }
         search = RandomizedSearchCV(
             base,
             param_distributions=param_distributions,
-            n_iter=min(PHASE2_TUNING_RANDOM_SEARCH_ITER, 48),
+            n_iter=min(CLASSIFICATION_TUNING_RANDOM_SEARCH_ITER, 48),
             cv=cv,
             random_state=random_state,
             n_jobs=-1,
@@ -129,7 +129,7 @@ def _fit_random_forest(
         return best, dict(search.best_params_)
     rf = RandomForestClassifier(
         random_state=random_state,
-        n_estimators=PHASE2_RF_N_ESTIMATORS,
+        n_estimators=CLASSIFICATION_RF_N_ESTIMATORS,
     )
     rf.fit(X_train_s, y_train)
     return rf, None
@@ -143,7 +143,7 @@ def _fit_svc(
     run_hyperparameter_search: bool,
 ) -> tuple[SVC, Optional[dict[str, Any]]]:
     if run_hyperparameter_search:
-        n_splits = _effective_cv_splits(y_train, PHASE2_TUNING_CV_SPLITS)
+        n_splits = _effective_cv_splits(y_train, CLASSIFICATION_TUNING_CV_SPLITS)
         cv = StratifiedKFold(
             n_splits=n_splits,
             shuffle=True,
@@ -151,13 +151,13 @@ def _fit_svc(
         )
         base = SVC(kernel="rbf", random_state=random_state)
         param_distributions = {
-            "C": list(PHASE2_SVM_SEARCH_C),
-            "gamma": list(PHASE2_SVM_SEARCH_GAMMA),
+            "C": list(CLASSIFICATION_SVM_SEARCH_C),
+            "gamma": list(CLASSIFICATION_SVM_SEARCH_GAMMA),
         }
         search = RandomizedSearchCV(
             base,
             param_distributions=param_distributions,
-            n_iter=min(PHASE2_TUNING_RANDOM_SEARCH_ITER, 20),
+            n_iter=min(CLASSIFICATION_TUNING_RANDOM_SEARCH_ITER, 20),
             cv=cv,
             random_state=random_state,
             n_jobs=-1,
@@ -258,10 +258,10 @@ def train_classifiers_on_arrays(
     y_test: np.ndarray,
     feature_names: list[str],
     *,
-    random_state: int = PHASE2_RANDOM_STATE,
+    random_state: int = CLASSIFICATION_RANDOM_STATE,
 ) -> tuple[ClassificationResult, ClassificationResult]:
     """
-    Train Phase 2 classifiers on a caller-defined train/test feature split.
+    Train serotype classifiers on a caller-defined train/test feature split.
 
     Use when the split is already fixed (e.g. group-by-sensor holdout). Fits a
     new ``StandardScaler`` on the training rows only.
@@ -301,14 +301,14 @@ def train_classifiers(
     feature_cols: list[str],
     target_col: str = "target",
     *,
-    test_size: float = PHASE2_TEST_SIZE,
-    random_state: int = PHASE2_RANDOM_STATE,
+    test_size: float = CLASSIFICATION_TEST_SIZE,
+    random_state: int = CLASSIFICATION_RANDOM_STATE,
 ) -> tuple[ClassificationResult, ClassificationResult]:
     """
     Train Random Forest and SVM with 80/20 stratified split.
 
-    When ``PHASE2_HYPERPARAMETER_TUNING`` is True and the training split is at
-    least ``PHASE2_TUNING_MIN_TRAIN_SAMPLES`` rows, each model is tuned with
+    When ``CLASSIFICATION_HYPERPARAMETER_TUNING`` is True and the training split is at
+    least ``CLASSIFICATION_TUNING_MIN_TRAIN_SAMPLES`` rows, each model is tuned with
     ``RandomizedSearchCV`` (stratified folds) on the training data only; the
     held-out test set is used once for the reported metrics.
 

@@ -1,5 +1,5 @@
 """
-Sensor assessment tab — regression QA, global assessment, Phase 1 PDF.
+Sensor assessment tab — regression QA, global assessment, QA PDF report.
 """
 
 import logging
@@ -20,7 +20,7 @@ from components.shared_ui import (
 from sensd_sers_analysis.application import (
     ModelConsistencySelection,
     build_overlay_artifacts,
-    build_phase1_pdf_bytes,
+    build_sensor_assessment_qa_pdf_bytes,
 )
 from sensd_sers_analysis.config import (
     GLOBAL_QA_R2_MIN_THRESHOLD,
@@ -306,8 +306,8 @@ def render(filtered_features, peak_artifacts):
         st.markdown("---")
     st.markdown("#### PDF Report")
 
-    def _generate_phase1_pdf_bytes() -> bytes:
-        return build_phase1_pdf_bytes(
+    def _generate_sensor_assessment_qa_pdf_bytes() -> bytes:
+        return build_sensor_assessment_qa_pdf_bytes(
             filtered_features,
             global_qa_artifacts,
             overlay_artifacts,
@@ -315,9 +315,9 @@ def render(filtered_features, peak_artifacts):
         )
 
     render_pdf_download_section(
-        session_key="phase1_qa_pdf",
+        session_key="sensor_assessment_qa_pdf",
         filename="sensor_assessment_regression_report.pdf",
-        generate_callback=_generate_phase1_pdf_bytes,
+        generate_callback=_generate_sensor_assessment_qa_pdf_bytes,
         button_label="Generate Sensor Assessment Report",
         download_label="Download Sensor Assessment Report",
     )

@@ -346,7 +346,7 @@ def build_sensor_assessment_pdf(
     return pdf_bytes
 
 
-def build_phase1_qa_pdf(
+def build_sensor_assessment_qa_pdf(
     *,
     global_qa_table: Optional[pd.DataFrame] = None,
     overlay_items: Optional[list[dict]] = None,
@@ -355,7 +355,7 @@ def build_phase1_qa_pdf(
     output_path: Optional[str | Path] = None,
 ) -> bytes:
     """
-    Compile Phase 1 QA results into PDF.
+    Compile sensor assessment QA results into PDF.
 
     Args:
         global_qa_table: DataFrame with sensor_id, serotype, feature, n_points,
@@ -517,7 +517,7 @@ def build_phase1_qa_pdf(
     return pdf_bytes
 
 
-def build_phase2_classification_pdf(
+def build_classification_report_pdf(
     *,
     pca_fig: Optional[Any] = None,
     feature_importance_fig: Optional[Any] = None,
@@ -528,11 +528,11 @@ def build_phase2_classification_pdf(
     svm_accuracy: Optional[float] = None,
     svm_f1: Optional[float] = None,
     best_model_name: Optional[str] = None,
-    report_title: str = "Phase 2: Serotyping & Classification Report",
+    report_title: str = "Serotyping & Classification Report",
     output_path: Optional[str | Path] = None,
 ) -> bytes:
     """
-    Compile Phase 2 classification results into PDF.
+    Compile serotype classification results into PDF.
 
     Args:
         pca_fig: PCA scatter (PC1 vs PC2 by class).

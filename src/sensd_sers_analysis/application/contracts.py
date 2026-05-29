@@ -384,13 +384,13 @@ class MtlRegressionArtifacts:
 
 
 @dataclass(frozen=True, slots=True)
-class Phase2Artifacts:
+class ClassificationArtifacts:
     """
-    Classification outputs for the Phase 2 workflow.
+    Outputs from serotype classification training (RF / SVM).
 
     Parameters
     ----------
-    phase2_clean:
+    clean_classification_df:
         Cleaned dataframe used for classification.
     feature_columns:
         Feature columns passed to the classifiers.
@@ -402,7 +402,7 @@ class Phase2Artifacts:
         Result chosen as the best-performing model.
     """
 
-    phase2_clean: pd.DataFrame
+    clean_classification_df: pd.DataFrame
     feature_columns: tuple[str, ...]
     rf_result: ClassificationResult
     svm_result: ClassificationResult

@@ -1,5 +1,5 @@
 """
-Phase 2 data preparation: strictly clean data from Phase 1.
+Serotype classification data preparation: strictly clean rows for ML.
 
 Filters to Pass sensors only, drops outlier-flagged points from intra-sensor
 regression, and assigns ``(N + 1)``-class targets: ``N`` serotypes observed on
@@ -17,7 +17,7 @@ from sensd_sers_analysis.assessment import (
 from sensd_sers_analysis.processing import extract_scalar_concentration
 
 
-def prepare_phase2_data(
+def prepare_classification_dataset(
     df: pd.DataFrame,
     *,
     excluded_map: Optional[dict[tuple[str, str], set[str]]] = None,
@@ -30,7 +30,7 @@ def prepare_phase2_data(
     concentration_col: str = "concentration",
 ) -> pd.DataFrame:
     """
-    Produce strictly clean data for Phase 2 classification.
+    Produce strictly clean data for serotype classification.
 
     - Only rows from sensors marked Pass in Global Assessment (integral_area).
     - Re-runs intra-sensor outlier detection on integral_area; keeps inliers only.
@@ -40,7 +40,7 @@ def prepare_phase2_data(
       missing or unusable serotype labels are dropped.
 
     Args:
-        df: Filtered feature DataFrame from Phase 1.
+        df: Filtered feature DataFrame after preprocessing and QA policy inputs.
         excluded_map: {(serotype, feature): {sensor_id, ...}}. If None, runs QA.
         feature_cols: Features for QA when excluded_map is None.
         inlier_feature: Feature for outlier removal (integral_area).

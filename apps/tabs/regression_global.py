@@ -68,8 +68,8 @@ def render(filtered_features, peak_artifacts):
     )
     if reg_clean.empty:
         st.warning(
-            "No clean positive-CFU rows for regression. Check Phase 1 Pass "
-            "sensors, inliers, and non-zero concentrations."
+            "No clean positive-CFU rows for regression. Check QA Pass sensors, "
+            "inliers, and non-zero concentrations."
         )
         return
 

@@ -18,7 +18,7 @@ from sensd_sers_analysis.assessment import (
     get_zero_cfu_baseline,
 )
 from sensd_sers_analysis.processing import filter_by_selections
-from sensd_sers_analysis.report import build_phase1_qa_pdf
+from sensd_sers_analysis.report import build_sensor_assessment_qa_pdf
 from sensd_sers_analysis.visualization.assessment_plots import (
     plot_macro_batch_regression,
     plot_multi_sensor_regression,
@@ -150,7 +150,7 @@ def build_overlay_artifacts(
     return overlay_artifacts
 
 
-def build_phase1_pdf_bytes(
+def build_sensor_assessment_qa_pdf_bytes(
     filtered_features: pd.DataFrame,
     global_qa_artifacts: GlobalQaArtifacts,
     overlay_artifacts: list[OverlayArtifact],
@@ -158,7 +158,7 @@ def build_phase1_pdf_bytes(
     report_title: str,
 ) -> bytes:
     """
-    Build the Phase 1 QA PDF from cached artifacts.
+    Build the sensor assessment QA PDF from cached artifacts.
 
     Parameters
     ----------
@@ -215,7 +215,7 @@ def build_phase1_pdf_bytes(
         except ValueError:
             pass
 
-    return build_phase1_qa_pdf(
+    return build_sensor_assessment_qa_pdf(
         global_qa_table=(
             global_qa_artifacts.table if not global_qa_artifacts.table.empty else None
         ),

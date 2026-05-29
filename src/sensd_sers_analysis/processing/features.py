@@ -47,8 +47,8 @@ DEFAULT_GLOBAL_QA_FEATURES = [
     "peak_near_1066_5",
 ]
 
-# Base feature columns for Phase 2 classification (ML input).
-PHASE2_FEATURE_BASE = [
+# Base feature columns for serotype classification (ML input).
+CLASSIFICATION_FEATURE_BASE = [
     "integral_area",
     "max_intensity",
     "mean_intensity",

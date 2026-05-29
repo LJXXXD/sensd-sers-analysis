@@ -10,8 +10,8 @@ from sensd_sers_analysis.application.assessment_service import (
     build_sensor_assessment_artifacts,
 )
 from sensd_sers_analysis.application.classification_service import (
-    build_phase2_dataset,
-    run_phase2_classification,
+    build_classification_clean_dataset,
+    run_classification_training,
 )
 from sensd_sers_analysis.application.regression_service import (
     build_concentration_regression_dataset,
@@ -160,14 +160,14 @@ def build_cached_global_qa_artifacts(filtered_features, feature_columns: tuple[s
 
 
 @st.cache_data
-def build_cached_phase2_dataset(
+def build_cached_classification_dataset(
     filtered_features,
     *,
     excluded_map_policy: tuple[str, ...],
     inlier_feature: str,
 ):
     """
-    Cache Phase 2 clean-data preparation.
+    Cache classification clean-data preparation.
 
     Parameters
     ----------
@@ -176,15 +176,15 @@ def build_cached_phase2_dataset(
     excluded_map_policy:
         Features used to build the exclusion map.
     inlier_feature:
-        Feature used for Phase 2 inlier filtering.
+        Feature used for classification inlier filtering.
 
     Returns
     -------
     pd.DataFrame
-        Cached Phase 2 clean dataframe.
+        Cached clean dataframe for classification.
     """
 
-    return build_phase2_dataset(
+    return build_classification_clean_dataset(
         filtered_features,
         excluded_map_policy=excluded_map_policy,
         inlier_feature=inlier_feature,
@@ -192,24 +192,26 @@ def build_cached_phase2_dataset(
 
 
 @st.cache_data
-def build_cached_phase2_artifacts(phase2_clean, feature_columns: tuple[str, ...]):
+def build_cached_classification_artifacts(
+    clean_classification_df, feature_columns: tuple[str, ...]
+):
     """
-    Cache Phase 2 model training outputs.
+    Cache serotype classification training outputs.
 
     Parameters
     ----------
-    phase2_clean:
-        Clean Phase 2 dataframe.
+    clean_classification_df:
+        Cleaned dataframe for classification.
     feature_columns:
         Feature columns used for classification.
 
     Returns
     -------
-    Phase2Artifacts
+    ClassificationArtifacts
         Cached classification outputs.
     """
 
-    return run_phase2_classification(phase2_clean, feature_columns)
+    return run_classification_training(clean_classification_df, feature_columns)
 
 
 @st.cache_data

@@ -14,7 +14,7 @@ from sensd_sers_analysis.application.assessment_service import (
     build_sensor_assessment_artifacts,
 )
 from sensd_sers_analysis.application.classification_service import (
-    run_phase2_classification,
+    run_classification_training,
 )
 from sensd_sers_analysis.application.contracts import (
     FilterSelection,
@@ -132,7 +132,7 @@ def _make_model_consistency_df() -> pd.DataFrame:
     )
 
 
-def _make_phase2_clean_df() -> pd.DataFrame:
+def _make_classification_clean_df() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "target": [
@@ -399,7 +399,7 @@ class ApplicationServiceTests(unittest.TestCase):
         assert_frame_equal(artifacts.pdf_batch_table, expected_pdf_batch)
         assert_frame_equal(artifacts.pdf_deviating_sensors_table, expected_pdf_deviating)
 
-    def test_model_consistency_and_phase2_services_match_direct_calls(self) -> None:
+    def test_model_consistency_and_classification_services_match_direct_calls(self) -> None:
         filtered_features = _make_model_consistency_df()
         selection = ModelConsistencySelection(
             sensor_id="S1",
@@ -457,7 +457,7 @@ class ApplicationServiceTests(unittest.TestCase):
             expected_all_sensors - overlay_artifacts[0].excluded_sensors,
         )
 
-        phase2_clean = _make_phase2_clean_df()
+        clean_classification_df = _make_classification_clean_df()
         feature_columns = (
             "integral_area",
             "max_intensity",
@@ -465,10 +465,10 @@ class ApplicationServiceTests(unittest.TestCase):
             "PC1",
             "PC2",
         )
-        direct_rf, direct_svm = train_classifiers(phase2_clean, list(feature_columns))
-        artifacts = run_phase2_classification(phase2_clean, feature_columns)
+        direct_rf, direct_svm = train_classifiers(clean_classification_df, list(feature_columns))
+        artifacts = run_classification_training(clean_classification_df, feature_columns)
 
-        assert_frame_equal(artifacts.phase2_clean, phase2_clean)
+        assert_frame_equal(artifacts.clean_classification_df, clean_classification_df)
         self.assertEqual(artifacts.feature_columns, feature_columns)
         self.assertEqual(artifacts.rf_result.accuracy, direct_rf.accuracy)
         self.assertEqual(artifacts.rf_result.f1, direct_rf.f1)

@@ -8,9 +8,8 @@ This file is meant to be useful day to day, not to act as a formal spec. If this
 
 **Documentation map**
 
-- **`docs/THEORY_AND_IMPLEMENTATION.md` (this file):** Strategy, domain context, processing pipeline theory, statistical QA foundations, ML classification details, architecture layers, and module reference.
-- **`docs/ARCHITECTURE_AUDIT_SRC_AND_APPS.md`:** Historical refactoring audit of the `src/` vs `apps/` boundary.
-- **`docs/ARCHITECTURE_AUDIT_SRC_AND_APPS_DETAILED.md`:** Detailed per-file inventory and session-state analysis from the architecture migration.
+- **`docs/THEORY_AND_IMPLEMENTATION.md` (this file):** Strategy, domain context, processing pipeline theory, statistical QA foundations, ML classification details, architecture layers, and module reference (what each part *does*).
+- **`docs/ARCHITECTURE_AUDIT_SRC_AND_APPS.md`:** Structural audit of the `src/` vs `apps/` boundary, layering, remaining technical debt, and refactor backlog (how the code is *organized*). It complements this file and is **not** a substitute for it.
 - **`AGENTS.md`:** AI agent rules, coding standards, and project conventions.
 - **`README.md`:** Installation and quick-start instructions.
 
@@ -30,7 +29,7 @@ This file is meant to be useful day to day, not to act as a formal spec. If this
 10. [Stage 5: Sensor consistency & degradation analysis](#10-stage-5-sensor-consistency--degradation-analysis)
 11. [Stage 6: Model-based sensor QA (regression pipeline)](#11-stage-6-model-based-sensor-qa-regression-pipeline)
 12. [Stage 7: Batch-level assessment & multi-sensor exclusion](#12-stage-7-batch-level-assessment--multi-sensor-exclusion)
-13. [Stage 8: Phase 2 — ML classification](#13-stage-8-phase-2--ml-classification)
+13. [Stage 8: ML classification (serotyping)](#13-stage-8-ml-classification-serotyping)
 14. [Application layer: Streamlit frontend](#14-application-layer-streamlit-frontend)
 15. [Package map: `sensd_sers_analysis`](#15-package-map-sensd_sers_analysis)
 16. [Module reference: `data/`](#16-module-reference-data)
@@ -165,8 +164,10 @@ META_COLS = [
 ## 4. Architecture layers and dependency direction
 
 ```text
-data  →  processing  →  assessment  →  classification  →  report
-(I/O)    (features)     (QA/stats)     (ML models)        (PDF)
+data  →  processing  →  assessment  ┬→  classification  →  report
+(I/O)    (features)     (QA/stats)    │    (ML models)       (PDF)
+                                     └→  regression ────────┘
+                                         (concentration regression paradigms)
                     ↘                ↗
                       config (policy constants)
                     ↗                ↘
@@ -214,12 +215,12 @@ The full pipeline, from raw Excel upload to classification results, proceeds thr
 │  Stage 7: Batch-Level Multi-Sensor Exclusion                    │
 │  assessment/sensor_assessment_regression.py → assessment/batch_variance.py  │
 ├─────────────────────────────────────────────────────────────────┤
-│  Stage 8: Phase 2 — ML Classification                           │
+│  Stage 8: ML Classification (Serotyping)                        │
 │  classification/data_prep.py → classification/models.py          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-The orchestration of these stages is performed by `application/dataset_pipeline.py` (Stages 1–3) and the individual service modules in `application/` (Stages 4–8).
+The orchestration of these stages is performed by `application/dataset_pipeline.py` (Stages 1–3) and the individual service modules in `application/` (Stages 4–8). **Concentration regression** experiments (global, two-stage, multi-task spectral models) live in `regression/` and are wired through `application/regression_service.py` and the Streamlit regression tabs — they sit alongside classification as an alternate modeling track, not as an extra numbered “Stage” in the QA pipeline above.
 
 ---
 
@@ -379,7 +380,7 @@ For each spectrum (row), peak heights are extracted using the serotype-specific 
 4. Peak height = `max(window_intensities) - baseline`.
 5. If peak height < `noise_threshold_frac × global_max_intensity` (default 2%), mark as NaN (peak not detected).
 
-**0 CFU handling:** Zero-CFU rows use the **default serotype's** windows (preference: ST, then SE). This allows extracting peak heights from rinsate spectra using the pathogen-specific windows, which is important for Phase 2 classification where rinsate is a negative-control class.
+**0 CFU handling:** Zero-CFU rows use the **default serotype's** windows (preference: ST, then SE). This allows extracting peak heights from rinsate spectra using the pathogen-specific windows, which matters for serotype classification where rinsate is a negative-control class.
 
 ### 8.6 Success rate
 
@@ -562,11 +563,11 @@ The pooling process:
 
 ---
 
-## 13. Stage 8: Phase 2 — ML classification
+## 13. Stage 8: ML classification (serotyping)
 
 ### 13.1 Data preparation (`classification/data_prep.py`)
 
-`prepare_phase2_data` produces strictly clean data for classification:
+`prepare_classification_dataset` produces strictly clean data for classification:
 
 1. **Sensor filtering:** Only rows from sensors that passed the Global QA (§12.1) for `integral_area` are retained.
 2. **Inlier filtering:** For each Pass sensor × serotype, re-runs two-pass regression on `integral_area` and keeps only inlier points.
@@ -597,8 +598,8 @@ NaN values in peak columns are filled with 0 before training (`df[available].fil
 
 **Random Forest:**
 - `sklearn.ensemble.RandomForestClassifier`
-- `n_estimators = 100` (`PHASE2_RF_N_ESTIMATORS`)
-- `random_state = 42` (`PHASE2_RANDOM_STATE`)
+- `n_estimators = 100` (`CLASSIFICATION_RF_N_ESTIMATORS`)
+- `random_state = 42` (`CLASSIFICATION_RANDOM_STATE`)
 - Provides `feature_importances_` for interpretation
 
 **Support Vector Machine (SVM):**
@@ -622,7 +623,7 @@ Random Forest is an **ensemble of decision trees** trained on bootstrap samples 
 
 ### 14.1 Architecture
 
-The `apps/` directory contains a single Streamlit application (`app.py`) with seven tabs. It uses a layered architecture:
+The `apps/` directory contains a single Streamlit application (`app.py`) with **ten** tabs. It uses a layered architecture:
 
 ```text
 apps/app.py                     ← Entry point, layout, tab dispatch
@@ -642,6 +643,10 @@ apps/tabs/                      ← Tab-specific rendering
   sensor_qc_legacy.py           ← Legacy CV-style sensor QC + PDF
   sensor_assessment.py          ← Regression QA, global assessment, overlay + PDF
   serotype_classification.py    ← PCA scatter, RF/SVM, confusion matrix
+  regression_global.py          ← Concentration regression V1 (global regressors)
+  regression_two_stage.py       ← Concentration regression V2 (two-stage)
+  regression_mtl.py             ← Concentration regression V3 (MTL / spectral net)
+  regression_common.py          ← Shared helpers for regression tabs
 ```
 
 ### 14.2 Data flow through the application
@@ -649,8 +654,9 @@ apps/tabs/                      ← Tab-specific rendering
 1. **Upload** → `apps/components/data_loading.py:load_from_uploaded` caches uploaded file bytes, delegates to `load_uploaded_bundle`, and returns `LoadedDataBundle(wide_df, tidy_df)`.
 2. **Derived bundle** → `build_derived_bundle` applies `preprocess_metadata`, `trim_raman_shift`, `extract_basic_features`, `extract_dynamic_peak_features` → `DerivedDataBundle(wide_df, tidy_df, features_df, peak_df, peak_artifacts)`.
 3. **Filtering** → Dynamic sidebar filters built from metadata columns. `build_filter_catalog` identifies filterable columns and splits them into main (5) and "more" groups. Each filter supports include/exclude mode. `apply_filters` produces a `FilteredBundle(filtered_tidy_df, filtered_features_df, n_unique_spectra)`.
-4. **Tabs** consume filtered data. Most repeated app-level computations are wrapped in `@st.cache_data` decorators. Plot creation itself still happens at render time.
-5. **PDF reports** are generated on demand via ReportLab, stored in `st.session_state`, and offered for download.
+4. **Targeted peaks (optional):** Anchor positions from Peak Feature Extraction (session state) are merged into the filtered feature frame via `merge_targeted_peaks_into_filtered_bundle` before tabs that need those columns (`feature_analysis`, legacy QC, sensor assessment, serotype classification, regression tabs).
+5. **Tabs** consume filtered data. Most repeated app-level computations are wrapped in `@st.cache_data` decorators. Plot creation itself still happens at render time.
+6. **PDF reports** are generated on demand via ReportLab, stored in `st.session_state`, and offered for download.
 
 ### 14.3 Caching strategy
 
@@ -662,8 +668,12 @@ Most repeated app-level computations are memoized via `@st.cache_data`:
 - `build_cached_sensor_assessment_artifacts` — keyed on `(filtered_features, selection)`
 - `build_cached_single_sensor_consistency_artifacts` — keyed on `(filtered_features, selection)`
 - `build_cached_global_qa_artifacts` — keyed on `(filtered_features, feature_columns)`
-- `build_cached_phase2_dataset` — keyed on `(filtered_features, excluded_map_policy, inlier_feature)`
-- `build_cached_phase2_artifacts` — keyed on `(phase2_clean, feature_columns)`
+- `build_cached_classification_dataset` — keyed on `(filtered_features, excluded_map_policy, inlier_feature)`
+- `build_cached_classification_artifacts` — keyed on `(clean_classification_df, feature_columns)`
+- `build_cached_concentration_regression_dataset` — keyed on `(filtered_features, excluded_map_policy, inlier_feature)`
+- `build_cached_global_regression_artifacts` — keyed on `(regression_clean, feature_columns)`
+- `build_cached_two_stage_regression_artifacts` — keyed on `(regression_clean, feature_columns)`
+- `build_cached_mtl_regression_artifacts` — keyed on `(regression_clean, feature_columns)`
 
 Small helper functions and plot rendering are still done on rerun. The goal here is to cache the expensive dataframe and model-preparation steps, not every line of the UI.
 
@@ -687,7 +697,8 @@ The application layer uses typed dataclasses as data transfer objects. Some are 
 | `SingleSensorConsistencyArtifacts` | Regression result + zero-CFU baseline + model DataFrame |
 | `GlobalQaArtifacts` | QA table + excluded sensor map |
 | `OverlayArtifact` | Per-serotype/feature overlay data for multi-sensor plot |
-| `Phase2Artifacts` | Best/RF/SVM classification results |
+| `ClassificationArtifacts` | Best/RF/SVM classification results |
+| `GlobalRegressionArtifacts`, `TwoStageRegressionArtifacts`, `MtlRegressionArtifacts` | Concentration regression runs + figures for PDF export |
 
 ---
 
@@ -705,6 +716,7 @@ src/sensd_sers_analysis/
 │   ├── features.py                       # max/mean/integral extraction
 │   ├── pca_features.py                   # StandardScaler + PCA(n=2)
 │   ├── peak_features.py                  # Serotype-specific peak detection
+│   ├── targeted_peak_features.py        # Fixed-anchor peak heights for UI workflow
 │   ├── metadata.py                       # log_concentration, concentration_group
 │   └── filters.py                        # Cascading metadata filter logic
 ├── assessment/
@@ -716,12 +728,23 @@ src/sensd_sers_analysis/
 │   └── batch_variance.py                 # Inter-sensor z-score analysis
 ├── classification/
 │   ├── __init__.py
-│   ├── data_prep.py                      # Phase 2 clean data preparation
+│   ├── data_prep.py                      # Serotype classification clean data preparation
 │   ├── models.py                         # Random Forest + SVM training
 │   └── plots.py                          # PCA scatter, confusion matrix, importance
+├── regression/
+│   ├── __init__.py
+│   ├── data_prep.py                      # Regression-tab dataset assembly
+│   ├── splits.py                         # Group-aware train/test splits
+│   ├── metrics.py                        # Regression metric helpers
+│   ├── models_global.py                  # Global (single-task) regressors
+│   ├── models_two_stage.py               # Two-stage regression pipeline
+│   ├── models_mtl.py                     # Multi-task / MtlSpectralNet
+│   └── plots.py                          # Actual vs predicted, residuals, importances
 ├── config/
 │   ├── __init__.py
-│   └── model_policies.py                 # Policy constants (thresholds, seeds)
+│   ├── model_policies.py                 # QA / classification / training policy constants
+│   ├── spectral_policies.py             # Spectral preprocessing policy hooks
+│   └── targeted_peaks.py                # Default targeted-anchor positions (cm⁻¹)
 ├── application/
 │   ├── __init__.py
 │   ├── contracts.py                      # Typed DTOs for app layer
@@ -729,14 +752,17 @@ src/sensd_sers_analysis/
 │   ├── filtering_service.py              # Filter state serialization/application
 │   ├── assessment_service.py             # Sensor assessment orchestration
 │   ├── sensor_assessment_service.py      # Regression QA orchestration
-│   ├── classification_service.py         # Phase 2 dataset + training orchestration
-│   └── peak_discovery_service.py         # Peak discovery data preparation
+│   ├── classification_service.py         # Classification dataset + training orchestration
+│   ├── regression_service.py             # Regression paradigms + regression PDFs
+│   ├── peak_discovery_service.py         # Peak discovery data preparation
+│   └── targeted_peak_service.py          # Merge targeted peaks into filtered bundle
 ├── visualization/
 │   ├── __init__.py
 │   ├── plots.py                          # Spectra line plots (seaborn)
 │   ├── stats.py                          # Feature distribution box/violin
 │   ├── assessment_plots.py               # Degradation, batch, regression plots
-│   └── peak_discovery.py                # Peak anchor and signal-level plots
+│   ├── peak_discovery.py                # Peak anchor and signal-level plots
+│   └── targeted_peak_plots.py           # Targeted peak verification figures
 ├── report/
 │   ├── __init__.py
 │   └── pdf_builder.py                    # ReportLab PDF assembly
@@ -746,6 +772,10 @@ src/sensd_sers_analysis/
     ├── natural_sort.py                    # Digit-aware sort keys
     └── parsing.py                         # Raman shift bound parsing
 ```
+
+### `regression/` at a glance
+
+This package holds **alternative concentration-regression experiments** (predict continuous dose proxies from spectra or engineered features), distinct from **classification** (`classification/`). Training, metrics, and plotting are organized per paradigm (`models_global.py`, `models_two_stage.py`, `models_mtl.py`). The Streamlit tabs **Regression V1–V3** call into `application/regression_service.py`, which orchestrates dataset construction and PDF generation without importing Streamlit inside `regression/`.
 
 ---
 
@@ -779,7 +809,7 @@ src/sensd_sers_analysis/
 - **`extract_basic_features(df_wide)`** — Computes `max_intensity`, `mean_intensity`, `integral_area`, `PC1`, `PC2` per sample. Joins PCA features from `add_pca_features`.
 - **`get_available_feature_columns(df, peak_infos_by_serotype)`** — Returns ordered list of available feature columns (basic + dynamic peaks) in preferred display order.
 - **`order_features_by_preference(features)`** — Sorts by `PREFERRED_FEATURE_ORDER`; extras appended alphabetically.
-- **Constants:** `BASIC_FEATURE_COLUMNS`, `PREFERRED_FEATURE_ORDER`, `DEFAULT_GLOBAL_QA_FEATURES`, `PHASE2_FEATURE_BASE`.
+- **Constants:** `BASIC_FEATURE_COLUMNS`, `PREFERRED_FEATURE_ORDER`, `DEFAULT_GLOBAL_QA_FEATURES`, `CLASSIFICATION_FEATURE_BASE`.
 
 ### `pca_features.py`
 
@@ -791,6 +821,10 @@ src/sensd_sers_analysis/
 - **`extract_dynamic_peak_features(df_wide, n_peaks, n_peaks_by_serotype, ...)`** — Full serotype-specific peak extraction pipeline. Returns `(features_df, peak_infos_by_serotype, mean_spec_by_serotype, default_serotype, raman_x)`.
 - **`get_peak_height_columns(peak_infos)`** — Returns `["Peak_1_Height", ..., "Peak_K_Height"]` from a list of `PeakWindowInfo`.
 - **Constants:** `ZERO_CFU_LABEL`, `OUTER_BASELINE_FRAC = 0.05`, `ANCHOR_PROMINENCE_FRAC = 0.01`, `ANCHOR_DISTANCE_INDICES = 15`.
+
+### `targeted_peak_features.py`
+
+- Computes heights at **fixed Raman-shift anchors** chosen in the Peak Feature Extraction tab (defaults from `config/targeted_peaks.py`), complementary to serotype-learned windows in `peak_features.py`.
 
 ### `metadata.py`
 
@@ -852,7 +886,7 @@ src/sensd_sers_analysis/
 
 ### `data_prep.py`
 
-- **`prepare_phase2_data(df, excluded_map, feature_cols, inlier_feature)`** — Pass-sensor + inlier filtering + 3-class target labeling.
+- **`prepare_classification_dataset(df, excluded_map, feature_cols, inlier_feature)`** — Pass-sensor + inlier filtering + 3-class target labeling.
 
 ### `models.py`
 
@@ -879,17 +913,21 @@ Centralized policy constants. No logic—only values:
 | `GLOBAL_QA_R2_MIN_THRESHOLD` | 0.80 | `sensor_assessment_regression.py` — R² exclusion threshold |
 | `GLOBAL_QA_IQR_WHIS` | 1.5 | `sensor_assessment_regression.py` — Residual outlier IQR multiplier |
 | `BATCH_DEVIATION_Z_THRESHOLD` | 2.0 | `application/assessment_service.py` — Deviating sensor z-score cutoff used in app-facing batch summaries |
-| `PHASE2_INLIER_FEATURE` | `"integral_area"` | `classification_service.py` — Feature for inlier filtering |
-| `PHASE2_QA_FEATURES` | `("integral_area",)` | `classification_service.py` — Features for exclusion map |
-| `PHASE2_TEST_SIZE` | 0.2 | `models.py` — Train/test split ratio |
-| `PHASE2_RANDOM_STATE` | 42 | `models.py` — Reproducibility seed |
-| `PHASE2_RF_N_ESTIMATORS` | 100 | `models.py` — Random Forest tree count |
+| `CLASSIFICATION_INLIER_FEATURE` | `"integral_area"` | `classification_service.py` — Feature for inlier filtering |
+| `CLASSIFICATION_QA_FEATURES` | `("integral_area",)` | `classification_service.py` — Features for exclusion map |
+| `CLASSIFICATION_TEST_SIZE` | 0.2 | `models.py` — Train/test split ratio |
+| `CLASSIFICATION_RANDOM_STATE` | 42 | `models.py` — Reproducibility seed |
+| `CLASSIFICATION_RF_N_ESTIMATORS` | 100 | `models.py` — Random Forest tree count |
+
+### `spectral_policies.py` / `targeted_peaks.py`
+
+Supporting constants for spectral workflows (e.g., preprocessing policy hooks, default targeted-anchor positions in cm⁻¹). Import these modules rather than duplicating literals in tabs or processing code.
 
 ---
 
 ## 21. Module reference: `application/`
 
-The application layer bridges `src/` domain modules and the `apps/` Streamlit frontend. In practice it is mostly orchestration, DTO assembly, and serialization. The domain calculations still live in `processing/`, `assessment/`, and `classification/`.
+The application layer bridges `src/` domain modules and the `apps/` Streamlit frontend. In practice it is mostly orchestration, DTO assembly, and serialization. The domain calculations still live in `processing/`, `assessment/`, `classification/`, and `regression/`.
 
 ### `contracts.py`
 
@@ -917,13 +955,23 @@ Typed dataclasses for all inter-layer data transfer (see §14.4 for the complete
 - **`build_single_sensor_consistency_artifacts(filtered_features, selection)`** — Two-pass regression for one sensor × serotype → `SingleSensorConsistencyArtifacts`.
 - **`build_global_qa_artifacts(filtered_features, feature_columns)`** — Full QA table + exclusion map → `GlobalQaArtifacts`.
 - **`build_overlay_artifacts(filtered_features, serotypes, features, excluded_map)`** — Multi-sensor regression overlay data.
-- **`build_phase1_pdf_bytes(...)`** — Phase 1 QA report PDF.
+- **`build_sensor_assessment_qa_pdf_bytes(...)`** — Sensor assessment QA report PDF.
 
 ### `classification_service.py`
 
-- **`build_phase2_dataset(filtered_features, excluded_map_policy, inlier_feature)`** — Runs QA → `prepare_phase2_data` → clean DataFrame.
-- **`run_phase2_classification(phase2_clean, feature_columns)`** — `train_classifiers` → selects best by F1 → `Phase2Artifacts`.
-- **`build_phase2_pdf_bytes(phase2_artifacts)`** — Phase 2 classification report PDF.
+- **`build_classification_clean_dataset(filtered_features, excluded_map_policy, inlier_feature)`** — Runs QA → `prepare_classification_dataset` → clean DataFrame.
+- **`run_classification_training(clean_classification_df, feature_columns)`** — `train_classifiers` → selects best by F1 → `ClassificationArtifacts`.
+- **`build_classification_report_pdf_bytes(classification_artifacts)`** — Serotype classification report PDF.
+
+### `regression_service.py`
+
+- **`build_concentration_regression_dataset(...)`** — Tab-specific dataframe assembly from filtered features → cleaned regression frame.
+- **`run_global_concentration_regression(...)`** / **`run_two_stage_concentration_regression(...)`** / **`run_mtl_concentration_regression(...)`** — Train/eval paradigms from `regression/` and bundle artifact DTOs.
+- **`build_global_regression_pdf_bytes(...)`** / **`build_two_stage_regression_pdf_bytes(...)`** / **`build_mtl_regression_pdf_bytes(...)`** — Regression PDF assembly via ReportLab.
+
+### `targeted_peak_service.py`
+
+- **`merge_targeted_peaks_into_filtered_bundle(...)`** — Adds targeted peak-height columns to the filtered bundle used by downstream tabs.
 
 ### `peak_discovery_service.py`
 
@@ -959,17 +1007,22 @@ The visualization modules are mostly matplotlib/seaborn wrappers intended to be 
 - **`plot_peak_anchor_summary(raman_x, mean_spectrum, peak_infos, serotype, ...)`** — Mean spectrum with shaded peak windows and anchor markers.
 - **`plot_signal_level_peak_verification(verification_artifact, ...)`** — Single-spectrum plot with per-peak windows and detected peak markers.
 
+### `targeted_peak_plots.py`
+
+- Figures for verifying heights at user-selected anchor positions (Peak Feature Extraction workflow).
+
 ---
 
 ## 23. Module reference: `report/`
 
 ### `pdf_builder.py`
 
-ReportLab-based PDF generation for three report types. The public functions take precomputed tables, figures, and metrics rather than a single all-in-one artifact object:
+ReportLab-based PDF generation. Public builders take precomputed tables and figures rather than recomputing analytics:
 
-- **`build_sensor_assessment_pdf(*, consistency_table=None, degradation_table=None, degradation_fig=None, batch_variance_table=None, batch_boxplot_fig=None, deviating_sensors_table=None, outlier_method="iqr", report_title=..., output_path=None)`**
-- **`build_phase1_qa_pdf(*, global_qa_table=None, overlay_items=None, macro_items=None, report_title=..., output_path=None)`**
-- **`build_phase2_classification_pdf(*, pca_fig=None, feature_importance_fig=None, confusion_matrix_fig=None, accuracy=None, f1=None, report_title=..., output_path=None)`**
+- **`build_sensor_assessment_pdf(...)`**
+- **`build_sensor_assessment_qa_pdf(...)`**
+- **`build_classification_report_pdf(...)`**
+- **`build_regression_concentration_pdf(...)`** — Consolidated regression-tab report (metrics + diagnostic figures).
 
 Internal helpers: `_df_to_table_data`, `_compute_table_col_widths`, `_figure_to_image_bytes`.
 
@@ -997,7 +1050,7 @@ Internal helpers: `_df_to_table_data`, `_compute_table_col_widths`, `_figure_to_
 
 ### `app.py`
 
-Entry point. Layout: sidebar (upload, Raman shift, filters) + 6 tabs.
+Entry point. Layout: sidebar (upload, Raman shift, filters) + **ten** tabs (spectra, peak discovery, peak feature extraction, feature analysis, legacy sensor QC, sensor assessment, serotype classification, three regression tabs).
 
 ### `cache.py`
 
@@ -1022,13 +1075,15 @@ UI constants: figure sizes, slider limits, matplotlib aesthetics, HTML dividers.
 
 Each tab module exposes a `render(...)` function. Most tabs receive the filtered feature dataframe and, where needed, peak artifacts or the wide dataframe:
 
-- `spectra_viewer.py` — Hue, style, variance radio buttons → `plot_spectra`.
+- `spectra_viewer.py` — Hue, style, variance controls → `plot_spectra`.
 - `peak_discovery.py` — Anchor overview + signal-level peak verification.
-- `peak_feature_extraction.py` — Targeted anchor peak heights and verification plots.
+- `peak_feature_extraction.py` — Targeted anchors (session state) + dynamic peak tooling.
 - `feature_analysis.py` — Feature distributions, correlation heatmap, vs log concentration.
 - `sensor_qc_legacy.py` — Legacy CV-style consistency, degradation, batch stability + PDF.
-- `sensor_assessment.py` — Single-sensor regression, global QA table, multi-sensor overlay, macro batch, PDF.
-- `serotype_classification.py` — PCA scatter, RF/SVM training, confusion matrix, feature importance, PDF.
+- `sensor_assessment.py` — Single-sensor regression, global QA table, multi-sensor overlay, macro batch, sensor-assessment QA PDF.
+- `serotype_classification.py` — PCA scatter, RF/SVM training, confusion matrix, feature importance, classification report PDF.
+- `regression_global.py`, `regression_two_stage.py`, `regression_mtl.py` — Concentration regression paradigms + PDF callbacks (via `regression_service`).
+- `regression_common.py` — Shared widgets/helpers for regression tabs.
 
 ---
 
@@ -1036,7 +1091,7 @@ Each tab module exposes a `render(...)` function. Most tabs receive the filtered
 
 Under `tests/`:
 
-- **`test_application_services.py`** — Integration tests for the application layer: synthetic `LoadedDataBundle` construction, `build_derived_bundle`, `apply_filters`, `build_sensor_assessment_artifacts`, sensor assessment regression / Phase 2 parity.
+- **`test_application_services.py`** — Integration tests for the application layer: synthetic `LoadedDataBundle` construction, `build_derived_bundle`, `apply_filters`, `build_sensor_assessment_artifacts`, sensor assessment regression / classification parity.
 
 Current test coverage is still light. Right now the explicit checked-in test module is the application-service parity test above.
 
@@ -1051,7 +1106,7 @@ The project is moving toward a config SSOT, but it is not fully there yet.
 `config/model_policies.py` now centralizes several important cross-module values:
 - global QA thresholds
 - batch-deviation z-threshold used by the app-facing assessment service
-- Phase 2 train/test split, seed, forest size, and inlier feature policy
+- Classification train/test split, seed, forest size, and inlier feature policy
 
 There are still some hardcoded values outside `config`, for example:
 - the `0.5%` stability threshold in `assessment/degradation.py`

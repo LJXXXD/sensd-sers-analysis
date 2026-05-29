@@ -45,7 +45,8 @@ def build_concentration_regression_dataset(
     excluded_map_policy:
         Features used to build the global QA exclusion map.
     inlier_feature:
-        Phase 1 inlier feature (same as Phase 2).
+        Feature column used for intra-sensor outlier filtering (shared policy with
+        serotype classification).
 
     Returns
     -------

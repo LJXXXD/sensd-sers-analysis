@@ -7,9 +7,9 @@ from .assessment_service import (
     build_sensor_assessment_pdf_bytes,
 )
 from .classification_service import (
-    build_phase2_dataset,
-    build_phase2_pdf_bytes,
-    run_phase2_classification,
+    build_classification_clean_dataset,
+    build_classification_report_pdf_bytes,
+    run_classification_training,
 )
 from .regression_service import (
     build_concentration_regression_dataset,
@@ -32,7 +32,7 @@ from .contracts import (
     MtlRegressionArtifacts,
     OverlayArtifact,
     PeakArtifacts,
-    Phase2Artifacts,
+    ClassificationArtifacts,
     SensorAssessmentArtifacts,
     SensorAssessmentSelection,
     SingleSensorConsistencyArtifacts,
@@ -51,7 +51,7 @@ from .filtering_service import (
 from .sensor_assessment_service import (
     build_global_qa_artifacts,
     build_overlay_artifacts,
-    build_phase1_pdf_bytes,
+    build_sensor_assessment_qa_pdf_bytes,
     build_single_sensor_consistency_artifacts,
 )
 from .peak_discovery_service import (
@@ -84,7 +84,7 @@ __all__ = [
     "PeakArtifacts",
     "PeakDiagnosticContext",
     "PeakSignalOptions",
-    "Phase2Artifacts",
+    "ClassificationArtifacts",
     "SensorAssessmentArtifacts",
     "SensorAssessmentSelection",
     "SignalVerificationArtifact",
@@ -102,9 +102,9 @@ __all__ = [
     "build_peak_anchor_overviews",
     "build_peak_anchor_table",
     "build_peak_diagnostic_context",
-    "build_phase1_pdf_bytes",
-    "build_phase2_dataset",
-    "build_phase2_pdf_bytes",
+    "build_classification_clean_dataset",
+    "build_classification_report_pdf_bytes",
+    "build_sensor_assessment_qa_pdf_bytes",
     "build_sensor_assessment_artifacts",
     "build_sensor_assessment_pdf_bytes",
     "build_signal_selection_options",
@@ -118,7 +118,7 @@ __all__ = [
     "normalize_filter_state",
     "run_global_concentration_regression",
     "run_mtl_concentration_regression",
-    "run_phase2_classification",
+    "run_classification_training",
     "run_two_stage_concentration_regression",
     "serialize_filter_state",
 ]

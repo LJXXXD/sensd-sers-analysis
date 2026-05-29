@@ -5,13 +5,13 @@ Shared prerequisites and feature lists for concentration regression tabs.
 import pandas as pd
 
 from sensd_sers_analysis.processing import (
-    PHASE2_FEATURE_BASE,
+    CLASSIFICATION_FEATURE_BASE,
     list_targeted_peak_feature_columns,
 )
 
 
 def regression_prerequisites_ok(filtered_features) -> bool:
-    """Return True when the dataframe has Phase 2-style columns for regression."""
+    """Return True when the dataframe has the shared columns needed for regression."""
     return (
         "sensor_id" in filtered_features.columns
         and "serotype" in filtered_features.columns
@@ -23,9 +23,9 @@ def regression_prerequisites_ok(filtered_features) -> bool:
 
 
 def list_regression_feature_columns(filtered_features_columns) -> list[str]:
-    """Same feature union as Phase 2 classification (integral, PCs, peak_near_*)."""
+    """Same feature union as serotype classification (integral, PCs, peak_near_*)."""
     peak_cols = list_targeted_peak_feature_columns(filtered_features_columns)
-    return [c for c in PHASE2_FEATURE_BASE + peak_cols if c in filtered_features_columns]
+    return [c for c in CLASSIFICATION_FEATURE_BASE + peak_cols if c in filtered_features_columns]
 
 
 def format_regression_target_counts(reg_clean: pd.DataFrame, target_col: str = "target") -> str:
