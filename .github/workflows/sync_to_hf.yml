@@ -1,59 +1,69 @@
 name: Sync to HF
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
 jobs:
   sync-to-hub:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          lfs: true
-      - name: Inject HF frontmatter and commit
-        run: |
-          # Dynamically prepend YAML frontmatter required for HF Spaces Streamlit build
-          printf '%s\n' '---' 'title: SERS Data Explorer' 'sdk: streamlit' 'app_file: apps/app.py' '---' '' > /tmp/frontmatter
-          cat /tmp/frontmatter README.md > README.md.tmp && mv README.md.tmp README.md
-          # Generate requirements.txt from pyproject.toml
-          python3 -c "import tomllib; data=tomllib.load(open('pyproject.toml', 'rb')); open('requirements.txt', 'w').write('\n'.join(data.get('project', {}).get('dependencies', [])))"
-          # Configure git for local commit (ephemeral, not pushed to GitHub)
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add README.md requirements.txt
-          git commit -m "chore: add HF Spaces frontmatter and sync requirements.txt"
-      - name: Strip folders containing Excel files from HF deploy
+          fetch-depth: 1
+
+      - name: Prepare Hugging Face deploy
         run: |
           set -euo pipefail
-          mapfile -t excel_files < <(git ls-files '*.xlsx' '*.xls' '*.XLSX' '*.XLS' || true)
-          if [ "${#excel_files[@]}" -eq 0 ]; then
-            echo "No tracked Excel files; nothing to strip."
-            exit 0
+
+          # --- HF Spaces Streamlit config ---
+          printf '%s\n' \
+            '---' \
+            'title: SERS Data Explorer' \
+            'sdk: streamlit' \
+            'app_file: apps/app.py' \
+            '---' \
+            '' > /tmp/frontmatter
+          cat /tmp/frontmatter README.md > README.md.tmp
+          mv README.md.tmp README.md
+
+          # --- Python dependencies for the Space ---
+          python3 -c "
+          import tomllib
+          data = tomllib.load(open('pyproject.toml', 'rb'))
+          deps = data.get('project', {}).get('dependencies', [])
+          open('requirements.txt', 'w').write('\n'.join(deps))
+          "
+
+          # --- Remove tracked Excel files (HF rejects binary .xlsx/.xls) ---
+          if git ls-files -z '*.xlsx' '*.xls' '*.XLSX' '*.XLS' | grep -q .; then
+            git ls-files -z '*.xlsx' '*.xls' '*.XLSX' '*.XLS' \
+              | xargs -0 git rm -f
+          else
+            echo "No tracked Excel files found."
           fi
-          declare -A folders_to_remove=()
-          for file in "${excel_files[@]}"; do
-            dir=$(dirname "$file")
-            if [ "$dir" = "." ]; then
-              git rm -f "$file"
-            else
-              folders_to_remove["$dir"]=1
-            fi
-          done
-          if [ "${#folders_to_remove[@]}" -eq 0 ]; then
-            exit 0
+
+          # --- Single orphan commit: no GitHub history, no leftover binary blobs ---
+          git checkout --orphan hf-deploy
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: HF Spaces deploy"
+
+          # Sanity check before push
+          if git ls-files '*.xlsx' '*.xls' '*.XLSX' '*.XLS' | grep -q .; then
+            echo "ERROR: Excel files still present in deploy commit."
+            git ls-files '*.xlsx' '*.xls' '*.XLSX' '*.XLS'
+            exit 1
           fi
-          mapfile -t sorted_dirs < <(
-            printf '%s\n' "${!folders_to_remove[@]}" \
-              | awk '{ print length, $0 }' \
-              | sort -rn \
-              | cut -d' ' -f2-
-          )
-          for dir in "${sorted_dirs[@]}"; do
-            git rm -rf "$dir"
-          done
-          git commit -m "chore: exclude Excel-containing folders from HF deploy"
-      - name: Push to hub
+          echo "Deploy commit ready ($(git rev-list --count HEAD) commit, no Excel files)."
+
+      - name: Push to Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push -f https://LJXXXD:$HF_TOKEN@huggingface.co/spaces/LJXXXD/sensd-sers-analysis HEAD:main
+        run: |
+          git push -f \
+            "https://LJXXXD:${HF_TOKEN}@huggingface.co/spaces/LJXXXD/sensd-sers-analysis" \
+            HEAD:main
