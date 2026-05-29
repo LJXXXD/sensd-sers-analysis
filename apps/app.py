@@ -34,6 +34,13 @@ from sensd_sers_analysis.application import (
 from sensd_sers_analysis.config.targeted_peaks import TARGETED_PEAK_DEFAULT_ANCHORS_CM1
 from sensd_sers_analysis.utils import format_column_label
 from state import write_peak_artifacts_to_state
+from txt_to_excel import (
+    APP_MODE_ANALYSIS,
+    APP_MODE_KEY,
+    APP_MODE_PREP,
+    render_prep_entry_in_sidebar,
+    render_prep_mode,
+)
 from tabs import (
     feature_analysis,
     peak_discovery,
@@ -61,10 +68,15 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+if st.session_state.get(APP_MODE_KEY, APP_MODE_ANALYSIS) == APP_MODE_PREP:
+    render_prep_mode()
+    st.stop()
 
 # ---------------------------------------------------------------------------
 # 1. Load Data
 # ---------------------------------------------------------------------------
+render_prep_entry_in_sidebar(st.sidebar)
+
 header_col, btn_col = st.sidebar.columns([3, 1])
 with header_col:
     st.markdown("# 📁 Data Loading")
@@ -89,7 +101,12 @@ if uploaded:
 
 if loaded_bundle is None or loaded_bundle.tidy_df.empty:
     logger.warning("No data loaded: tidy_df is empty or None")
-    st.info("Load data using the sidebar: upload Excel (.xlsx) files.")
+    st.info(
+        "Load embedded Excel (.xlsx) files using the sidebar. "
+        "If you have raw instrument `.txt` files instead, use "
+        "**Convert TXT → Excel** in the sidebar first, save the workbook locally, "
+        "then upload it here."
+    )
     st.stop()
 
 st.sidebar.success(
@@ -244,7 +261,7 @@ if filtered_bundle.filtered_tidy_df.empty:
     tab_stats,
     tab_sensor_qc_legacy,
     tab_sensor_assessment,
-    tab_phase2,
+    tab_serotype_classification,
     tab_reg_v1,
     tab_reg_v2,
     tab_reg_v3,
@@ -310,7 +327,7 @@ with tab_sensor_assessment:
         derived_bundle.peak_artifacts,
     )
 
-with tab_phase2:
+with tab_serotype_classification:
     serotype_classification.render(
         filtered_bundle_for_analysis.filtered_features_df,
         derived_bundle.peak_artifacts,

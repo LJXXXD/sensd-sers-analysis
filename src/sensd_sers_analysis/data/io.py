@@ -55,10 +55,16 @@ def _parse_embedded_format(
     conc_mask = keys_norm.str.contains(CONCENTRATION_KEY_PATTERN, na=False)
     if not conc_mask.any():
         raise ValueError(f"Concentration row not found in {file_path.name}")
-    concentration_row_idx = int(conc_mask.idxmax())
+    first_concentration_row_idx = int(conc_mask.idxmax())
 
-    # Metadata block: rows before concentration row, key-value pairs
-    meta_df = df.iloc[:concentration_row_idx, [0, 1]].dropna(how="any")
+    actual_mask = keys_norm.str.contains("actual concentration", na=False)
+    if actual_mask.any():
+        concentration_row_idx = int(actual_mask.idxmax())
+    else:
+        concentration_row_idx = first_concentration_row_idx
+
+    # Metadata block: rows before the first concentration row, key-value pairs
+    meta_df = df.iloc[:first_concentration_row_idx, [0, 1]].dropna(how="any")
     meta_df[0] = meta_df[0].astype(str).str.strip().str.lower()
     meta_df[1] = meta_df[1].astype(str).str.strip()
     metadata = dict(zip(meta_df[0], meta_df[1]))
