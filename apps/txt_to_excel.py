@@ -7,9 +7,11 @@ workbooks for the SERS analysis tool. Lives entirely under ``apps/``.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import uuid
+from datetime import date, datetime, time
 from io import BytesIO, StringIO
 from typing import TYPE_CHECKING, Any
 
@@ -31,33 +33,59 @@ MERGED_PREVIEW_KEY = "_txt2excel_merged_preview"
 EXPORT_BYTES_KEY = "_txt2excel_export_bytes"
 EXPORT_FILENAME_KEY = "_txt2excel_export_filename"
 PREP_UPLOADER_RESET_KEY = "_txt2excel_uploader_reset"
+TEMPLATE_IMPORT_UPLOADER_RESET_KEY = "_txt2excel_template_import_reset"
+TEMPLATE_IMPORT_FEEDBACK_KEY = "_txt2excel_template_import_feedback"
+TEMPLATE_IMPORT_PENDING_VALUES_KEY = "_txt2excel_template_import_pending_values"
+TEMPLATE_EXPORT_SELECT_ALL_KEY = "txt2excel_template_export_select_all"
+TEMPLATE_EXPORT_FILENAME = "SERS_metadata_preset.json"
+TESTING_TIME_WIDGET_KEY = "txt2excel_meta_testing_time"
+TEMPLATE_VERSION = 1
 DEFAULT_MIN_SHIFT = 560.9
 
 TARGET_CONCENTRATION_LABEL = "Target Concentration (CFU/mL)"
 ACTUAL_CONCENTRATION_LABEL = "Actual Concentration (CFU/mL)"
+PREP_TARGET_CONCENTRATION_HEADER = "Target Concentration"
+PREP_ACTUAL_CONCENTRATION_HEADER = "Actual Concentration"
 INTENSITY_HEADER = "Relative Light intensity (a.u)"
 RAMAN_SHIFT_HEADER = "Raman Shift"
 
 # Metadata field numbers whose column-B values must be numeric in the workbook.
-NUMERIC_METADATA_FIELD_NUMBERS = frozenset({2, 3, 4, 5, 6, 7})
+NUMERIC_METADATA_FIELD_NUMBERS = frozenset({1, 2, 3, 4, 5, 6})
+DATE_METADATA_FIELD_NUMBERS = frozenset({12})
+TIME_METADATA_FIELD_NUMBERS = frozenset({13})
+OPTIONAL_METADATA_FIELD_NUMBERS = frozenset({16})
 METADATA_FIELD_SPECS: tuple[tuple[int, str, str], ...] = (
-    (1, "Testing Plan", "txt2excel_meta_testing_plan"),
-    (2, "Disk Diameter (nm)", "txt2excel_meta_disk_diameter_nm"),
-    (3, "Periodicity (µm)", "txt2excel_meta_periodicity_um"),
-    (4, "Thickness (nm)", "txt2excel_meta_thickness_nm"),
-    (5, "Core Diameter (µm)", "txt2excel_meta_core_diameter_um"),
-    (6, "Integration Time (ms):", "txt2excel_meta_integration_time_ms"),
-    (7, "Scan Average:", "txt2excel_meta_scan_average"),
-    (8, "Sensor Model", "txt2excel_meta_sensor_model"),
-    (9, "Sensor ID", "txt2excel_meta_sensor_id"),
-    (10, "Test ID", "txt2excel_meta_test_id"),
-    (11, "Connection ID", "txt2excel_meta_connection_id"),
-    (12, "Serotype", "txt2excel_meta_serotype"),
-    (13, "Date", "txt2excel_meta_date"),
-    (14, "Testing Time", "txt2excel_meta_testing_time"),
-    (15, "Operator", "txt2excel_meta_operator"),
-    (16, "Rinsate Type", "txt2excel_meta_rinsate_type"),
+    (1, "Disk Diameter (nm)", "txt2excel_meta_disk_diameter_nm"),
+    (2, "Periodicity (µm)", "txt2excel_meta_periodicity_um"),
+    (3, "Thickness (nm)", "txt2excel_meta_thickness_nm"),
+    (4, "Core Diameter (µm)", "txt2excel_meta_core_diameter_um"),
+    (5, "Integration Time (ms):", "txt2excel_meta_integration_time_ms"),
+    (6, "Scan Average:", "txt2excel_meta_scan_average"),
+    (7, "Sensor Model", "txt2excel_meta_sensor_model"),
+    (8, "Sensor ID", "txt2excel_meta_sensor_id"),
+    (9, "Test ID", "txt2excel_meta_test_id"),
+    (10, "Connection ID", "txt2excel_meta_connection_id"),
+    (11, "Serotype", "txt2excel_meta_serotype"),
+    (12, "Date", "txt2excel_meta_date"),
+    (13, "Testing Time", "txt2excel_meta_testing_time"),
+    (14, "Operator", "txt2excel_meta_operator"),
+    (15, "Rinsate Type", "txt2excel_meta_rinsate_type"),
+    (16, "Notes", "txt2excel_meta_notes"),
 )
+METADATA_WIDGET_KEYS = frozenset(widget_key for _, _, widget_key in METADATA_FIELD_SPECS)
+RELOAD_CLEAR_WIDGET_KEYS = frozenset(
+    {
+        "txt2excel_meta_sensor_id",
+        "txt2excel_meta_test_id",
+        "txt2excel_meta_connection_id",
+        "txt2excel_meta_serotype",
+        "txt2excel_meta_testing_time",
+        "txt2excel_meta_notes",
+    }
+)
+RELOAD_PERSIST_WIDGET_KEYS = frozenset(METADATA_WIDGET_KEYS - RELOAD_CLEAR_WIDGET_KEYS)
+PERSISTENT_METADATA_SNAPSHOT_KEY = "_txt2excel_persistent_metadata"
+RESTORE_METADATA_AFTER_RELOAD_KEY = "_txt2excel_restore_metadata_after_reload"
 
 
 def enter_prep_mode() -> None:
@@ -75,18 +103,132 @@ def enter_analysis_mode() -> None:
     st.session_state.pop(EXPORT_FILENAME_KEY, None)
 
 
+def _clear_session_keys_by_prefix(prefix: str) -> None:
+    """Remove all session-state keys that start with ``prefix``."""
+
+    for key in list(st.session_state.keys()):
+        if key.startswith(prefix):
+            del st.session_state[key]
+
+
+def _merge_widget_values_into_snapshot(
+    snapshot: dict[str, str],
+    widget_values: dict[str, str],
+    *,
+    persist_keys: frozenset[str] = RELOAD_PERSIST_WIDGET_KEYS,
+) -> dict[str, str]:
+    """
+    Merge widget values into a persistent metadata snapshot.
+
+    Streamlit drops widget session keys when inputs are not rendered (e.g. after
+    Reload Data clears uploads). The snapshot survives across those runs.
+    """
+
+    updated = dict(snapshot)
+    for key in persist_keys:
+        if key in widget_values:
+            updated[key] = widget_values[key]
+    return updated
+
+
+def _clear_reload_fields_in_snapshot(
+    snapshot: dict[str, str],
+    *,
+    clear_keys: frozenset[str] = RELOAD_CLEAR_WIDGET_KEYS,
+) -> dict[str, str]:
+    """Blank run-specific metadata keys in the persistent snapshot."""
+
+    updated = dict(snapshot)
+    for key in clear_keys:
+        updated[key] = ""
+    return updated
+
+
+def _sync_persistent_metadata_snapshot(widget_values: dict[str, str] | None = None) -> None:
+    """Save persistent metadata widget values into the cross-run snapshot."""
+
+    values = (
+        widget_values if widget_values is not None else _collect_metadata_values_by_widget_key()
+    )
+    snapshot = st.session_state.get(PERSISTENT_METADATA_SNAPSHOT_KEY, {})
+    st.session_state[PERSISTENT_METADATA_SNAPSHOT_KEY] = _merge_widget_values_into_snapshot(
+        snapshot,
+        values,
+    )
+
+
+def _restore_persistent_metadata_widgets() -> None:
+    """Restore persistent metadata widgets from the snapshot before rendering inputs."""
+
+    snapshot = st.session_state.get(PERSISTENT_METADATA_SNAPSHOT_KEY, {})
+    for field_number, _, key in METADATA_FIELD_SPECS:
+        if key in RELOAD_PERSIST_WIDGET_KEYS and key in snapshot:
+            st.session_state[key] = _coerce_metadata_widget_state_value(field_number, snapshot[key])
+
+
+def _apply_pending_template_import_values() -> None:
+    """Apply deferred template-import values before metadata widgets are rendered."""
+
+    pending_values = st.session_state.pop(TEMPLATE_IMPORT_PENDING_VALUES_KEY, None)
+    if not isinstance(pending_values, dict):
+        return
+    for widget_key, value in pending_values.items():
+        if widget_key not in METADATA_WIDGET_KEYS:
+            continue
+        field_number = _field_number_for_widget_key(widget_key)
+        if field_number is None:
+            continue
+        st.session_state[widget_key] = _coerce_metadata_widget_state_value(field_number, value)
+    _sync_persistent_metadata_snapshot(
+        {
+            widget_key: _metadata_widget_state_to_string(
+                field_number, st.session_state.get(widget_key)
+            )
+            for widget_key in pending_values
+            if widget_key in METADATA_WIDGET_KEYS
+            for field_number in [_field_number_for_widget_key(widget_key)]
+            if field_number is not None
+        }
+    )
+
+
 def clear_prep_uploads() -> None:
     """
     Reset uploaded TXT files and derived export artifacts.
 
-    Metadata field inputs are preserved so collaborators can reuse experiment details.
+    Instrument metadata (fields 1–7), date, operator, and rinsate type persist;
+    run-specific fields, concentrations, and Raman bounds reset for the next batch.
     """
 
     logger.info("Clearing prep upload state (Reload Data clicked)")
+    widget_values = {
+        widget_key: _metadata_widget_state_to_string(
+            field_number,
+            st.session_state.get(widget_key),
+        )
+        for field_number, _, widget_key in METADATA_FIELD_SPECS
+        if widget_key in st.session_state
+    }
+    snapshot = st.session_state.get(PERSISTENT_METADATA_SNAPSHOT_KEY, {})
+    snapshot = _merge_widget_values_into_snapshot(snapshot, widget_values)
+    snapshot = _clear_reload_fields_in_snapshot(snapshot)
+    st.session_state[PERSISTENT_METADATA_SNAPSHOT_KEY] = snapshot
+
     st.session_state.pop(MERGED_PREVIEW_KEY, None)
     st.session_state.pop(EXPORT_BYTES_KEY, None)
     st.session_state.pop(EXPORT_FILENAME_KEY, None)
     st.session_state.pop("txt2excel_file_signature", None)
+    st.session_state.pop("txt2excel_min_shift", None)
+    st.session_state.pop("txt2excel_max_shift", None)
+    for widget_key in RELOAD_CLEAR_WIDGET_KEYS:
+        field_number = _field_number_for_widget_key(widget_key)
+        if field_number in DATE_METADATA_FIELD_NUMBERS:
+            st.session_state[widget_key] = None
+        else:
+            st.session_state[widget_key] = ""
+    _clear_session_keys_by_prefix("txt2excel_target_")
+    _clear_session_keys_by_prefix("txt2excel_actual_")
+    st.session_state[RESTORE_METADATA_AFTER_RELOAD_KEY] = True
     st.session_state[PREP_UPLOADER_RESET_KEY] = str(uuid.uuid4())
 
 
@@ -241,21 +383,489 @@ def _to_excel_number(value: float) -> int | float:
     return value
 
 
+def _parse_metadata_date(raw: str) -> date | None:
+    """Parse a metadata date string in ISO or common US format."""
+
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        return date.fromisoformat(stripped)
+    except ValueError:
+        pass
+    for fmt in ("%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(stripped, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _normalize_ampm_period(raw_period: str) -> str:
+    """Return ``AM`` or ``PM`` from a case-insensitive period token."""
+
+    token = raw_period.upper().replace(".", "")
+    return "AM" if token.startswith("A") else "PM"
+
+
+def _ampm_parse_candidates(raw: str) -> list[str]:
+    """
+    Build normalized 12-hour time strings with an explicit AM/PM suffix.
+
+    Accepts compact input such as ``230pm`` or ``2:30 PM`` and expands it into
+    ``strptime``-compatible candidates.
+    """
+
+    text = re.sub(r"\s+", " ", raw.strip())
+    if not text:
+        return []
+
+    ampm_match = re.search(r"(a\.?m\.?|p\.?m\.?)\.?\s*$", text, re.IGNORECASE)
+    if not ampm_match:
+        return [text]
+
+    period = _normalize_ampm_period(ampm_match.group(1))
+    time_part = text[: ampm_match.start()].strip()
+    if not time_part:
+        return [f"12 {period}"]
+
+    candidates: list[str] = []
+    if ":" in time_part:
+        candidates.append(f"{time_part} {period}")
+    else:
+        digits = re.sub(r"\D", "", time_part)
+        if not digits:
+            return []
+        if len(digits) <= 2:
+            candidates.append(f"{int(digits)} {period}")
+        elif len(digits) == 3:
+            candidates.append(f"{digits[0]}:{digits[1:]} {period}")
+        else:
+            hour_digits = digits[:2]
+            minute_digits = digits[2:4]
+            if int(hour_digits) > 12:
+                candidates.append(f"{digits[0]}:{digits[1:3]} {period}")
+            else:
+                candidates.append(f"{int(hour_digits)}:{minute_digits} {period}")
+                if len(digits) >= 4:
+                    candidates.append(f"{int(digits[0])}:{digits[1:3]} {period}")
+
+    deduped: list[str] = []
+    for candidate in candidates:
+        if candidate not in deduped:
+            deduped.append(candidate)
+    return deduped
+
+
+def _parse_metadata_time(raw: str) -> time | None:
+    """Parse a metadata time string in 12-hour AM/PM or legacy 24-hour format."""
+
+    stripped = raw.strip()
+    if not stripped:
+        return None
+
+    ampm_formats = ("%I:%M:%S %p", "%I:%M %p", "%I %p")
+    for candidate in _ampm_parse_candidates(stripped):
+        for fmt in ampm_formats:
+            if fmt == "%I %p" and ":" in candidate:
+                continue
+            if fmt.startswith("%I:%M") and candidate.count(":") != fmt.count(":"):
+                continue
+            try:
+                return datetime.strptime(candidate, fmt).time()
+            except ValueError:
+                continue
+
+    legacy_candidates = [stripped]
+    masked = _format_time_digit_mask(stripped)
+    if masked and masked not in legacy_candidates:
+        legacy_candidates.append(masked)
+    for candidate in legacy_candidates:
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            if fmt == "%H:%M" and len(candidate) != 5:
+                continue
+            try:
+                return datetime.strptime(candidate, fmt).time()
+            except ValueError:
+                continue
+    return None
+
+
+def _format_time_digit_mask(raw: str) -> str:
+    """
+    Format up to four typed digits as progressive ``H:MM`` mask text.
+
+    Non-digits are stripped. A colon is inserted automatically after the hour digits.
+    When the first two digits exceed 12, a single-digit hour is used for 12-hour entry.
+    """
+
+    digits = re.sub(r"\D", "", raw)[:4]
+    if not digits:
+        return ""
+    if len(digits) <= 2:
+        return digits
+    if len(digits) == 3:
+        return f"{digits[0]}:{digits[1:]}"
+    if int(digits[:2]) > 12:
+        return f"{digits[0]}:{digits[1:3]}"
+    return f"{digits[:2]}:{digits[2:]}"
+
+
+def _zero_pad_ampm_clock(clock: str, *, period_suffix: bool = False) -> str:
+    """Zero-pad hour and minute segments when the clock portion is complete."""
+
+    stripped = clock.strip()
+    if not stripped:
+        return ""
+
+    if ":" in stripped:
+        hour_str, remainder = stripped.split(":", 1)
+        if not hour_str.isdigit():
+            return stripped
+        if ":" in remainder:
+            minute_str, second_str = remainder.split(":", 1)
+            if (
+                minute_str.isdigit()
+                and second_str.isdigit()
+                and len(minute_str) == 2
+                and len(second_str) == 2
+            ):
+                return f"{int(hour_str):02d}:{int(minute_str):02d}:{int(second_str):02d}"
+            return stripped
+        minute_str = remainder
+        if minute_str.isdigit() and len(minute_str) == 2:
+            return f"{int(hour_str):02d}:{int(minute_str):02d}"
+        if minute_str.isdigit() and len(minute_str) == 1:
+            return f"{int(hour_str):02d}:{minute_str}"
+        return stripped
+
+    if stripped.isdigit() and period_suffix:
+        return f"{int(stripped):02d}"
+    return stripped
+
+
+def _format_ampm_time_mask(raw: str) -> str:
+    """Format progressive 12-hour clock text while preserving a trailing AM/PM suffix."""
+
+    stripped = raw.strip()
+    ampm_match = re.search(r"(a\.?m\.?|p\.?m\.?)\.?\s*$", stripped, re.IGNORECASE)
+    suffix = ""
+    time_part = stripped
+    if ampm_match:
+        suffix = f" {_normalize_ampm_period(ampm_match.group(1))}"
+        time_part = stripped[: ampm_match.start()]
+
+    masked = _format_time_digit_mask(time_part)
+    if masked:
+        masked = _zero_pad_ampm_clock(masked, period_suffix=bool(suffix))
+    if not masked and not suffix:
+        return ""
+    return f"{masked}{suffix}".strip()
+
+
+def _format_metadata_time_display(parsed: time) -> str:
+    """Format a ``time`` value as ``HH:MM AM/PM`` with zero-padded hour and minute."""
+
+    hour = parsed.hour % 12 or 12
+    ampm = "AM" if parsed.hour < 12 else "PM"
+    if parsed.second or parsed.microsecond:
+        return f"{hour:02d}:{parsed.minute:02d}:{parsed.second:02d} {ampm}"
+    return f"{hour:02d}:{parsed.minute:02d} {ampm}"
+
+
+def _format_metadata_date(value: date | str | None) -> str:
+    """Return a normalized ``YYYY-MM-DD`` string, or empty when invalid."""
+
+    if value is None:
+        return ""
+    if isinstance(value, date):
+        return value.isoformat()
+    parsed = _parse_metadata_date(str(value))
+    return parsed.isoformat() if parsed else ""
+
+
+def _format_metadata_time(value: time | str | None) -> str:
+    """Return a normalized 12-hour AM/PM time string, or empty when invalid."""
+
+    if value is None:
+        return ""
+    if isinstance(value, time):
+        parsed = value
+    else:
+        parsed = _parse_metadata_time(str(value))
+    if parsed is None:
+        return ""
+    return _format_metadata_time_display(parsed)
+
+
+def _coerce_metadata_widget_state_value(field_number: int, raw_value: Any) -> Any:
+    """Convert stored template or snapshot text to a widget-ready session value."""
+
+    if field_number in DATE_METADATA_FIELD_NUMBERS:
+        if isinstance(raw_value, date):
+            return raw_value
+        if raw_value is None:
+            return None
+        stripped = str(raw_value).strip()
+        return _parse_metadata_date(stripped) if stripped else None
+    if field_number in TIME_METADATA_FIELD_NUMBERS:
+        if isinstance(raw_value, time):
+            return _format_metadata_time_display(raw_value)
+        if raw_value is None:
+            return ""
+        stripped = str(raw_value).strip()
+        if not stripped:
+            return ""
+        normalized = _format_metadata_time(stripped)
+        return normalized if normalized else _format_ampm_time_mask(stripped)
+    if raw_value is None:
+        return ""
+    return str(raw_value).strip()
+
+
+def _metadata_widget_state_to_string(field_number: int, raw_value: Any) -> str:
+    """Serialize a metadata widget session value to workbook/template text."""
+
+    if field_number in DATE_METADATA_FIELD_NUMBERS:
+        return _format_metadata_date(raw_value)
+    if field_number in TIME_METADATA_FIELD_NUMBERS:
+        return _format_metadata_time(raw_value)
+    if raw_value is None:
+        return ""
+    return str(raw_value).strip()
+
+
+def _is_metadata_widget_value_empty(field_number: int, raw_value: Any) -> bool:
+    """Return whether a metadata widget has no usable value."""
+
+    return not _metadata_widget_state_to_string(field_number, raw_value)
+
+
 def _collect_metadata_values() -> dict[str, str]:
     """Read metadata field values from Streamlit session state."""
 
     return {
-        excel_label: str(st.session_state.get(widget_key, "")).strip()
-        for _, excel_label, widget_key in METADATA_FIELD_SPECS
+        excel_label: _metadata_widget_state_to_string(
+            field_number,
+            st.session_state.get(widget_key),
+        )
+        for field_number, excel_label, widget_key in METADATA_FIELD_SPECS
     }
 
 
-def _validate_metadata(metadata: dict[str, str]) -> str | None:
-    """Return an error message when any required metadata field is empty."""
+def _collect_metadata_values_by_widget_key(
+    field_values: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """
+    Read metadata widget values from an explicit mapping or Streamlit session state.
 
-    missing = [label for label, value in metadata.items() if not value]
+    Parameters
+    ----------
+    field_values:
+        Optional mapping of widget key to raw string. When omitted, session state is used.
+    """
+
+    if field_values is None:
+        return {
+            widget_key: _metadata_widget_state_to_string(
+                field_number,
+                st.session_state.get(widget_key),
+            )
+            for field_number, _, widget_key in METADATA_FIELD_SPECS
+        }
+    return {
+        widget_key: _metadata_widget_state_to_string(field_number, field_values.get(widget_key))
+        for field_number, _, widget_key in METADATA_FIELD_SPECS
+    }
+
+
+def _field_number_for_widget_key(widget_key: str) -> int | None:
+    """Return the metadata field number for a widget key, if known."""
+
+    for field_number, _, key in METADATA_FIELD_SPECS:
+        if key == widget_key:
+            return field_number
+    return None
+
+
+def _is_template_field_exportable(field_number: int, raw_value: str) -> bool:
+    """
+    Return whether a metadata field has a valid, exportable value.
+
+    Numeric fields (1–6) must parse as numbers. Date (12) and Testing Time (13) must use
+    valid ``YYYY-MM-DD`` and 12-hour AM/PM formats. Optional Notes (16) may be omitted
+    when empty. All other fields must be non-empty text.
+    """
+
+    stripped = raw_value.strip() if isinstance(raw_value, str) else raw_value
+    if field_number in OPTIONAL_METADATA_FIELD_NUMBERS:
+        if _is_metadata_widget_value_empty(field_number, stripped):
+            return False
+        return True
+    if field_number in NUMERIC_METADATA_FIELD_NUMBERS:
+        return _parse_required_number(str(stripped).strip()) is not None
+    if field_number in DATE_METADATA_FIELD_NUMBERS:
+        return _format_metadata_date(stripped) != ""
+    if field_number in TIME_METADATA_FIELD_NUMBERS:
+        return _format_metadata_time(stripped) != ""
+    return bool(str(stripped).strip())
+
+
+def _serialize_template_field_value(
+    field_number: int, raw_value: str | Any
+) -> str | int | float | None:
+    """Convert a raw widget value to a JSON-safe template value, or ``None`` when invalid."""
+
+    if field_number in NUMERIC_METADATA_FIELD_NUMBERS:
+        parsed = _parse_required_number(str(raw_value).strip())
+        if parsed is None:
+            return None
+        return _to_excel_number(parsed)
+    if field_number in DATE_METADATA_FIELD_NUMBERS:
+        formatted = _format_metadata_date(raw_value)
+        return formatted if formatted else None
+    if field_number in TIME_METADATA_FIELD_NUMBERS:
+        formatted = _format_metadata_time(raw_value)
+        return formatted if formatted else None
+    stripped = str(raw_value).strip()
+    if not stripped:
+        return None
+    return stripped
+
+
+def _build_template_export_payload(
+    field_values: dict[str, str],
+    selected_keys: frozenset[str],
+) -> dict[str, Any] | None:
+    """
+    Build a setup-template JSON payload from selected metadata widget keys.
+
+    Only checked fields with valid values are included.
+    """
+
+    export_fields: dict[str, str | int | float] = {}
+    for field_number, _, widget_key in METADATA_FIELD_SPECS:
+        if widget_key not in selected_keys:
+            continue
+        serialized = _serialize_template_field_value(field_number, field_values.get(widget_key, ""))
+        if serialized is None:
+            continue
+        export_fields[widget_key] = serialized
+    if not export_fields:
+        return None
+    return {"version": TEMPLATE_VERSION, "fields": export_fields}
+
+
+def _apply_template_import_to_values(
+    payload: dict[str, Any],
+    field_values: dict[str, str],
+) -> tuple[dict[str, str], list[str]]:
+    """
+    Merge template payload values into a widget-key mapping.
+
+    Returns
+    -------
+    tuple
+        Updated values and human-readable warning messages.
+    """
+
+    warnings: list[str] = []
+    if payload.get("version") != TEMPLATE_VERSION:
+        warnings.append(f"Unsupported template version: {payload.get('version')!r}")
+        return field_values, warnings
+
+    raw_fields = payload.get("fields")
+    if not isinstance(raw_fields, dict):
+        warnings.append("Template is missing a valid 'fields' object.")
+        return field_values, warnings
+
+    updated = dict(field_values)
+    for widget_key, raw_value in raw_fields.items():
+        if widget_key not in METADATA_WIDGET_KEYS:
+            warnings.append(f"Unknown template field ignored: {widget_key}")
+            continue
+        field_number = _field_number_for_widget_key(widget_key)
+        if field_number is None:
+            continue
+        if isinstance(raw_value, bool):
+            warnings.append(f"Invalid value for {widget_key}; skipped.")
+            continue
+        if isinstance(raw_value, (int, float)):
+            if field_number in NUMERIC_METADATA_FIELD_NUMBERS:
+                updated[widget_key] = str(_to_excel_number(float(raw_value)))
+            else:
+                updated[widget_key] = str(raw_value)
+            continue
+        if isinstance(raw_value, str):
+            if field_number in NUMERIC_METADATA_FIELD_NUMBERS:
+                parsed = _parse_required_number(raw_value)
+                if parsed is None:
+                    warnings.append(f"Invalid numeric value for {widget_key}; skipped.")
+                    continue
+                updated[widget_key] = str(_to_excel_number(parsed))
+            elif field_number in DATE_METADATA_FIELD_NUMBERS:
+                formatted = _format_metadata_date(raw_value)
+                if not formatted:
+                    warnings.append(f"Invalid date value for {widget_key}; skipped.")
+                    continue
+                updated[widget_key] = formatted
+            elif field_number in TIME_METADATA_FIELD_NUMBERS:
+                formatted = _format_metadata_time(raw_value)
+                if not formatted:
+                    warnings.append(f"Invalid time value for {widget_key}; skipped.")
+                    continue
+                updated[widget_key] = formatted
+            else:
+                updated[widget_key] = raw_value.strip()
+            continue
+        warnings.append(f"Unsupported value type for {widget_key}; skipped.")
+
+    return updated, warnings
+
+
+def _template_selection_key(widget_key: str) -> str:
+    """Session-state key for a setup-template export checkbox."""
+
+    return f"txt2excel_template_sel_{widget_key}"
+
+
+def _all_template_export_fields_selected() -> bool:
+    """Return whether every metadata export checkbox is selected."""
+
+    return all(
+        st.session_state.get(_template_selection_key(widget_key), False)
+        for _, _, widget_key in METADATA_FIELD_SPECS
+    )
+
+
+def _apply_template_export_select_all() -> None:
+    """Mirror the master select-all checkbox to every export field."""
+
+    select_all = st.session_state.get(TEMPLATE_EXPORT_SELECT_ALL_KEY, False)
+    for _, _, widget_key in METADATA_FIELD_SPECS:
+        st.session_state[_template_selection_key(widget_key)] = select_all
+
+
+def _validate_metadata() -> str | None:
+    """Return an error message when any required metadata field is empty or invalid."""
+
+    missing: list[str] = []
+    invalid: list[str] = []
+    for field_number, label, widget_key in METADATA_FIELD_SPECS:
+        if field_number in OPTIONAL_METADATA_FIELD_NUMBERS:
+            continue
+        raw_value = st.session_state.get(widget_key)
+        if _is_metadata_widget_value_empty(field_number, raw_value):
+            missing.append(label)
+            continue
+        if field_number in DATE_METADATA_FIELD_NUMBERS and not _format_metadata_date(raw_value):
+            invalid.append(f"{field_number}. {label} must be a valid date (YYYY-MM-DD).")
+        elif field_number in TIME_METADATA_FIELD_NUMBERS and not _format_metadata_time(raw_value):
+            invalid.append(f"{field_number}. {label} must be a valid time (e.g. 01:30 PM).")
     if missing:
-        return f"All metadata fields are required. Missing: {', '.join(missing)}"
+        return f"Required metadata fields are missing: {', '.join(missing)}"
+    if invalid:
+        return invalid[0]
     return None
 
 
@@ -273,16 +883,17 @@ def _validate_prep_inputs(
         ``(metadata, target_concentrations, actual_concentrations, error_message)``.
     """
 
-    metadata_raw = _collect_metadata_values()
-    metadata_error = _validate_metadata(metadata_raw)
+    metadata_error = _validate_metadata()
     if metadata_error:
         return {}, [], [], metadata_error
 
     metadata: dict[str, Any] = {}
-    for field_number, excel_label, _ in METADATA_FIELD_SPECS:
-        raw_value = metadata_raw[excel_label]
+    for field_number, excel_label, widget_key in METADATA_FIELD_SPECS:
+        raw_value = st.session_state.get(widget_key)
         if field_number in NUMERIC_METADATA_FIELD_NUMBERS:
-            parsed = _parse_required_number(raw_value)
+            parsed = _parse_required_number(
+                _metadata_widget_state_to_string(field_number, raw_value)
+            )
             if parsed is None:
                 return (
                     {},
@@ -291,8 +902,28 @@ def _validate_prep_inputs(
                     f"{field_number}. {excel_label} must be a number.",
                 )
             metadata[excel_label] = _to_excel_number(parsed)
+        elif field_number in DATE_METADATA_FIELD_NUMBERS:
+            formatted = _format_metadata_date(raw_value)
+            if not formatted:
+                return (
+                    {},
+                    [],
+                    [],
+                    f"{field_number}. {excel_label} must be a valid date (YYYY-MM-DD).",
+                )
+            metadata[excel_label] = formatted
+        elif field_number in TIME_METADATA_FIELD_NUMBERS:
+            formatted = _format_metadata_time(raw_value)
+            if not formatted:
+                return (
+                    {},
+                    [],
+                    [],
+                    f"{field_number}. {excel_label} must be a valid time (e.g. 01:30 PM).",
+                )
+            metadata[excel_label] = formatted
         else:
-            metadata[excel_label] = raw_value
+            metadata[excel_label] = _metadata_widget_state_to_string(field_number, raw_value)
 
     target_values: list[int | float] = []
     for file, raw_target in zip(sorted_files, target_inputs, strict=True):
@@ -303,7 +934,7 @@ def _validate_prep_inputs(
                 [],
                 [],
                 (
-                    f"17. Target (CFU/mL) for **{file.name}** must be a number. "
+                    f"{PREP_TARGET_CONCENTRATION_HEADER} for **{file.name}** must be a number. "
                     "Use 0 for rinsate-only controls."
                 ),
             )
@@ -317,7 +948,7 @@ def _validate_prep_inputs(
                 {},
                 [],
                 [],
-                f"18. Actual (CFU/mL) for **{file.name}** must be a number.",
+                f"{PREP_ACTUAL_CONCENTRATION_HEADER} for **{file.name}** must be a number.",
             )
         actual_values.append(_to_excel_number(parsed_actual))
 
@@ -384,7 +1015,7 @@ def _build_embedded_workbook_rows(
 
 
 # Metadata field numbers (Excel row index) after which a full-width separator line is drawn.
-_SEPARATOR_AFTER_METADATA_NUMBERS = frozenset({5, 7, 15})
+_SEPARATOR_AFTER_METADATA_NUMBERS = frozenset({4, 6, 14})
 
 
 def _apply_full_width_row_separator(
@@ -482,22 +1113,241 @@ def _get_merged_preview() -> dict[str, Any] | None:
     return payload
 
 
+def _process_uploaded_template(
+    uploaded_template: Any,
+) -> tuple[dict[str, Any], dict[str, str] | None]:
+    """
+    Parse a setup-template JSON upload and compute merged widget values.
+
+    Returns
+    -------
+    tuple
+        Feedback with ``level``, ``message``, and ``warnings``, plus merged widget
+        values when parsing succeeds. Widget session state is not modified here;
+        callers must defer application until before metadata widgets render.
+    """
+
+    try:
+        payload = json.loads(uploaded_template.getvalue().decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return {
+            "level": "error",
+            "message": f"Could not read template file: {exc}",
+            "warnings": [],
+        }, None
+
+    if not isinstance(payload, dict):
+        return {
+            "level": "error",
+            "message": "Template file must contain a JSON object.",
+            "warnings": [],
+        }, None
+
+    before_values = _collect_metadata_values_by_widget_key()
+    updated_values, warnings = _apply_template_import_to_values(payload, before_values)
+    applied_count = sum(
+        1
+        for widget_key, value in updated_values.items()
+        if value != before_values.get(widget_key, "")
+    )
+    if applied_count:
+        message = f"Loaded template values for {applied_count} field(s)."
+        level = "success"
+    else:
+        message = "Template applied; metadata already matched the file."
+        level = "info"
+    return {"level": level, "message": message, "warnings": warnings}, updated_values
+
+
+def _render_template_import_feedback(container: DeltaGenerator) -> None:
+    """Show import feedback stored from the prior apply-and-reset cycle."""
+
+    feedback = st.session_state.pop(TEMPLATE_IMPORT_FEEDBACK_KEY, None)
+    if not isinstance(feedback, dict):
+        return
+    level = feedback.get("level")
+    message = feedback.get("message", "")
+    warnings = feedback.get("warnings", [])
+    if level == "success" and message:
+        container.success(message)
+    elif level == "info" and message:
+        container.info(message)
+    elif level == "error" and message:
+        container.error(message)
+    for warning in warnings:
+        if warning:
+            container.warning(warning)
+
+
+def _render_export_template(container: DeltaGenerator) -> None:
+    """Render selective export controls in a popover matching the import layout."""
+
+    field_values = _collect_metadata_values_by_widget_key()
+    with container.popover("Export metadata to template", use_container_width=True):
+        st.caption(
+            "Save metadata defaults to a JSON file. Only checked fields with valid "
+            "values are included — you do not need to complete the form."
+        )
+        st.caption("Select fields to include in the download.")
+        for field_number, _, widget_key in METADATA_FIELD_SPECS:
+            selection_key = _template_selection_key(widget_key)
+            if selection_key not in st.session_state:
+                st.session_state[selection_key] = _is_template_field_exportable(
+                    field_number,
+                    field_values.get(widget_key, ""),
+                )
+        st.session_state[TEMPLATE_EXPORT_SELECT_ALL_KEY] = _all_template_export_fields_selected()
+        st.checkbox(
+            "Select all",
+            key=TEMPLATE_EXPORT_SELECT_ALL_KEY,
+            on_change=_apply_template_export_select_all,
+        )
+        n_columns = 2
+        for row_start in range(0, len(METADATA_FIELD_SPECS), n_columns):
+            row_specs = METADATA_FIELD_SPECS[row_start : row_start + n_columns]
+            columns = st.columns(n_columns)
+            for column, (field_number, excel_label, widget_key) in zip(
+                columns, row_specs, strict=False
+            ):
+                selection_key = _template_selection_key(widget_key)
+                column.checkbox(
+                    f"{field_number}. {excel_label}",
+                    key=selection_key,
+                )
+
+        selected_keys = frozenset(
+            widget_key
+            for _, _, widget_key in METADATA_FIELD_SPECS
+            if st.session_state.get(_template_selection_key(widget_key), False)
+        )
+        export_payload = _build_template_export_payload(field_values, selected_keys)
+        if export_payload is None:
+            st.button(
+                "Export metadata to template",
+                disabled=True,
+                help="Select at least one field with a valid value to export.",
+                key="txt2excel_template_export_disabled",
+                use_container_width=True,
+            )
+        else:
+            st.download_button(
+                "Export metadata to template",
+                data=json.dumps(export_payload, indent=2),
+                file_name=TEMPLATE_EXPORT_FILENAME,
+                mime="application/json",
+                key="txt2excel_template_export",
+                use_container_width=True,
+            )
+
+
+def _render_import_template(container: DeltaGenerator) -> None:
+    """
+    Render import as a popover button matching the export template layout.
+
+    ``st.file_uploader`` lives inside the popover because Streamlit does not
+    expose a file-picker API on ``st.button``.
+    """
+
+    uploader_key = (
+        f"txt2excel_template_import_"
+        f"{st.session_state.get(TEMPLATE_IMPORT_UPLOADER_RESET_KEY, 'default')}"
+    )
+    with container.popover("Import metadata from template", use_container_width=True):
+        st.caption(
+            "Load a previously saved JSON file into the metadata form above. "
+            "Every field stored in that file is applied — export field selection does not "
+            "affect import."
+        )
+        st.caption("Select a `.json` setup file. Values apply as soon as the file is chosen.")
+        uploaded_template = st.file_uploader(
+            "JSON setup file",
+            type=["json"],
+            label_visibility="collapsed",
+            key=uploader_key,
+        )
+        if uploaded_template is not None:
+            feedback, updated_values = _process_uploaded_template(uploaded_template)
+            st.session_state[TEMPLATE_IMPORT_FEEDBACK_KEY] = feedback
+            if updated_values is not None:
+                st.session_state[TEMPLATE_IMPORT_PENDING_VALUES_KEY] = updated_values
+            st.session_state[TEMPLATE_IMPORT_UPLOADER_RESET_KEY] = str(uuid.uuid4())
+            st.rerun()
+    _render_template_import_feedback(container)
+
+
+def _apply_testing_time_mask() -> None:
+    """Reformat the testing-time text input as 12-hour AM/PM from typed digits."""
+
+    st.session_state[TESTING_TIME_WIDGET_KEY] = _format_ampm_time_mask(
+        st.session_state.get(TESTING_TIME_WIDGET_KEY, "")
+    )
+
+
+def _prepare_testing_time_widget_state(widget_key: str) -> None:
+    """Normalize testing-time session state before rendering the masked input."""
+
+    if widget_key not in st.session_state:
+        st.session_state[widget_key] = ""
+        return
+    raw_value = st.session_state[widget_key]
+    if isinstance(raw_value, time):
+        st.session_state[widget_key] = _format_metadata_time_display(raw_value)
+        return
+    if raw_value is None:
+        st.session_state[widget_key] = ""
+        return
+    text_value = str(raw_value).strip()
+    if not text_value:
+        st.session_state[widget_key] = ""
+        return
+    normalized = _format_metadata_time(text_value)
+    st.session_state[widget_key] = normalized or _format_ampm_time_mask(text_value)
+
+
+def _render_metadata_field_widget(
+    column: DeltaGenerator,
+    field_number: int,
+    excel_label: str,
+    widget_key: str,
+) -> None:
+    """Render a single metadata widget using the appropriate Streamlit input type."""
+
+    label = f"{field_number}. {excel_label}"
+    if field_number in DATE_METADATA_FIELD_NUMBERS:
+        if widget_key not in st.session_state:
+            st.session_state[widget_key] = None
+        column.date_input(label, key=widget_key, format="YYYY-MM-DD")
+        return
+    if field_number in TIME_METADATA_FIELD_NUMBERS:
+        _prepare_testing_time_widget_state(widget_key)
+        column.text_input(
+            label,
+            key=widget_key,
+            placeholder="hh:mm AM/PM",
+            on_change=_apply_testing_time_mask,
+        )
+        return
+    column.text_input(label, key=widget_key)
+
+
 def _render_metadata_fields(container: DeltaGenerator) -> None:
     """Render numbered metadata inputs in four columns, filled row by row."""
 
     container.markdown("### Experiment metadata")
-    container.caption(
-        "Fields 1–16 are required and persist after export. Fields 2–7 must be numbers."
-    )
+    if st.session_state.pop(RESTORE_METADATA_AFTER_RELOAD_KEY, False):
+        _restore_persistent_metadata_widgets()
+    _apply_pending_template_import_values()
     n_columns = 4
     for row_start in range(0, len(METADATA_FIELD_SPECS), n_columns):
         row_specs = METADATA_FIELD_SPECS[row_start : row_start + n_columns]
         columns = container.columns(n_columns)
         for column, (number, excel_label, widget_key) in zip(columns, row_specs, strict=False):
-            column.text_input(
-                f"{number}. {excel_label}",
-                key=widget_key,
-            )
+            _render_metadata_field_widget(column, number, excel_label, widget_key)
+    _sync_persistent_metadata_snapshot()
+
+    export_col, import_col = container.columns(2)
+    _render_export_template(export_col)
+    _render_import_template(import_col)
 
 
 def _read_shift_bounds() -> tuple[str, str]:
@@ -539,7 +1389,7 @@ def _sync_shift_defaults_for_upload(
 
 
 def _render_raman_shift_bounds(container: DeltaGenerator) -> None:
-    """Render min/max Raman shift inputs above experiment metadata."""
+    """Render the Raman shift range subsection with min/max inputs."""
 
     container.markdown("### Raman shift range")
     col_min, col_max = container.columns(2)
@@ -600,13 +1450,13 @@ def render_prep_mode() -> None:
     if not uploaded_files:
         st.info(
             "Upload one or more `.txt` files using the sidebar, then complete metadata "
-            "fields 1–16 and concentrations 17–18 below."
+            "fields 1–15 (field 16 Notes optional) and concentrations below."
         )
         st.markdown("### Next steps")
         st.markdown(
             "1. Upload `.txt` files in the sidebar.\n"
-            "2. Set the Raman shift range and complete metadata fields 1–16.\n"
-            "3. Enter target and actual concentrations for each file.\n"
+            "2. Complete metadata fields 1–15.\n"
+            "3. Set the Raman shift range and enter target and actual concentrations for each file.\n"
             "4. Convert and download the embedded `.xlsx`.\n"
             "5. Switch back to **Analysis** and upload the saved file."
         )
@@ -616,15 +1466,15 @@ def render_prep_mode() -> None:
         st.warning("Fix Raman shift mismatches before continuing.")
         return
 
-    _render_raman_shift_bounds(st)
-    st.markdown("---")
     _render_metadata_fields(st)
     st.markdown("---")
 
     sorted_files = sorted(uploaded_files, key=lambda file: _extract_cfu_sort_key(file.name))
     n_files = len(sorted_files)
 
-    st.markdown("### Concentrations per spectrum")
+    _render_raman_shift_bounds(st)
+
+    st.markdown("### Concentrations")
     st.caption(
         f"{n_files} signal column{'s' if n_files != 1 else ''} will be written. "
         "Target and actual concentrations must be numbers. Use **0** for rinsate-only controls."
@@ -634,9 +1484,9 @@ def render_prep_mode() -> None:
     with header_file:
         st.markdown("**File**")
     with header_target:
-        st.markdown("**17. Target (CFU/mL)**")
+        st.markdown(f"**{PREP_TARGET_CONCENTRATION_HEADER}**")
     with header_actual:
-        st.markdown("**18. Actual (CFU/mL)**")
+        st.markdown(f"**{PREP_ACTUAL_CONCENTRATION_HEADER}**")
 
     target_inputs: list[str] = []
     actual_inputs: list[str] = []
