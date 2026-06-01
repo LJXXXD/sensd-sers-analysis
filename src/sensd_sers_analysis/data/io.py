@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 REQUIRED_METADATA_KEYS = {"sensor id", "test id", "connection id", "serotype"}
 CONCENTRATION_KEY_PATTERN = "concentration"
 DEFAULT_PATTERN = "*.xlsx"
+RAMAN_SHIFT_ROW_LABEL = "raman shift"
+
+# Excel column-A labels for optional per-signal rows (after concentration rows).
+PER_SIGNAL_ROW_LABEL_TO_COLUMN = {
+    "file name": "source_txt_filename",
+    "special treatment": "special_treatment",
+}
 
 # Column names for sample identification and metadata
 META_COLS = [
@@ -32,21 +39,125 @@ META_COLS = [
     "operator",
     "concentration",
     "filename",
+    "source_txt_filename",
+    "special_treatment",
     "signal_index",
 ]
 RAMAN_SHIFT_DECIMALS = 2
 RS_COL_PREFIX = "rs_"
 
 
+def _parse_per_signal_label_rows(
+    df: pd.DataFrame,
+    *,
+    valid_col_indices: list,
+    first_concentration_row_idx: int,
+    concentration_row_idx: int,
+) -> dict[str, list[str]]:
+    """
+    Read per-signal label rows above or below the concentration block.
+
+    Supports the canonical order (File Name, Special Treatment, then
+    concentrations) and legacy workbooks that placed label rows after Actual
+    Concentration.
+
+    Parameters
+    ----------
+    df:
+        Full worksheet as read with ``header=None``.
+    valid_col_indices:
+        Column indices with valid numeric concentrations.
+    first_concentration_row_idx:
+        Row index of the first concentration-labeled row.
+    concentration_row_idx:
+        Row index used for numeric concentration alignment (Actual when present).
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Mapping of dataframe column name to one label per signal column.
+    """
+
+    keys_norm = df[0].astype(str).str.strip().str.lower()
+    parsed: dict[str, list[str]] = {}
+
+    def _read_row(row_idx: int) -> None:
+        label = keys_norm.iloc[row_idx]
+        column_name = PER_SIGNAL_ROW_LABEL_TO_COLUMN.get(label)
+        if column_name is None:
+            return
+        values: list[str] = []
+        for col_idx in valid_col_indices:
+            cell = df.iloc[row_idx, col_idx]
+            values.append("" if pd.isna(cell) else str(cell).strip())
+        parsed[column_name] = values
+
+    for row_idx in range(0, first_concentration_row_idx):
+        _read_row(row_idx)
+
+    for row_idx in range(concentration_row_idx + 1, len(df)):
+        label = keys_norm.iloc[row_idx]
+        if label == RAMAN_SHIFT_ROW_LABEL:
+            break
+        _read_row(row_idx)
+
+    return parsed
+
+
+def _parse_file_metadata_block(
+    df: pd.DataFrame,
+    *,
+    first_concentration_row_idx: int,
+) -> dict[str, str]:
+    """
+    Parse file-level metadata key-value pairs before the concentration block.
+
+    Skips per-signal label rows (File Name, Special Treatment) that may appear
+    immediately above Target Concentration.
+    """
+
+    metadata: dict[str, str] = {}
+    keys_norm = df[0].astype(str).str.strip().str.lower()
+    for row_idx in range(first_concentration_row_idx):
+        label = keys_norm.iloc[row_idx]
+        if label in PER_SIGNAL_ROW_LABEL_TO_COLUMN:
+            continue
+        if CONCENTRATION_KEY_PATTERN in label:
+            continue
+        key_cell = df.iloc[row_idx, 0]
+        value_cell = df.iloc[row_idx, 1]
+        if pd.isna(key_cell) or pd.isna(value_cell):
+            continue
+        key = str(key_cell).strip().lower()
+        value = str(value_cell).strip()
+        if key:
+            metadata[key] = value
+    return metadata
+
+
+def _align_per_signal_values(
+    values: list[str] | None,
+    *,
+    n_signals: int,
+) -> list[str]:
+    """Pad or trim per-signal string lists to ``n_signals`` length."""
+
+    if not values:
+        return [""] * n_signals
+    if len(values) >= n_signals:
+        return values[:n_signals]
+    return values + [""] * (n_signals - len(values))
+
+
 def _parse_embedded_format(
     file_path: Path,
-) -> tuple[dict[str, str], np.ndarray, np.ndarray, list[float]]:
+) -> tuple[dict[str, str], np.ndarray, np.ndarray, list[float], dict[str, list[str]]]:
     """
     Parse a SERS Excel file in the embedded-metadata format.
 
     Returns:
         Tuple of (metadata_dict with normalized keys, raman_shift, signals_matrix,
-        concentrations).
+        concentrations, per_signal_labels).
     """
     df = pd.read_excel(file_path, header=None)
 
@@ -63,11 +174,10 @@ def _parse_embedded_format(
     else:
         concentration_row_idx = first_concentration_row_idx
 
-    # Metadata block: rows before the first concentration row, key-value pairs
-    meta_df = df.iloc[:first_concentration_row_idx, [0, 1]].dropna(how="any")
-    meta_df[0] = meta_df[0].astype(str).str.strip().str.lower()
-    meta_df[1] = meta_df[1].astype(str).str.strip()
-    metadata = dict(zip(meta_df[0], meta_df[1]))
+    metadata = _parse_file_metadata_block(
+        df,
+        first_concentration_row_idx=first_concentration_row_idx,
+    )
 
     # Concentrations: use valid column indices to avoid misalignment when blanks exist
     conc_row = df.iloc[concentration_row_idx, 1:]
@@ -102,7 +212,14 @@ def _parse_embedded_format(
     if missing:
         raise ValueError(f"Required metadata {sorted(missing)} not found in {file_path.name}")
 
-    return metadata, raman_shift, signals, concentrations
+    per_signal_labels = _parse_per_signal_label_rows(
+        df,
+        valid_col_indices=valid_col_indices,
+        first_concentration_row_idx=first_concentration_row_idx,
+        concentration_row_idx=concentration_row_idx,
+    )
+
+    return metadata, raman_shift, signals, concentrations, per_signal_labels
 
 
 def _metadata_get(metadata: dict[str, str], *keys: str) -> str:
@@ -120,10 +237,19 @@ def _load_signal_file(file_path: str | Path) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
 
-    metadata, raman_shift, signals, concentrations = _parse_embedded_format(path)
+    metadata, raman_shift, signals, concentrations, per_signal_labels = _parse_embedded_format(path)
     n_signals = signals.shape[1]
     rs_rounded = np.round(raman_shift, RAMAN_SHIFT_DECIMALS)
     rs_col_names = [f"{RS_COL_PREFIX}{v:.{RAMAN_SHIFT_DECIMALS}f}" for v in rs_rounded]
+
+    source_txt_filenames = _align_per_signal_values(
+        per_signal_labels.get("source_txt_filename"),
+        n_signals=n_signals,
+    )
+    special_treatments = _align_per_signal_values(
+        per_signal_labels.get("special_treatment"),
+        n_signals=n_signals,
+    )
 
     meta_df = pd.DataFrame(
         {
@@ -136,6 +262,8 @@ def _load_signal_file(file_path: str | Path) -> pd.DataFrame:
             "operator": _metadata_get(metadata, "operator"),
             "concentration": concentrations,
             "filename": path.name,
+            "source_txt_filename": source_txt_filenames,
+            "special_treatment": special_treatments,
             "signal_index": np.arange(n_signals),
         }
     )

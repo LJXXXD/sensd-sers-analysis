@@ -36,6 +36,8 @@ DEFAULT_FILTER_ORDER = [
     "sensor_model",
     "operator",
     "filename",
+    "source_txt_filename",
+    "special_treatment",
     "connection_id",
 ]
 
