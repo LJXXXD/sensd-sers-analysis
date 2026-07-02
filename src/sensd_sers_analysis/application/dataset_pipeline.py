@@ -50,9 +50,11 @@ def load_uploaded_bundle(
         for (name, content), file_path in zip(files_data, paths):
             del name
             file_path.write_bytes(content)
-        wide_df, tidy_df = load_sers_data_as_wide_and_tidy([str(file_path) for file_path in paths])
+        wide_df, tidy_df, load_report = load_sers_data_as_wide_and_tidy(
+            [str(file_path) for file_path in paths]
+        )
 
-    return LoadedDataBundle(wide_df=wide_df, tidy_df=tidy_df)
+    return LoadedDataBundle(wide_df=wide_df, tidy_df=tidy_df, load_report=load_report)
 
 
 def build_derived_bundle(

@@ -4,10 +4,12 @@ Typed application-layer contracts for Streamlit/backend orchestration.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
+
+from sensd_sers_analysis.data.io import SersLoadReport
 
 from sensd_sers_analysis.assessment.sensor_assessment_regression import (
     CleanedRegressionResult,
@@ -30,10 +32,13 @@ class LoadedDataBundle:
         Wide-format dataframe with metadata and `rs_*` columns.
     tidy_df:
         Tidy-format dataframe derived directly from the uploaded files.
+    load_report:
+        Per-file load outcomes for user-facing upload feedback.
     """
 
     wide_df: pd.DataFrame
     tidy_df: pd.DataFrame
+    load_report: SersLoadReport = field(default_factory=SersLoadReport)
 
 
 @dataclass(slots=True)

@@ -13,6 +13,7 @@ from components.data_loading import (
     UPLOADER_RESET_KEY,
     clear_app_data,
     load_from_uploaded,
+    render_upload_load_status,
 )
 from components.filter_ui import (
     MAIN_FILTER_COUNT,
@@ -101,18 +102,31 @@ if uploaded:
 
 if loaded_bundle is None or loaded_bundle.tidy_df.empty:
     logger.warning("No data loaded: tidy_df is empty or None")
-    st.info(
-        "Load embedded Excel (.xlsx) files using the sidebar. "
-        "If you have raw instrument `.txt` files instead, use "
-        "**Convert TXT → Excel** in the sidebar first, save the workbook locally, "
-        "then upload it here."
-    )
+    st.title("SERS Data Explorer")
+    if loaded_bundle is not None:
+        render_upload_load_status(
+            loaded_bundle,
+            uploaded_count=len(uploaded) if uploaded else 0,
+        )
+    if loaded_bundle is None or loaded_bundle.load_report.n_loaded == 0:
+        if loaded_bundle is None or loaded_bundle.load_report.n_skipped == 0:
+            st.info(
+                "Load embedded Excel (``.xlsx``) workbooks using the sidebar to explore spectra, "
+                "extract peak features, and run classification or regression analyses."
+            )
+        st.markdown("### Next steps")
+        st.markdown(
+            "1. Upload one or more `.xlsx` files in the sidebar.\n"
+            "2. If you have raw instrument `.txt` files, use **Convert TXT → Excel** in the "
+            "sidebar first, save the workbook locally, then upload it here.\n"
+            "3. Trim the Raman shift range and apply filters in the sidebar.\n"
+            "4. Use the tabs to view spectra, discover peaks, and run downstream analyses."
+        )
     st.stop()
 
-st.sidebar.success(
-    "Loaded "
-    f"**{len(uploaded)}** files, **{len(loaded_bundle.wide_df)}** samples "
-    f"({len(loaded_bundle.tidy_df)} tidy rows)."
+render_upload_load_status(
+    loaded_bundle,
+    uploaded_count=len(uploaded),
 )
 st.sidebar.markdown(section_divider(), unsafe_allow_html=True)
 
@@ -243,6 +257,7 @@ logger.info(
 # ---------------------------------------------------------------------------
 # 3. Main: Summary and Tabs
 # ---------------------------------------------------------------------------
+st.title("SERS Data Explorer")
 st.caption(
     f"Filtered to **{filtered_bundle.n_unique_spectra}** spectrum traces, "
     f"**{len(filtered_bundle.filtered_features_df)}** "

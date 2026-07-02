@@ -9,6 +9,7 @@ wide_to_tidy for plotting.
 """
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -16,6 +17,34 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class SersLoadReport:
+    """
+    Per-file outcomes from a batch SERS Excel load.
+
+    Parameters
+    ----------
+    loaded_files:
+        Basenames of workbooks parsed successfully.
+    skipped_files:
+        ``(filename, user_message)`` pairs for workbooks that could not be loaded.
+    """
+
+    loaded_files: tuple[str, ...] = ()
+    skipped_files: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def n_loaded(self) -> int:
+        """Return the number of successfully loaded files."""
+        return len(self.loaded_files)
+
+    @property
+    def n_skipped(self) -> int:
+        """Return the number of skipped files."""
+        return len(self.skipped_files)
+
 
 REQUIRED_METADATA_KEYS = {"sensor id", "test id", "connection id", "serotype"}
 CONCENTRATION_KEY_PATTERN = "concentration"
@@ -45,6 +74,48 @@ META_COLS = [
 ]
 RAMAN_SHIFT_DECIMALS = 2
 RS_COL_PREFIX = "rs_"
+
+
+def _normalize_column_a_labels(series: pd.Series) -> pd.Series:
+    """
+    Normalize column-A metadata labels for reliable string matching.
+
+    Blank Excel cells are read as ``NaN``; without ``fillna`` they remain float
+    and break substring checks such as ``"concentration" in label``.
+    """
+
+    return series.fillna("").astype(str).str.strip().str.lower()
+
+
+def _user_facing_load_error(filename: str, exc: BaseException) -> str:
+    """
+    Convert a parser exception into a short, user-readable load message.
+
+    Parameters
+    ----------
+    filename:
+        Basename of the workbook being loaded.
+    exc:
+        Exception raised while parsing the file.
+
+    Returns
+    -------
+    str
+        Message suitable for display in the Streamlit sidebar.
+    """
+
+    if isinstance(exc, ValueError):
+        message = str(exc)
+        if filename in message:
+            return message
+        return f"{filename}: {message}"
+    if isinstance(exc, FileNotFoundError):
+        return f"{filename}: file not found."
+    return (
+        f"{filename}: could not read this workbook ({type(exc).__name__}). "
+        "If the file was edited outside **Convert TXT → Excel**, "
+        "re-export it or verify that column A metadata labels are present."
+    )
 
 
 def _parse_per_signal_label_rows(
@@ -78,11 +149,13 @@ def _parse_per_signal_label_rows(
         Mapping of dataframe column name to one label per signal column.
     """
 
-    keys_norm = df[0].astype(str).str.strip().str.lower()
+    keys_norm = _normalize_column_a_labels(df[0])
     parsed: dict[str, list[str]] = {}
 
     def _read_row(row_idx: int) -> None:
         label = keys_norm.iloc[row_idx]
+        if not label:
+            return
         column_name = PER_SIGNAL_ROW_LABEL_TO_COLUMN.get(label)
         if column_name is None:
             return
@@ -117,9 +190,11 @@ def _parse_file_metadata_block(
     """
 
     metadata: dict[str, str] = {}
-    keys_norm = df[0].astype(str).str.strip().str.lower()
+    keys_norm = _normalize_column_a_labels(df[0])
     for row_idx in range(first_concentration_row_idx):
         label = keys_norm.iloc[row_idx]
+        if not label:
+            continue
         if label in PER_SIGNAL_ROW_LABEL_TO_COLUMN:
             continue
         if CONCENTRATION_KEY_PATTERN in label:
@@ -162,7 +237,7 @@ def _parse_embedded_format(
     df = pd.read_excel(file_path, header=None)
 
     # Find concentration row: first row where col 0 contains "concentration"
-    keys_norm = df[0].astype(str).str.strip().str.lower()
+    keys_norm = _normalize_column_a_labels(df[0])
     conc_mask = keys_norm.str.contains(CONCENTRATION_KEY_PATTERN, na=False)
     if not conc_mask.any():
         raise ValueError(f"Concentration row not found in {file_path.name}")
@@ -293,6 +368,60 @@ def _collect_files(paths: Union[str, Path, List[Union[str, Path]]], pattern: str
     return files
 
 
+def _load_sers_data_batch(
+    files: List[Path],
+    *,
+    serotypes: Optional[List[str]] = None,
+) -> tuple[pd.DataFrame, SersLoadReport]:
+    """
+    Load a flat list of Excel workbooks into one wide dataframe.
+
+    Parameters
+    ----------
+    files:
+        Resolved workbook paths.
+    serotypes:
+        If provided, only retain files whose Serotype metadata matches.
+
+    Returns
+    -------
+    tuple[pd.DataFrame, SersLoadReport]
+        Concatenated wide dataframe and per-file load outcomes.
+    """
+
+    loaded_files: list[str] = []
+    skipped_files: list[tuple[str, str]] = []
+    dfs: List[pd.DataFrame] = []
+    for file_path in files:
+        try:
+            df = _load_signal_file(file_path)
+            if df.empty:
+                continue
+            if serotypes is not None:
+                file_sero = str(df["serotype"].iloc[0]).strip().upper()
+                allowed = {str(s).strip().upper() for s in serotypes}
+                if file_sero not in allowed:
+                    continue
+            dfs.append(df)
+            loaded_files.append(file_path.name)
+        except Exception as exc:
+            message = _user_facing_load_error(file_path.name, exc)
+            logger.warning(
+                "Skipping file %s: %s",
+                file_path.name,
+                message,
+                exc_info=not isinstance(exc, ValueError),
+            )
+            skipped_files.append((file_path.name, message))
+
+    wide_df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+    report = SersLoadReport(
+        loaded_files=tuple(loaded_files),
+        skipped_files=tuple(skipped_files),
+    )
+    return wide_df, report
+
+
 def load_sers_data(
     paths: Union[str, Path, List[Union[str, Path]]],
     *,
@@ -314,22 +443,8 @@ def load_sers_data(
     if not files:
         return pd.DataFrame()
 
-    dfs: List[pd.DataFrame] = []
-    for f in files:
-        try:
-            df = _load_signal_file(f)
-            if df.empty:
-                continue
-            if serotypes is not None:
-                file_sero = str(df["serotype"].iloc[0]).strip().upper()
-                allowed = {str(s).strip().upper() for s in serotypes}
-                if file_sero not in allowed:
-                    continue
-            dfs.append(df)
-        except (FileNotFoundError, ValueError) as e:
-            logger.warning("Skipping file %s: %s", f.name, e)
-
-    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+    wide_df, _report = _load_sers_data_batch(files, serotypes=serotypes)
+    return wide_df
 
 
 def _get_raman_columns(df: pd.DataFrame) -> list:
@@ -388,7 +503,7 @@ def load_sers_data_as_wide_and_tidy(
     *,
     serotypes: Optional[List[str]] = None,
     pattern: str = DEFAULT_PATTERN,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, SersLoadReport]:
     """
     Load SERS data and return both wide and tidy formats.
 
@@ -398,13 +513,18 @@ def load_sers_data_as_wide_and_tidy(
         pattern: Glob pattern for folder scan (default: *.xlsx).
 
     Returns:
-        Tuple of (wide_df, tidy_df). Both empty if loading fails.
+        Tuple of (wide_df, tidy_df, load_report). Dataframes are empty when
+        every file fails to load.
     """
-    wide = load_sers_data(paths, serotypes=serotypes, pattern=pattern)
+    files = _collect_files(paths, pattern)
+    if not files:
+        return pd.DataFrame(), pd.DataFrame(), SersLoadReport()
+
+    wide, report = _load_sers_data_batch(files, serotypes=serotypes)
     if wide.empty:
-        return wide, wide
+        return wide, wide, report
     tidy = wide_to_tidy(wide)
-    return wide, tidy
+    return wide, tidy, report
 
 
 def count_unique_spectra(df: pd.DataFrame) -> int:
