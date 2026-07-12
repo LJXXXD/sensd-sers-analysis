@@ -53,6 +53,7 @@ from tabs import (
     sensor_qc_legacy,
     serotype_classification,
     spectra_viewer,
+    validation_metrics,
 )
 
 logging.basicConfig(
@@ -280,6 +281,7 @@ if filtered_bundle.filtered_tidy_df.empty:
     tab_reg_v1,
     tab_reg_v2,
     tab_reg_v3,
+    tab_validation,
 ) = st.tabs(
     [
         "Spectra Viewer",
@@ -292,6 +294,7 @@ if filtered_bundle.filtered_tidy_df.empty:
         "Regression V1: Global",
         "Regression V2: Two-Stage",
         "Regression V3: MTL",
+        "Validation Metrics",
     ]
 )
 
@@ -362,6 +365,12 @@ with tab_reg_v2:
 
 with tab_reg_v3:
     regression_mtl.render(
+        filtered_bundle_for_analysis.filtered_features_df,
+        derived_bundle.peak_artifacts,
+    )
+
+with tab_validation:
+    validation_metrics.render(
         filtered_bundle_for_analysis.filtered_features_df,
         derived_bundle.peak_artifacts,
     )

@@ -22,6 +22,7 @@ from sensd_sers_analysis.application.regression_service import (
 from sensd_sers_analysis.application.contracts import SensorAssessmentSelection
 from sensd_sers_analysis.application.dataset_pipeline import build_derived_bundle
 from sensd_sers_analysis.application.filtering_service import deserialize_filter_state
+from sensd_sers_analysis.application.validation_service import build_validation_table_artifacts
 from sensd_sers_analysis.application.sensor_assessment_service import (
     build_global_qa_artifacts,
     build_single_sensor_consistency_artifacts,
@@ -256,3 +257,35 @@ def build_cached_mtl_regression_artifacts(regression_clean, feature_columns: tup
     """Cache Paradigm 3 (MTL) training and test metrics."""
 
     return run_mtl_concentration_regression(regression_clean, feature_columns)
+
+
+@st.cache_data
+def build_cached_validation_artifacts(
+    filtered_features,
+    feature_columns: tuple[str, ...],
+    *,
+    repeatability_feature: str,
+):
+    """
+    Cache SENS-D validation metric tables (Tables 1 and 2).
+
+    Parameters
+    ----------
+    filtered_features:
+        Filtered feature dataframe.
+    feature_columns:
+        ML feature columns for identification and quantification.
+    repeatability_feature:
+        Scalar feature for CV and signal-change metrics.
+
+    Returns
+    -------
+    ValidationTableArtifacts
+        Both validation summary tables.
+    """
+
+    return build_validation_table_artifacts(
+        filtered_features,
+        feature_columns,
+        repeatability_feature=repeatability_feature,
+    )

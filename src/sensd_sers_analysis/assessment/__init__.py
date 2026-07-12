@@ -31,6 +31,14 @@ from .degradation import (
     compute_degradation,
     prepare_degradation_data,
 )
+from .validation_metrics import (
+    ValidationPredictions,
+    ValidationTableArtifacts,
+    build_concentration_repeatability_table,
+    build_consistency_reusability_table,
+    build_validation_tables,
+    fit_validation_predictions,
+)
 from .outliers import (
     detect_outliers_iqr,
     detect_outliers_zscore,
@@ -59,4 +67,10 @@ __all__ = [
     "identify_deviating_sensors",
     "MacroRegressionResult",
     "compute_macro_batch_regression",
+    "ValidationPredictions",
+    "ValidationTableArtifacts",
+    "build_concentration_repeatability_table",
+    "build_consistency_reusability_table",
+    "build_validation_tables",
+    "fit_validation_predictions",
 ]

@@ -20,6 +20,7 @@ from .regression_service import (
     run_mtl_concentration_regression,
     run_two_stage_concentration_regression,
 )
+from .validation_service import build_validation_table_artifacts
 from .contracts import (
     DerivedDataBundle,
     FilterCatalog,
@@ -111,6 +112,7 @@ __all__ = [
     "build_signal_verification_artifact",
     "build_single_sensor_consistency_artifacts",
     "build_two_stage_regression_pdf_bytes",
+    "build_validation_table_artifacts",
     "compute_filter_options",
     "deserialize_filter_state",
     "load_uploaded_bundle",

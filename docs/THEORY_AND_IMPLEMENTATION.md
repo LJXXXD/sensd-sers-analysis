@@ -67,7 +67,7 @@ This codebase addresses all three problems in a single, modular pipeline that is
 
 ### 1.3 Scope and non-goals
 
-**In scope:** Data loading and parsing, metadata normalization, spectral trimming, scalar and peak-based feature extraction, PCA dimensionality reduction, IQR/z-score outlier detection, regression-based sensor consistency assessment, batch-level sensor exclusion, degradation trend analysis, and baseline Random Forest / SVM classification.
+**In scope:** Instrument `.txt` → embedded Excel prep (Streamlit), data loading and parsing, metadata normalization, master-grid Raman alignment, spectral trimming, scalar and peak-based feature extraction, PCA dimensionality reduction, IQR/z-score outlier detection, regression-based sensor consistency assessment, batch-level sensor exclusion, degradation trend analysis, baseline Random Forest / SVM classification, and concentration-regression paradigms (global, two-stage, MTL).
 
 **Not in scope (unless explicitly added):** Advanced spectral preprocessing (baseline correction, cosmic ray removal, spectral deconvolution), deep learning models, real-time inference pipelines, hardware-level sensor diagnostics, or cross-laboratory reproducibility studies.
 
@@ -107,22 +107,25 @@ From the data README files and the codebase metadata schema:
 Each SERS data file is a self-contained Excel workbook (`.xlsx`) with the following structure, parsed by `data/io.py::_parse_embedded_format`:
 
 ```text
-Row 0:  Sensor ID     | C07-7-8
-Row 1:  Test ID       | Test_01
-Row 2:  Connection ID | Conn_A
-Row 3:  Serotype      | ST
-Row 4:  Concentration | 0        100      100      1000     ...
-Row 5:  (blank or header row)
-Row 6:  400.00        | 1234.5   1245.6   1256.7   1267.8   ...
-Row 7:  401.00        | 1235.1   1246.2   ...
-...     (Raman shift)   (intensity per signal)
+Row 1–16:  File-level metadata (Sensor ID, Test ID, geometry, date, …)
+Row 17:    File Name           | heat_kill.txt    live_1000.txt    ...
+Row 18:    Special Treatment   | heat kill        (blank)          ...
+Row 19:    Target Concentration| (blank)          1000             ...
+Row 20:    Actual Concentration| 500              1000             ...
+Row 21:    Raman Shift         | Relative Light intensity (a.u) × N signals
+Row 22+:   400.00              | 1234.5           1245.6           ...
+...        (Raman shift)        (intensity per signal)
 ```
 
-**Metadata block** (rows 0–3): Key-value pairs with normalized keys (`sensor id`, `test id`, `connection id`, `serotype`). Optional fields include `date`, `operator`, `sensor model`.
+**File-level metadata block** (rows 1–16 in prep-generated workbooks): Key-value pairs with normalized keys (`sensor id`, `test id`, `connection id`, `serotype`, sensor geometry, date, operator, …). Legacy collaborator files may use a shorter block (rows 0–3) with only the four required IDs plus serotype.
 
-**Concentration row** (row 4): One concentration value per signal column. Parsed to numeric; columns with non-numeric concentrations are dropped.
+Prep-generated workbooks use sixteen fixed metadata rows (disk geometry, acquisition settings, sensor/test IDs, serotype, rinsate, date/time, operator, notes). Numeric validation applies to geometry and acquisition fields (1–4, 6–7); date and time fields (13–14) use dedicated parsers; Notes (16) is optional.
 
-**Data block** (row 6+): Column 0 = Raman shift values (cm⁻¹). Columns 1..N = intensity values per signal. Each column is one spectrum from the same test/sensor/serotype combination.
+**Per-signal label rows** (optional in legacy files): **File Name** maps to `source_txt_filename` (instrument `.txt` provenance). **Special Treatment** maps to `special_treatment` (e.g., heat kill, PAA). The parser accepts these rows either above or below the concentration block.
+
+**Concentration rows:** When an **Actual Concentration** row exists, numeric concentrations for analysis are read from that row; otherwise the first row whose column-A label contains `"concentration"` is used (legacy single-row layout). Target Concentration may be blank per signal (prep mode); only columns with valid numeric actual concentrations become signal columns.
+
+**Data block** (first row where column 0 is numeric): Column 0 = Raman shift values (cm⁻¹). Columns 1..N = intensity values per signal. Each column is one spectrum from the same test/sensor/serotype combination.
 
 ### 3.2 Wide-format DataFrame convention
 
@@ -130,7 +133,7 @@ After parsing, each file becomes rows in a **wide-format** DataFrame:
 
 | Column type | Examples | Description |
 |-------------|----------|-------------|
-| Metadata | `sensor_id`, `test_id`, `serotype`, `concentration`, `filename`, `signal_index` | One row per signal |
+| Metadata | `sensor_id`, `test_id`, `serotype`, `concentration`, `filename`, `signal_index`, `source_txt_filename`, `special_treatment` | One row per signal |
 | Spectral | `rs_400.00`, `rs_401.00`, ... `rs_1800.00` | Intensity at each Raman shift |
 
 The `rs_` prefix and 2-decimal rounding are constants defined in `data/io.py` (`RS_COL_PREFIX`, `RAMAN_SHIFT_DECIMALS`). This naming convention enables programmatic column selection: any column starting with `rs_` is a spectral intensity value.
@@ -153,11 +156,12 @@ The canonical metadata column list, defined in `data/io.py`:
 META_COLS = [
     "sensor_model", "sensor_id", "test_id", "connection_id",
     "serotype", "date", "operator", "concentration",
-    "filename", "signal_index",
+    "filename", "source_txt_filename", "special_treatment",
+    "signal_index",
 ]
 ```
 
-`filename` and `signal_index` together form a unique identifier for each spectrum trace.
+`filename` and `signal_index` together form a unique identifier for each spectrum trace. `source_txt_filename` and `special_treatment` are populated when workbooks include the prep-tool per-signal rows; legacy files load with empty strings for those columns.
 
 ---
 
@@ -197,7 +201,7 @@ The full pipeline, from raw Excel upload to classification results, proceeds thr
 │  data/io.py → processing/metadata.py                            │
 ├─────────────────────────────────────────────────────────────────┤
 │  Stage 2: Spectral Alignment & Scalar Feature Extraction        │
-│  processing/alignment.py → processing/features.py               │
+│  processing/alignment.py (snap + trim) → processing/features.py │
 │  processing/pca_features.py                                     │
 ├─────────────────────────────────────────────────────────────────┤
 │  Stage 3: Dynamic Peak Detection                                │
@@ -231,8 +235,8 @@ The orchestration of these stages is performed by `application/dataset_pipeline.
 The entry point is `load_sers_data(paths)`, which accepts files, folders, or a mix. Internally:
 
 1. **`_collect_files`** resolves paths to a flat list of `.xlsx` files, skipping files prefixed with `~` or `_` (temp/hidden files).
-2. **`_parse_embedded_format`** reads each workbook headerlessly (`header=None`), locates the concentration row by scanning column 0 for the string `"concentration"`, extracts the metadata block above it as key-value pairs, and parses the signal data below it.
-3. **`_load_signal_file`** assembles metadata + transposed signal matrix into a wide DataFrame. Raman shift values are rounded to `RAMAN_SHIFT_DECIMALS = 2` decimal places and prefixed with `rs_`.
+2. **`_parse_embedded_format`** reads each workbook headerlessly (`header=None`), locates concentration rows by scanning column 0 for `"concentration"`, prefers **Actual Concentration** when present, extracts the metadata block above the first concentration row (skipping per-signal label rows), parses optional **File Name** / **Special Treatment** rows, and reads the signal data below.
+3. **`_load_signal_file`** assembles metadata + transposed signal matrix into a wide DataFrame. Raman shift values are rounded to `RAMAN_SHIFT_DECIMALS = 2` decimal places and prefixed with `rs_`. Per-signal provenance lists are padded or trimmed to the signal count.
 4. Files are concatenated with `ignore_index=True`. If a `serotypes` filter is provided, files whose embedded serotype does not match are skipped.
 
 **Design choice:** Embedding metadata inside Excel files (rather than in filenames or a separate manifest) is driven by the experimental workflow—collaborators produce self-contained files from the instrument software. The parser is tolerant of optional fields (`date`, `operator`, `sensor_model`) but strict about required fields (`sensor id`, `test id`, `connection id`, `serotype`).
@@ -262,14 +266,24 @@ The log-transform of concentration is standard practice in dose-response analysi
 
 ## 7. Stage 2: Spectral alignment & feature extraction
 
-### 7.1 Raman shift trimming (`processing/alignment.py`)
+### 7.1 Master grid alignment (`processing/alignment.py`)
+
+When multiple Excel files (or sensors) are loaded, native Raman-shift grids may differ in span, density, or numeric labels. Before trimming or feature extraction, `build_derived_bundle` calls `snap_spectra_to_master_grid`:
+
+1. **Master selection:** Choose the spectrum row with the largest native spectral span; ties break on point density (points per cm⁻¹), then point count.
+2. **Per-row interpolation:** Linearly interpolate each row onto master shifts that fall strictly within that row's native `[min_shift, max_shift]` support. Master coordinates outside the overlap remain **NaN** (no extrapolation).
+3. **Near-duplicate merge:** On each row, consecutive shifts within `numpy.isclose` tolerances (`SNAP_SHIFT_DEDUPE_RTOL`, `SNAP_SHIFT_DEDUPE_ATOL` from `config/spectral_policies.py`) are merged via `nanmean` before interpolation.
+
+**Design choice:** Snapping enables vectorized feature extraction and PCA across heterogeneous uploads without forcing a fixed instrument grid at parse time. NaN outside overlap preserves honest missing-data semantics when sensors do not share a wavenumber window.
+
+### 7.2 Raman shift trimming (`processing/alignment.py`)
 
 `trim_raman_shift(wide_df, min_shift, max_shift)` drops `rs_*` columns whose wavenumber falls outside the user-specified window. This serves two purposes:
 
 1. **Noise reduction:** Spectral endpoints often have higher noise due to detector edge effects.
 2. **Cross-sensor alignment:** Different sensor configurations may cover slightly different Raman shift ranges. Trimming to a common window prevents features from being extracted in non-overlapping regions.
 
-### 7.2 Scalar feature extraction (`processing/features.py`)
+### 7.3 Scalar feature extraction (`processing/features.py`)
 
 `extract_basic_features(df_wide)` computes three macro-level scalar features per spectrum:
 
@@ -299,7 +313,7 @@ Implemented via `scipy.integrate.trapezoid(signals, x=raman_shift, axis=1)`. The
 
 **Design choice:** These three features were chosen for their robustness to noise. They do not require peak identification or baseline subtraction—important when working with noisy SERS data where peak detection may fail for low-concentration samples. They serve as the primary features for sensor consistency assessment (§10–§12) and as base features for classification (§13).
 
-### 7.3 PCA feature extraction (`processing/pca_features.py`)
+### 7.4 PCA feature extraction (`processing/pca_features.py`)
 
 `add_pca_features(df_wide, n_components=2)` performs dimensionality reduction on the full spectral matrix:
 
@@ -623,10 +637,20 @@ Random Forest is an **ensemble of decision trees** trained on bootstrap samples 
 
 ### 14.1 Architecture
 
-The `apps/` directory contains a single Streamlit application (`app.py`) with **ten** tabs. It uses a layered architecture:
+The `apps/` directory contains a Streamlit application with **two modes** toggled by session state key `_app_mode`. Both modes share `st.set_page_config(page_title="SERS Data Explorer", layout="wide")` at the composition root; prep mode sets its own in-page title (**Raman TXT to Excel Merger**).
+
+| Mode | Module | Purpose |
+| --- | --- | --- |
+| **Analysis** (default) | `app.py` + tabs | Embedded Excel upload, filtering, ten analysis tabs |
+| **Prep** | `txt_to_excel.py` | Merge instrument `.txt` exports → embedded `.xlsx` for downstream upload |
+
+**Empty-state onboarding:** When no files are loaded, each mode renders a title, an info callout, and a numbered **Next steps** checklist rather than a blank page. Analysis mode stops after the checklist until sidebar upload succeeds; prep mode returns early until `.txt` files appear in the sidebar.
+
+Analysis mode uses a layered architecture:
 
 ```text
-apps/app.py                     ← Entry point, layout, tab dispatch
+apps/app.py                     ← Entry point, mode switch, layout, tab dispatch
+apps/txt_to_excel.py            ← TXT→Excel prep shell (invoked when _app_mode == "prep")
 apps/cache.py                   ← @st.cache_data wrappers
 apps/state.py                   ← Session state adapters
 apps/theme.py                   ← UI constants (sizes, colors, HTML)
@@ -649,10 +673,12 @@ apps/tabs/                      ← Tab-specific rendering
   regression_common.py          ← Shared helpers for regression tabs
 ```
 
+**Prep mode workflow:** Sidebar **Convert TXT → Excel** calls `enter_prep_mode()`. Users upload `.txt` files (sorted by CFU token in the filename for stable per-signal column order), complete sixteen metadata fields in a five-column grid (required fields marked `*`, Notes optional), optionally import/export a JSON metadata preset (`SERS_metadata_preset.json`, version 1, with selective field export), enter per-signal Target (optional) and Actual (required) concentrations plus optional Special Treatment labels, merge spectra within a Raman window, preview with `plot_spectra` (legend entries like `Target: — / Actual: 1000 (live_1000.txt)` when target is blank), and download an embedded workbook. Post-convert download and preview render inside `@st.fragment` to avoid rerunning metadata widgets. Prep **Reload Data** clears uploads and run-specific metadata (`sensor_id`, `test_id`, `connection_id`, `serotype`, testing time, notes) but persists instrument geometry, acquisition settings, date, operator, and rinsate via a session snapshot. **← Back to Analysis** returns to the main explorer; users then upload the saved `.xlsx` in analysis mode.
+
 ### 14.2 Data flow through the application
 
-1. **Upload** → `apps/components/data_loading.py:load_from_uploaded` caches uploaded file bytes, delegates to `load_uploaded_bundle`, and returns `LoadedDataBundle(wide_df, tidy_df)`.
-2. **Derived bundle** → `build_derived_bundle` applies `preprocess_metadata`, `trim_raman_shift`, `extract_basic_features`, `extract_dynamic_peak_features` → `DerivedDataBundle(wide_df, tidy_df, features_df, peak_df, peak_artifacts)`.
+1. **Upload** → `apps/components/data_loading.py:load_from_uploaded` caches uploaded file bytes, delegates to `load_uploaded_bundle`, and returns `LoadedDataBundle(wide_df, tidy_df)`. Per-signal provenance columns are present when the workbook includes File Name / Special Treatment rows.
+2. **Derived bundle** → `build_derived_bundle` applies `preprocess_metadata`, **`snap_spectra_to_master_grid`**, `trim_raman_shift`, `extract_basic_features`, `extract_dynamic_peak_features` → `DerivedDataBundle(wide_df, tidy_df, features_df, peak_df, peak_artifacts)`.
 3. **Filtering** → Dynamic sidebar filters built from metadata columns. `build_filter_catalog` identifies filterable columns and splits them into main (5) and "more" groups. Each filter supports include/exclude mode. `apply_filters` produces a `FilteredBundle(filtered_tidy_df, filtered_features_df, n_unique_spectra)`.
 4. **Targeted peaks (optional):** Anchor positions from Peak Feature Extraction (session state) are merged into the filtered feature frame via `merge_targeted_peaks_into_filtered_bundle` before tabs that need those columns (`feature_analysis`, legacy QC, sensor assessment, serotype classification, regression tabs).
 5. **Tabs** consume filtered data. Most repeated app-level computations are wrapped in `@st.cache_data` decorators. Plot creation itself still happens at render time.
@@ -712,7 +738,7 @@ src/sensd_sers_analysis/
 │   └── io.py                             # Excel parsing, wide/tidy conversion
 ├── processing/
 │   ├── __init__.py
-│   ├── alignment.py                      # Raman shift trimming
+│   ├── alignment.py                      # Master-grid snap + Raman shift trimming
 │   ├── features.py                       # max/mean/integral extraction
 │   ├── pca_features.py                   # StandardScaler + PCA(n=2)
 │   ├── peak_features.py                  # Serotype-specific peak detection
@@ -783,8 +809,9 @@ This package holds **alternative concentration-regression experiments** (predict
 
 ### `io.py`
 
-- **`_parse_embedded_format(file_path)`** — Reads an Excel file in the embedded-metadata format. Scans column 0 for `"concentration"` to locate the metadata/data boundary. Returns `(metadata_dict, raman_shift, signals_matrix, concentrations)`.
-- **`_load_signal_file(file_path)`** — Wraps `_parse_embedded_format`; assembles metadata DataFrame + transposed signal DataFrame → single wide DataFrame. Raman columns named `rs_{value:.2f}`.
+- **`_parse_embedded_format(file_path)`** — Reads an Excel file in the embedded-metadata format. Locates concentration rows, prefers **Actual Concentration** for numeric alignment, parses file-level metadata and optional per-signal **File Name** / **Special Treatment** rows. Returns `(metadata_dict, raman_shift, signals_matrix, concentrations, per_signal_labels)`.
+- **`_parse_file_metadata_block(...)`** / **`_parse_per_signal_label_rows(...)`** — Helpers for metadata vs. per-signal row extraction (supports legacy row order).
+- **`_load_signal_file(file_path)`** — Wraps `_parse_embedded_format`; assembles metadata DataFrame + transposed signal DataFrame → single wide DataFrame. Raman columns named `rs_{value:.2f}`; adds `source_txt_filename` and `special_treatment` per signal.
 - **`_collect_files(paths, pattern)`** — Resolves mixed file/folder paths to a flat list of `.xlsx` files.
 - **`load_sers_data(paths, serotypes, pattern)`** — Public entry point. Loads, filters, concatenates.
 - **`get_signals_matrix(df)`** — Extracts `(n_samples, n_wavenumbers)` NumPy array from wide DataFrame.
@@ -802,6 +829,7 @@ This package holds **alternative concentration-regression experiments** (predict
 
 ### `alignment.py`
 
+- **`snap_spectra_to_master_grid(wide_df, dedupe_rtol, dedupe_atol)`** — Align all rows onto a session master Raman grid (largest-span spectrum wins). Overlap-localized linear interpolation; non-overlapping master shifts remain NaN.
 - **`trim_raman_shift(wide_df, min_shift, max_shift)`** — Drops `rs_*` columns outside `[min_shift, max_shift]`. Preserves all metadata columns.
 
 ### `features.py`
@@ -838,6 +866,7 @@ This package holds **alternative concentration-regression experiments** (predict
 - **`get_filter_options(df, ...)`** — Computes available filter values per column, respecting cascading constraints.
 - **`filter_sers_data(df, selections)`** / **`filter_by_selections(df, selections)`** — Apply metadata filters (include/exclude mode).
 - **`get_filterable_columns(df)`** / **`get_plot_hue_columns(df)`** / **`get_feature_metadata_columns(df)`** / **`pick_preferred_column(cols)`** — UI helpers for column selection in Streamlit widgets.
+- **Constants:** `DEFAULT_FILTER_ORDER` includes `source_txt_filename` and `special_treatment` when present in loaded data (prep-generated workbooks).
 
 ---
 
@@ -921,7 +950,7 @@ Centralized policy constants. No logic—only values:
 
 ### `spectral_policies.py` / `targeted_peaks.py`
 
-Supporting constants for spectral workflows (e.g., preprocessing policy hooks, default targeted-anchor positions in cm⁻¹). Import these modules rather than duplicating literals in tabs or processing code.
+Supporting constants for spectral workflows. `spectral_policies.py` exports master-grid dedupe tolerances (`SNAP_SHIFT_DEDUPE_RTOL`, `SNAP_SHIFT_DEDUPE_ATOL`). `targeted_peaks.py` holds default targeted-anchor positions in cm⁻¹. Import these modules rather than duplicating literals in tabs or processing code.
 
 ---
 
@@ -936,7 +965,7 @@ Typed dataclasses for all inter-layer data transfer (see §14.4 for the complete
 ### `dataset_pipeline.py`
 
 - **`load_uploaded_bundle(files_data)`** — Writes uploaded bytes to temp dir → `load_sers_data_as_wide_and_tidy` → `LoadedDataBundle`.
-- **`build_derived_bundle(loaded_bundle, min_shift, max_shift, n_peaks, ...)`** — Full preprocessing: `preprocess_metadata` → `trim_raman_shift` → `extract_basic_features` → `extract_dynamic_peak_features` → `DerivedDataBundle`.
+- **`build_derived_bundle(loaded_bundle, min_shift, max_shift, n_peaks, ...)`** — Full preprocessing: `preprocess_metadata` → **`snap_spectra_to_master_grid`** → `trim_raman_shift` → `extract_basic_features` → `extract_dynamic_peak_features` → `DerivedDataBundle`.
 
 ### `filtering_service.py`
 
@@ -1050,7 +1079,11 @@ Internal helpers: `_df_to_table_data`, `_compute_table_col_widths`, `_figure_to_
 
 ### `app.py`
 
-Entry point. Layout: sidebar (upload, Raman shift, filters) + **ten** tabs (spectra, peak discovery, peak feature extraction, feature analysis, legacy sensor QC, sensor assessment, serotype classification, three regression tabs).
+Entry point. Mode switch on `_app_mode`: prep delegates to `txt_to_excel.render_prep_mode()`; analysis renders sidebar upload, Raman shift, filters, and **ten** tabs. When upload is empty, shows `st.title("SERS Data Explorer")` plus a **Next steps** checklist (upload workbook, optional TXT prep path, trim/filter, tab workflow). After data loads, the same title precedes the filtered-sample caption and tab strip.
+
+### `txt_to_excel.py`
+
+Prep-mode shell: instrument `.txt` parsing and merge, sixteen-field metadata UI (`METADATA_FIELD_SPECS`, five-column layout, logical field groups), JSON metadata preset import/export (`TEMPLATE_VERSION = 1`), reload persistence split (`RELOAD_PERSIST_WIDGET_KEYS` vs `RELOAD_CLEAR_WIDGET_KEYS`), per-signal Target/Actual concentration and Special Treatment inputs, CFU-based filename sort for column order, embedded workbook generation (`_build_embedded_workbook_rows`, `_embedded_workbook_to_excel_bytes`), merged-spectrum preview with Target/Actual/source-TXT legend formatting, and download inside `@st.fragment`. Lives entirely under `apps/`; helpers and workbook builders are imported by unit tests under `tests/`.
 
 ### `cache.py`
 
@@ -1091,9 +1124,11 @@ Each tab module exposes a `render(...)` function. Most tabs receive the filtered
 
 Under `tests/`:
 
-- **`test_application_services.py`** — Integration tests for the application layer: synthetic `LoadedDataBundle` construction, `build_derived_bundle`, `apply_filters`, `build_sensor_assessment_artifacts`, sensor assessment regression / classification parity.
+- **`test_application_services.py`** — Integration tests for the application layer: synthetic `LoadedDataBundle` construction, `build_derived_bundle` (including master-grid snap parity), `apply_filters`, `build_sensor_assessment_artifacts`, sensor assessment regression / classification parity.
+- **`test_embedded_io_per_signal_rows.py`** — Round-trip tests for File Name / Special Treatment rows and Actual-vs-Target concentration parsing via minimal prep-built workbooks.
+- **`test_txt_to_excel_template.py`** — Prep metadata preset JSON import/export, validation helpers, reload persistence behavior (`RELOAD_PERSIST_WIDGET_KEYS` / `RELOAD_CLEAR_WIDGET_KEYS`), merged-preview legend formatting, and date/time coercion helpers.
 
-Current test coverage is still light. Right now the explicit checked-in test module is the application-service parity test above.
+Current test coverage is still light relative to the full surface area, but prep/I/O edges now have dedicated modules beyond the application-service parity test.
 
 The `tests/test_application_services.py` module is compatible with both **`pytest`** and **`python -m unittest`**. Floating-point assertions use pandas/numpy-aware comparisons (`assert_frame_equal`, `np.allclose`) where appropriate.
 
@@ -1131,7 +1166,9 @@ So the current state is better than before, but not finished. If more thresholds
 
 4. **Dual-threshold sensor exclusion.** Condition A (RMSE-based) catches noisy sensors. Condition B (R²-based) catches dead/flat sensors. Neither alone is sufficient: a flat sensor has low RMSE (always predicts the mean) but also low R² (no dose-response relationship).
 
-5. **Application layer separation.** The `application/` package exists to prevent Streamlit-specific concerns (caching, session state, widget data shapes) from leaking into domain logic. Domain modules (`assessment`, `classification`, etc.) have no knowledge of Streamlit.
+5. **Application layer separation.** The `application/` package exists to prevent Streamlit-specific concerns (caching, session state, widget data shapes) from leaking into domain logic. Domain modules (`assessment`, `classification`, etc.) have no knowledge of Streamlit. The TXT prep utility (`apps/txt_to_excel.py`) similarly stays in `apps/` while reusing shared visualization for previews.
+
+6. **Master grid before trim.** Snapping heterogeneous Raman grids onto a session master axis (§7.1) runs before sidebar trimming so PCA and peak features operate on aligned columns. NaN outside per-sensor overlap avoids silent extrapolation.
 
 ### 28.2 Limitations
 
@@ -1158,7 +1195,7 @@ For journal papers based on this codebase:
 
 ## 29. Known gaps & optional extensions
 
-**Already in the tree:** Full pipeline from Excel ingestion to classification, serotype-specific peak detection, two-pass regression QA, dual-threshold sensor exclusion, macro batch regression, PDF reports, and a working Streamlit frontend for exploration and reporting.
+**Already in the tree:** Full pipeline from Excel ingestion to classification, instrument **TXT → embedded Excel prep mode**, serotype-specific peak detection, master-grid Raman alignment, two-pass regression QA, dual-threshold sensor exclusion, macro batch regression, concentration-regression paradigms (V1–V3), PDF reports, and a working Streamlit frontend for exploration and reporting.
 
 **Open, depending on project goals:**
 
@@ -1168,6 +1205,5 @@ For journal papers based on this codebase:
 - **Spectral deconvolution** for overlapping peak resolution.
 - **Noise injection / robustness testing** for sensor simulation.
 - **Multi-laboratory generalization** studies using data from different instrument configurations.
-- **Concentration regression** as a predictive task (in addition to classification).
 - **Automated peak count selection** (currently user-specified per serotype).
 - **Vectorized peak extraction** — the current per-row loop in `extract_dynamic_peak_features` is correct but could be vectorized for performance on large datasets.

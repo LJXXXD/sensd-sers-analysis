@@ -13,6 +13,7 @@ from . import (
     sensor_qc_legacy,
     serotype_classification,
     spectra_viewer,
+    validation_metrics,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "sensor_qc_legacy",
     "serotype_classification",
     "spectra_viewer",
+    "validation_metrics",
 ]
