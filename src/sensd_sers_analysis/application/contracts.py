@@ -175,21 +175,29 @@ class SensorAssessmentSelection:
     ----------
     serotype:
         Selected serotype.
-    concentration_group:
-        Selected concentration group.
+    target_concentration_group:
+        Selected nominal target concentration group (e.g. ``"1000 CFU"``).
+        Replicates sharing this target are analyzed together so sample-to-sample
+        CFU spread is captured within the group.
     feature:
-        Primary feature used for consistency and degradation analysis.
+        Primary feature used for degradation analysis and the PDF report.
     outlier_method:
         Outlier method used for consistency calculations.
     batch_feature:
         Feature used for displayed batch analysis.
+    consistency_features:
+        Features shown side by side in the consistency (CV) table. Empty falls
+        back to ``(feature,)`` so a single-feature view still works. Multiple
+        features let the QC table compare signal CV across representations
+        (e.g. integral_area vs. max_intensity vs. peak heights).
     """
 
     serotype: str
-    concentration_group: str
+    target_concentration_group: str
     feature: str
     outlier_method: str
     batch_feature: str
+    consistency_features: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)

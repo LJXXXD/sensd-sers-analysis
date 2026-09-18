@@ -24,7 +24,7 @@ from components.filter_ui import (
     section_divider,
 )
 from components.raman_sidebar import list_serotypes_from_wide_df, render_raman_shift_sidebar
-from theme import N_PEAKS_DEFAULT, unicode_strikethrough
+from theme import N_PEAKS_DEFAULT
 from sensd_sers_analysis.application import (
     FilterSelection,
     build_filter_catalog,
@@ -33,6 +33,7 @@ from sensd_sers_analysis.application import (
     serialize_filter_state,
 )
 from sensd_sers_analysis.config.targeted_peaks import TARGETED_PEAK_DEFAULT_ANCHORS_CM1
+from sensd_sers_analysis.processing.metadata import sample_type_masks
 from sensd_sers_analysis.utils import format_column_label
 from state import write_peak_artifacts_to_state
 from txt_to_excel import (
@@ -43,6 +44,7 @@ from txt_to_excel import (
     render_prep_mode,
 )
 from tabs import (
+    data_inventory,
     feature_analysis,
     peak_discovery,
     peak_feature_extraction,
@@ -50,7 +52,7 @@ from tabs import (
     regression_mtl,
     regression_two_stage,
     sensor_assessment,
-    sensor_qc_legacy,
+    sensor_qc,
     serotype_classification,
     spectra_viewer,
     validation_metrics,
@@ -129,6 +131,14 @@ render_upload_load_status(
     loaded_bundle,
     uploaded_count=len(uploaded),
 )
+control_mask, bacteria_mask = sample_type_masks(loaded_bundle.wide_df)
+unknown_sample_count = int((~(control_mask | bacteria_mask)).sum())
+if unknown_sample_count:
+    st.warning(
+        f"{unknown_sample_count} spectra have missing or unrecognized Sample Type. "
+        "They remain visible in the inventory but are excluded from sample-class labeling "
+        "and control-versus-bacteria comparisons. Complete their metadata first."
+    )
 st.sidebar.markdown(section_divider(), unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
@@ -268,14 +278,16 @@ st.caption(
 if filtered_bundle.filtered_tidy_df.empty:
     logger.warning("No data matches selected filters")
     st.warning("No data matches the selected filters. Adjust filters and try again.")
+    data_inventory.render(loaded_bundle.wide_df, filtered_bundle.filtered_tidy_df)
     st.stop()
 
 (
+    tab_inventory,
     tab_spectra,
     tab_peak_viz,
     tab_peak_features,
     tab_stats,
-    tab_sensor_qc_legacy,
+    tab_sensor_qc,
     tab_sensor_assessment,
     tab_serotype_classification,
     tab_reg_v1,
@@ -284,11 +296,12 @@ if filtered_bundle.filtered_tidy_df.empty:
     tab_validation,
 ) = st.tabs(
     [
+        "Data inventory",
         "Spectra Viewer",
         "Peak Discovery",
         "Peak Feature Extraction",
         "Feature Analysis",
-        f"{unicode_strikethrough('Sensor QC')} (legacy)",
+        "Sensor QC",
         "Sensor assessment",
         "Serotype Classification",
         "Regression V1: Global",
@@ -297,6 +310,9 @@ if filtered_bundle.filtered_tidy_df.empty:
         "Validation Metrics",
     ]
 )
+
+with tab_inventory:
+    data_inventory.render(loaded_bundle.wide_df, filtered_bundle.filtered_tidy_df)
 
 with tab_spectra:
     spectra_viewer.render(filtered_bundle.filtered_tidy_df)
@@ -333,8 +349,8 @@ with tab_stats:
         derived_bundle.peak_artifacts,
     )
 
-with tab_sensor_qc_legacy:
-    sensor_qc_legacy.render(
+with tab_sensor_qc:
+    sensor_qc.render(
         filtered_bundle_for_analysis.filtered_features_df,
         derived_bundle.peak_artifacts,
     )

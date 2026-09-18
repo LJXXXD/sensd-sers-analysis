@@ -53,7 +53,7 @@ def render(filtered_features, peak_artifacts):
         "#### Serotyping & Classification\n"
         "Uses strictly clean rows: Pass sensors only, inlier points only. "
         "Trains baseline ML models for **(N + 1)-class** classification: **N** "
-        "serotypes on positive-CFU rows plus **Rinsate** (0 CFU), where **N** is "
+        "serotypes on Bacteria sample rows plus **Rinsate** controls, where **N** is "
         "determined by the current filter."
     )
 
@@ -94,8 +94,8 @@ def render(filtered_features, peak_artifacts):
     if clean_classification_df.empty:
         st.warning(
             "No clean rows for classification. Ensure sensors pass QA (Pass sensors) "
-            "and inlier points exist. Check that positive-CFU serotypes and Rinsate "
-            "(0 CFU) samples exist."
+            "and inlier points exist. Check that explicit Bacteria sample and Rinsate control labels "
+            "exist."
         )
         return
 

@@ -8,6 +8,8 @@ from .assessment_plots import (
     plot_degradation_trend,
     plot_macro_batch_regression,
     plot_multi_sensor_regression,
+    plot_sensor_batch_stability,
+    plot_signal_vs_concentration_cv,
 )
 from .peak_discovery import (
     plot_peak_anchor_summary,
@@ -39,6 +41,8 @@ __all__ = [
     "plot_peak_anchor_summary",
     "plot_macro_batch_regression",
     "plot_multi_sensor_regression",
+    "plot_sensor_batch_stability",
+    "plot_signal_vs_concentration_cv",
     "plot_signal_level_peak_verification",
     "plot_spectra",
     "plot_targeted_mean_spectrum_markers",

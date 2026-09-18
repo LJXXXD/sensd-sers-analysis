@@ -79,12 +79,22 @@ def render(filtered_features, peak_artifacts):
         return
 
     st.markdown(
-        "#### Sensor assessment\n"
-        "Two-pass regression with residual-based outlier removal. 0 CFU samples "
-        "are excluded from the fit and shown as a horizontal baseline. Outliers "
-        "are identified via IQR on absolute residuals and excluded from the "
-        "clean fit."
+        "#### Concentration response (per-sensor regression)\n"
+        "Log-concentration vs feature fit — the protocol's "
+        "**SERS signal vs. concentration** check (linearity / R²). "
+        "Two-pass residual IQR cleaning; 0 CFU shown as a horizontal baseline "
+        "(excluded from the fit)."
     )
+    with st.expander("Terms (aligned with the fiber-optics SERS testing protocol)", expanded=False):
+        st.markdown(
+            "- **Concentration response** — does signal rise with CFU? "
+            "*(protocol: SERS vs. concentration, R² / slope)*.\n"
+            "- **Between-sensor QA** — which sensors' concentration responses "
+            "match the batch *(protocol: among-sensors / sensor-to-sensor "
+            "repeatability)*.\n"
+            "- Pair with **Sensor QC** for CV-based within-sensor "
+            "repeatability and reuse-over-time checks."
+        )
     sensor_opts = sorted(filtered_features["sensor_id"].dropna().unique().astype(str).tolist()) or [
         "(none)"
     ]
@@ -183,9 +193,9 @@ def render(filtered_features, peak_artifacts):
             st.error(f"Plot error: {e}")
 
     st.markdown("---")
-    st.markdown("#### Global Multi-Sensor Assessment")
+    st.markdown("#### Between-sensor QA (among-sensors repeatability)")
     st.caption(
-        "Per-sensor QA with dual threshold. Excluded if: Clean RMSE > "
+        "Per-sensor concentration-response QA. Excluded if: Clean RMSE > "
         f"{GLOBAL_QA_REJECTION_MULTIPLIER:g}× batch median OR Clean R² < "
         f"{GLOBAL_QA_R2_MIN_THRESHOLD:.2f} (dead/flat sensor)."
     )
@@ -311,7 +321,7 @@ def render(filtered_features, peak_artifacts):
             filtered_features,
             global_qa_artifacts,
             overlay_artifacts,
-            report_title="Sensor Consistency & Quality Assurance Report",
+            report_title="Sensor Concentration Response & Between-Sensor QA Report",
         )
 
     render_pdf_download_section(

@@ -1,5 +1,5 @@
 """
-Validation Metrics tab — SENS-D concentration and sensor-reusability tables.
+Validation Metrics tab — SENS-D Metrics-docx Tables 1–3.
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ from components.shared_ui import render_dataframe_stretch
 from sensd_sers_analysis.config import (
     CLASSIFICATION_INLIER_FEATURE,
     VALIDATION_ACCURACY_MIN_THRESHOLD,
+    VALIDATION_MIN_EVAL_ROWS,
+    VALIDATION_N_SPLITS,
 )
 from sensd_sers_analysis.processing import (
     CLASSIFICATION_FEATURE_BASE,
@@ -37,7 +39,7 @@ def _csv_download_button(df, label: str, filename: str, key: str) -> None:
 
 def render(filtered_features, peak_artifacts) -> None:
     """
-    Render the Validation Metrics tab with Tables 1 and 2.
+    Render the Validation Metrics tab with Metrics-docx Tables 1–3.
 
     Parameters
     ----------
@@ -50,9 +52,26 @@ def render(filtered_features, peak_artifacts) -> None:
 
     st.markdown(
         "#### Validation Metrics\n"
-        "Summary tables for **concentration/repeatability** (Table 1) and "
-        "**sensor reusability** (Table 2). Uses Pass-sensor, inlier-cleaned rows "
-        "and the same feature set as serotype classification."
+        "Three sponsor tables matching **Metrics tables.docx**:\n"
+        "1. Concentration & repeatability (identification Accuracy)\n"
+        "2. Quantification (CFU ranges, FP/FN, Meet target?)\n"
+        "3. Consistency & reusability (reuse over time)"
+    )
+    with st.expander("Terms (same glossary as Sensor QC / Assessment)", expanded=False):
+        st.markdown(
+            "- **Repeatability CV%** — within-sensor signal precision "
+            "*(protocol Exp. 1)*.\n"
+            "- **Quantification** — predicted CFU range + FP/FN "
+            "*(docx Table 2)*.\n"
+            "- **Reuse / reusability** — Table 3 first→last change, failed "
+            "sensors *(protocol Exp. 3)*.\n"
+            "- **Accuracy** — mean over repeated **sensor-holdout** rounds."
+        )
+    st.info(
+        f"ML metrics use **{VALIDATION_N_SPLITS}× sensor-holdout** "
+        f"(~20% sensors each round); reported rates are the **mean across "
+        f"rounds**, blanked when total held-out **Eval N** < "
+        f"{VALIDATION_MIN_EVAL_ROWS}. CV / counts use all clean Pass+inlier rows."
     )
 
     has_required = (
@@ -96,16 +115,21 @@ def render(filtered_features, peak_artifacts) -> None:
         repeatability_feature=repeatability_feature,
     )
 
+    preds = artifacts.predictions
+    if preds and preds.sensor_holdout_available:
+        holdout_caption = (
+            f"ML: **{preds.n_splits}** sensor-holdout rounds; "
+            f"~**{preds.n_test_sensors:.1f}** test sensors / round; "
+            f"**{preds.n_eval_rows}** total held-out eval rows (summed)."
+        )
+    else:
+        holdout_caption = "ML sensor holdout unavailable (need ≥2 sensors)."
+
     st.caption(
         f"Clean rows: **{artifacts.n_classification_rows}** classification, "
         f"**{artifacts.n_regression_rows}** regression (positive CFU). "
-        f"Pass/Fail threshold: **{VALIDATION_ACCURACY_MIN_THRESHOLD * 100:.0f}%** accuracy. "
-        + (
-            f"ML metrics evaluated on **{artifacts.predictions.n_eval_rows}** held-out "
-            f"test-sensor rows ({artifacts.predictions.n_test_sensors} sensors)."
-            if artifacts.predictions and artifacts.predictions.sensor_holdout_available
-            else "ML metrics use all rows (sensor holdout unavailable)."
-        )
+        f"Pass/Fail threshold: **{VALIDATION_ACCURACY_MIN_THRESHOLD * 100:.0f}%** "
+        f"identification accuracy. {holdout_caption}"
     )
 
     if artifacts.n_classification_rows == 0:
@@ -116,12 +140,11 @@ def render(filtered_features, peak_artifacts) -> None:
         return
 
     st.markdown("---")
-    st.markdown("##### Table 1 — Concentration and Repeatability Testing")
+    st.markdown("##### Table 1 — Concentration and Repeatability Testing *(docx / Exp. 1)*")
     st.caption(
-        "Grouped by serovar and **target** concentration (binned 0, 1, 10, 100, 1000 CFU/mL). "
-        "Each serovar block ends with an **Overall** row. One global classifier and regressor "
-        "are trained on held-in sensors, then applied to the full dataset; accuracy, FP/FN, "
-        "and quantification ranges are computed on held-out test sensors only."
+        "Grouped by serovar × **target** CFU. Repeatability CV% = signal precision; "
+        "Concentration CV% = sample spread (our addition). Accuracy = mean over "
+        "sensor-holdout rounds."
     )
     if artifacts.concentration_repeatability.empty:
         st.info("No concentration/repeatability rows for the current filters.")
@@ -135,11 +158,29 @@ def render(filtered_features, peak_artifacts) -> None:
         )
 
     st.markdown("---")
-    st.markdown("##### Table 2 — Consistency Testing & Sensor Reusability")
+    st.markdown("##### Table 2 — Quantification *(docx)*")
     st.caption(
-        "Sensors with **≥2 repeated tests** (distinct test_id) at the same "
-        "serovar × target concentration (0, 1, 10, 100, 1000 CFU/mL). "
-        "Failed sensors are those Excluded in global QA."
+        "Same serovar × target rows. Quantification Accuracy = pooled predicted "
+        "CFU range (~lo-hi) on held-out positives; FP/FN and Meet Target? use "
+        "mean identification rates across sensor-holdout rounds."
+    )
+    if artifacts.quantification.empty:
+        st.info("No quantification rows for the current filters.")
+    else:
+        render_dataframe_stretch(artifacts.quantification)
+        _csv_download_button(
+            artifacts.quantification,
+            "Download Table 2 (CSV)",
+            "validation_table2_quantification.csv",
+            "validation_table2_csv",
+        )
+
+    st.markdown("---")
+    st.markdown("##### Table 3 — Consistency & Sensor Reusability *(docx / Exp. 3)*")
+    st.caption(
+        "Sensors with **≥2** distinct `test_id` at the same serovar × target "
+        "CFU. First→last signal change = reuse drift; Failed = Excluded in "
+        "between-sensor QA."
     )
     if artifacts.consistency_reusability.empty:
         st.info(
@@ -150,7 +191,7 @@ def render(filtered_features, peak_artifacts) -> None:
         render_dataframe_stretch(artifacts.consistency_reusability)
         _csv_download_button(
             artifacts.consistency_reusability,
-            "Download Table 2 (CSV)",
-            "validation_table2_consistency_reusability.csv",
-            "validation_table2_csv",
+            "Download Table 3 (CSV)",
+            "validation_table3_consistency_reusability.csv",
+            "validation_table3_csv",
         )

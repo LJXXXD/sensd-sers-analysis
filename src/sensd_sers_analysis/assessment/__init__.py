@@ -32,10 +32,12 @@ from .degradation import (
     prepare_degradation_data,
 )
 from .validation_metrics import (
+    ValidationFoldPredictions,
     ValidationPredictions,
     ValidationTableArtifacts,
     build_concentration_repeatability_table,
     build_consistency_reusability_table,
+    build_quantification_table,
     build_validation_tables,
     fit_validation_predictions,
 )
@@ -67,10 +69,12 @@ __all__ = [
     "identify_deviating_sensors",
     "MacroRegressionResult",
     "compute_macro_batch_regression",
+    "ValidationFoldPredictions",
     "ValidationPredictions",
     "ValidationTableArtifacts",
     "build_concentration_repeatability_table",
     "build_consistency_reusability_table",
+    "build_quantification_table",
     "build_validation_tables",
     "fit_validation_predictions",
 ]

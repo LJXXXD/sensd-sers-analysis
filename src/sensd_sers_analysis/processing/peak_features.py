@@ -2,8 +2,8 @@
 Dynamic peak extraction from SERS spectra.
 
 Serotype-specific, background-exclusive pipeline: anchors and windows are
-computed per serovar using only >0 CFU samples. 0 CFU (turkey rinsate matrix)
-is excluded from learning to avoid noise-driven variance inflation.
+computed per serovar using bacteria samples. Explicit rinsate controls
+are excluded from learning to avoid background-driven variance inflation.
 """
 
 import warnings
@@ -14,10 +14,8 @@ import pandas as pd
 from scipy import signal as scipy_signal
 
 from sensd_sers_analysis.data import RS_COL_PREFIX, get_raman_shift, get_signals_matrix
+from sensd_sers_analysis.processing.metadata import sample_type_masks
 
-
-# Concentration label that must be excluded from learning
-ZERO_CFU_LABEL = "0 CFU"
 
 # Preferred concentration groups for anchor discovery (highest signal first)
 _HIGH_CONC_PREFERENCE = ["1000 CFU", "100 CFU", "10 CFU", "1 CFU"]
@@ -43,22 +41,20 @@ class PeakWindowInfo:
     success_rate: float  # fraction of non-NaN
 
 
-def _is_zero_cfu(
+def _is_rinsate_control(
     df: pd.DataFrame, concentration_group_col: str = "concentration_group"
 ) -> pd.Series:
-    """Boolean mask: rows with concentration_group == '0 CFU'."""
-    if concentration_group_col not in df.columns:
-        return pd.Series(False, index=df.index)
-    return df[concentration_group_col].astype(str) == ZERO_CFU_LABEL
+    """Identify explicitly labelled rinsate controls independently of concentration."""
+    return sample_type_masks(df)[0]
 
 
-def _exclude_zero_cfu(
+def _exclude_rinsate_controls(
     df: pd.DataFrame, concentration_group_col: str = "concentration_group"
 ) -> pd.DataFrame:
-    """Filter out 0 CFU rows (background-only; no pathogen peaks)."""
+    """Keep only explicitly identified bacteria samples for peak learning."""
     if df.empty:
         return df
-    mask = ~_is_zero_cfu(df, concentration_group_col)
+    mask = sample_type_masks(df)[1]
     return df.loc[mask]
 
 
@@ -70,7 +66,7 @@ def _find_high_conc_subset(
 ) -> pd.DataFrame:
     """Filter to highest available concentration for strong signal."""
     if exclude_zero:
-        df = _exclude_zero_cfu(df, concentration_group_col)
+        df = _exclude_rinsate_controls(df, concentration_group_col)
     if df.empty or concentration_group_col not in df.columns:
         return df.head(0)
     vals = df[concentration_group_col].astype(str)
@@ -166,7 +162,7 @@ def _compute_peak_windows_for_serotype(
 
     Inner boundaries: argmin of mean spectrum between adjacent anchors (true
     valley, robust to jagged slopes). Outer boundaries: search left/right until
-    signal drops to baseline (≤5% of peak height). Uses only >0 CFU samples.
+    signal drops to baseline (≤5% of peak height). Uses explicitly identified bacteria samples.
     Returns (list of PeakWindowInfo, mean_spectrum).
     """
     if df_sero.empty:
@@ -174,7 +170,7 @@ def _compute_peak_windows_for_serotype(
 
     high_conc = _find_high_conc_subset(df_sero, concentration_group_col, exclude_zero=True)
     if high_conc.empty:
-        high_conc = _exclude_zero_cfu(df_sero, concentration_group_col)
+        high_conc = _exclude_rinsate_controls(df_sero, concentration_group_col)
     if high_conc.empty:
         return [], np.array([])
 
@@ -249,7 +245,7 @@ def _compute_peak_windows_for_serotype(
 
 def _pick_default_serotype(available: list[str]) -> str | None:
     """
-    Pick a deterministic default serotype for 0 CFU rows (peak window routing).
+    Pick a deterministic default serotype for rinsate controls (peak window routing).
 
     Uses lexicographic order so behavior depends only on serotypes present in the
     filtered dataframe, not on fixed pathogen codes.
@@ -278,9 +274,9 @@ def extract_dynamic_peak_features(
     """
     Extract Peak_1_Height, Peak_2_Height, ... using serotype-specific pipeline.
 
-    Rule 1: Exclude 0 CFU from learning (anchor discovery and ±3σ voting).
+    Rule 1: Exclude rinsate controls from learning (anchor discovery and ±3σ voting).
     Rule 2: Compute anchors and windows per serotype from high-conc mean.
-    Rule 3: For each row, use that row's serotype windows; 0 CFU uses default.
+    Rule 3: For each row, use that row's serotype windows; rinsate controls use default.
 
     Args:
         df_wide: Wide DataFrame with rs_*, concentration_group, serotype.
@@ -298,7 +294,7 @@ def extract_dynamic_peak_features(
             DataFrame with metadata+Peak_i_Height,
             dict[serotype -> list[PeakWindowInfo]],
             dict[serotype -> mean_spectrum],
-            default_serotype (for 0 CFU),
+            default_serotype (for rinsate controls),
             raman_shift array
         ).
     """
@@ -323,8 +319,8 @@ def extract_dynamic_peak_features(
         return n_peaks
 
     if serotype_col not in df_wide.columns:
-        # Fallback: single global (old behavior, but still exclude 0 CFU)
-        df_pos = _exclude_zero_cfu(df_wide, concentration_group_col)
+        # Fallback: single global (old behavior, but still exclude rinsate controls)
+        df_pos = _exclude_rinsate_controls(df_wide, concentration_group_col)
         if df_pos.empty:
             return df_wide[[]].copy(), {}, {}, None, x
         n_use = _n_for_sero("(all)")
@@ -368,11 +364,11 @@ def extract_dynamic_peak_features(
 
     # Extraction: per row, use serotype-specific windows
     heights = np.full((n_samples, n_anchors), np.nan, dtype=float)
-    zero_cfu_mask = _is_zero_cfu(df_wide, concentration_group_col).values
+    rinsate_mask = _is_rinsate_control(df_wide, concentration_group_col).values
 
     for i in range(n_samples):
         y_row = np.nan_to_num(signals[i], nan=0.0)
-        if zero_cfu_mask[i]:
+        if rinsate_mask[i]:
             sero = default_sero
         elif serotype_col in df_wide.columns:
             sero = str(df_wide[serotype_col].iloc[i])

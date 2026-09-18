@@ -7,6 +7,7 @@ workbooks for the SERS analysis tool. Lives entirely under ``apps/``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -20,6 +21,14 @@ import pandas as pd
 import streamlit as st
 
 from components.shared_ui import render_figure_stretch
+from sensd_sers_analysis.config.metadata_schema import (
+    INITIAL_TARGET_LABEL,
+    PER_SIGNAL_PRESET_KEY,
+    SAMPLE_TYPE_LABEL,
+    SAMPLE_TYPE_OPTIONS,
+    SPECIAL_TREATMENT_OPTIONS,
+)
+from sensd_sers_analysis.application.metadata_presets import validate_signal_preset
 from sensd_sers_analysis.visualization import plot_spectra
 
 if TYPE_CHECKING:
@@ -46,11 +55,11 @@ MERGED_PREVIEW_FIGSIZE = (10.0, 6.0)
 MERGED_PREVIEW_HUE_COL = "concentration_cfu_ml"
 MERGED_PREVIEW_LEGEND_TITLE = "Concentrations (CFU/mL)"
 
-TARGET_CONCENTRATION_LABEL = "Target Concentration (CFU/mL)"
+TARGET_CONCENTRATION_LABEL = INITIAL_TARGET_LABEL
 ACTUAL_CONCENTRATION_LABEL = "Actual Concentration (CFU/mL)"
 FILE_NAME_LABEL = "File Name"
 SPECIAL_TREATMENT_LABEL = "Special Treatment"
-PREP_TARGET_CONCENTRATION_HEADER = "Target Concentration"
+PREP_TARGET_CONCENTRATION_HEADER = "Initial Target Concentration"
 PREP_ACTUAL_CONCENTRATION_HEADER = "Actual Concentration"
 PREP_SPECIAL_TREATMENT_HEADER = "Special Treatment"
 REQUIRED_FIELD_LABEL_SUFFIX = " *"
@@ -198,6 +207,11 @@ def _apply_pending_template_import_values() -> None:
     pending_values = st.session_state.pop(TEMPLATE_IMPORT_PENDING_VALUES_KEY, None)
     if not isinstance(pending_values, dict):
         return
+    if PER_SIGNAL_PRESET_KEY in pending_values:
+        preset = pending_values.pop(PER_SIGNAL_PRESET_KEY)
+        st.session_state[PER_SIGNAL_PRESET_KEY] = preset
+        _clear_session_keys_by_prefix("txt2excel_sample_type_")
+        _clear_session_keys_by_prefix("txt2excel_treatment_")
     for widget_key, value in pending_values.items():
         if widget_key not in METADATA_WIDGET_KEYS:
             continue
@@ -223,7 +237,8 @@ def clear_prep_uploads() -> None:
     Reset uploaded TXT files and derived export artifacts.
 
     Instrument metadata (fields 1–7), date, operator, and rinsate type persist;
-    run-specific fields, concentrations, and Raman bounds reset for the next batch.
+    run-specific fields, per-signal labels, concentrations, and Raman bounds reset.
+    Explicitly imported filename-keyed label presets remain available.
     """
 
     logger.info("Clearing prep upload state (Reload Data clicked)")
@@ -255,6 +270,7 @@ def clear_prep_uploads() -> None:
     _clear_session_keys_by_prefix("txt2excel_target_")
     _clear_session_keys_by_prefix("txt2excel_actual_")
     _clear_session_keys_by_prefix("txt2excel_treatment_")
+    _clear_session_keys_by_prefix("txt2excel_sample_type_")
     st.session_state[RESTORE_METADATA_AFTER_RELOAD_KEY] = True
     st.session_state[PREP_UPLOADER_RESET_KEY] = str(uuid.uuid4())
 
@@ -695,6 +711,7 @@ def _serialize_template_field_value(
 def _build_template_export_payload(
     field_values: dict[str, str],
     selected_keys: frozenset[str],
+    signal_labels: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
     """
     Build a setup-template JSON payload from selected metadata widget keys.
@@ -710,9 +727,12 @@ def _build_template_export_payload(
         if serialized is None:
             continue
         export_fields[widget_key] = serialized
-    if not export_fields:
+    if not export_fields and not signal_labels:
         return None
-    return {"version": TEMPLATE_VERSION, "fields": export_fields}
+    payload: dict[str, Any] = {"version": TEMPLATE_VERSION, "fields": export_fields}
+    if signal_labels:
+        payload["signal_labels"] = signal_labels
+    return payload
 
 
 def _apply_template_import_to_values(
@@ -944,7 +964,7 @@ def _validate_prep_inputs(
                 [],
                 (
                     f"{PREP_TARGET_CONCENTRATION_HEADER} for **{file.name}** must be a number "
-                    "or left blank when there is no target CFU (e.g. heat kill / PAA panels)."
+                    "or left blank when the initial target is unknown."
                 ),
             )
         target_values.append(_to_excel_number(parsed_target))
@@ -965,7 +985,7 @@ def _validate_prep_inputs(
 
     source_txt_filenames = [file.name for file in sorted_files]
     treatment_inputs = special_treatment_inputs or [""] * len(sorted_files)
-    special_treatments = [raw_treatment.strip() for raw_treatment in treatment_inputs]
+    special_treatments = ["" if value == "None" else value.strip() for value in treatment_inputs]
 
     return metadata, target_values, actual_values, source_txt_filenames, special_treatments, None
 
@@ -979,6 +999,7 @@ def _build_embedded_workbook_rows(
     special_treatments: list[str],
     raman_shift: np.ndarray,
     intensity_columns: list[np.ndarray],
+    sample_types: list[str] | None = None,
 ) -> list[list[Any]]:
     """
     Build row-major cell data for the embedded-metadata Excel layout.
@@ -999,6 +1020,8 @@ def _build_embedded_workbook_rows(
         Raman shift grid (cm⁻¹).
     intensity_columns:
         One intensity vector per signal column.
+    sample_types:
+        Explicit sample identity per signal; blank identities require completion.
 
     Returns
     -------
@@ -1016,6 +1039,7 @@ def _build_embedded_workbook_rows(
         _pad_row([excel_label, metadata[excel_label]]) for _, excel_label, _ in METADATA_FIELD_SPECS
     ]
     rows.append(_pad_row([FILE_NAME_LABEL, *source_txt_filenames]))
+    rows.append(_pad_row([SAMPLE_TYPE_LABEL, *(sample_types or [""] * n_signals)]))
     rows.append(_pad_row([SPECIAL_TREATMENT_LABEL, *special_treatments]))
     rows.append(_pad_row([TARGET_CONCENTRATION_LABEL, *target_concentrations]))
     rows.append(_pad_row([ACTUAL_CONCENTRATION_LABEL, *actual_concentrations]))
@@ -1068,10 +1092,21 @@ def _embedded_workbook_to_excel_bytes(rows: list[list[Any]]) -> bytes:
     n_signals = len(rows[n_metadata]) - 1
     data_width = 1 + n_signals
     file_name_row_idx = n_metadata + 1
-    special_treatment_row_idx = n_metadata + 2
-    target_row_idx = n_metadata + 3
-    actual_row_idx = n_metadata + 4
-    header_row_idx = n_metadata + 5
+    sample_type_row_idx = (
+        next(i for i, row in enumerate(rows, 1) if row[0] == SAMPLE_TYPE_LABEL)
+        if any(row[0] == SAMPLE_TYPE_LABEL for row in rows)
+        else None
+    )
+    special_treatment_row_idx = next(
+        i for i, row in enumerate(rows, 1) if row[0] == SPECIAL_TREATMENT_LABEL
+    )
+    target_row_idx = next(
+        i for i, row in enumerate(rows, 1) if row[0] == TARGET_CONCENTRATION_LABEL
+    )
+    actual_row_idx = next(
+        i for i, row in enumerate(rows, 1) if row[0] == ACTUAL_CONCENTRATION_LABEL
+    )
+    header_row_idx = next(i for i, row in enumerate(rows, 1) if row[0] == RAMAN_SHIFT_HEADER)
 
     separator_row_indices = [
         field_number
@@ -1102,6 +1137,7 @@ def _embedded_workbook_to_excel_bytes(rows: list[list[Any]]) -> bytes:
             actual_row_idx,
             file_name_row_idx,
             special_treatment_row_idx,
+            sample_type_row_idx,
         }:
             worksheet.cell(row=row_idx, column=1).font = bold_font
             continue
@@ -1270,7 +1306,7 @@ def _render_prep_export_and_preview() -> None:
 
 def _process_uploaded_template(
     uploaded_template: Any,
-) -> tuple[dict[str, Any], dict[str, str] | None]:
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """
     Parse a setup-template JSON upload and compute merged widget values.
 
@@ -1311,6 +1347,11 @@ def _process_uploaded_template(
     else:
         message = "Template applied; metadata already matched the file."
         level = "info"
+    if payload.get("version") == TEMPLATE_VERSION and "signal_labels" in payload:
+        signal_labels, signal_warnings = validate_signal_preset(payload["signal_labels"])
+        warnings.extend(signal_warnings)
+        updated_values[PER_SIGNAL_PRESET_KEY] = signal_labels
+        message += f" Loaded labels for {len(signal_labels)} source filename(s)."
     return {"level": level, "message": message, "warnings": warnings}, updated_values
 
 
@@ -1375,7 +1416,23 @@ def _render_export_template(container: DeltaGenerator) -> None:
             for _, _, widget_key in METADATA_FIELD_SPECS
             if st.session_state.get(_template_selection_key(widget_key), False)
         )
-        export_payload = _build_template_export_payload(field_values, selected_keys)
+        include_signals = st.checkbox("Include per-signal Sample Type and Treatment", value=True)
+        st.caption(
+            "Signal labels restore only for matching source filenames. Concentrations are not stored."
+        )
+        signal_labels = {}
+        if include_signals:
+            for key, value in st.session_state.items():
+                prefix = "txt2excel_sample_type_"
+                if key.startswith(prefix) and value in SAMPLE_TYPE_OPTIONS:
+                    filename = key[len(prefix) :]
+                    signal_labels[filename] = {
+                        "sample_type": value,
+                        "special_treatment": st.session_state.get(
+                            f"txt2excel_treatment_{filename}", "None"
+                        ),
+                    }
+        export_payload = _build_template_export_payload(field_values, selected_keys, signal_labels)
         if export_payload is None:
             st.button(
                 "Export metadata to template",
@@ -1583,8 +1640,23 @@ def _sync_shift_defaults_for_upload(
         return common_shift, shift_error
 
     default_max_shift = str(common_shift.max()) if common_shift is not None else ""
-    file_signature = tuple(sorted(file.name for file in uploaded_files))
+    file_signature = tuple(
+        sorted(
+            (name, hashlib.sha256(content.encode()).hexdigest())
+            for name, content in file_contents.items()
+        )
+    )
     if st.session_state.get("txt2excel_file_signature") != file_signature:
+        for prefix in (
+            "txt2excel_sample_type_",
+            "txt2excel_treatment_",
+            "txt2excel_target_",
+            "txt2excel_actual_",
+        ):
+            _clear_session_keys_by_prefix(prefix)
+        st.session_state.pop(MERGED_PREVIEW_KEY, None)
+        st.session_state.pop(EXPORT_BYTES_KEY, None)
+        st.session_state.pop(EXPORT_FILENAME_KEY, None)
         st.session_state["txt2excel_file_signature"] = file_signature
         if default_max_shift:
             st.session_state["txt2excel_max_shift"] = default_max_shift
@@ -1678,7 +1750,11 @@ def render_prep_mode() -> None:
 
     st.markdown("### Per-signal labels and concentrations")
 
-    header_file, header_treatment, header_target, header_actual = st.columns([2, 1, 1, 1])
+    header_file, header_sample, header_treatment, header_target, header_actual = st.columns(
+        [2, 1.3, 1.3, 1, 1]
+    )
+    with header_sample:
+        st.markdown("**Sample Type***")
     with header_file:
         st.markdown("**File**")
     with header_treatment:
@@ -1691,8 +1767,29 @@ def render_prep_mode() -> None:
     target_inputs: list[str] = []
     actual_inputs: list[str] = []
     special_treatment_inputs: list[str] = []
+    sample_type_inputs: list[str] = []
     for file in sorted_files:
-        col_file, col_treatment, col_target, col_actual = st.columns([2, 1, 1, 1])
+        col_file, col_sample, col_treatment, col_target, col_actual = st.columns(
+            [2, 1.3, 1.3, 1, 1]
+        )
+        preset = st.session_state.get(PER_SIGNAL_PRESET_KEY, {}).get(file.name, {})
+        sample_key = f"txt2excel_sample_type_{file.name}"
+        treatment_key = f"txt2excel_treatment_{file.name}"
+        if sample_key not in st.session_state:
+            st.session_state[sample_key] = preset.get("sample_type") or None
+        if treatment_key not in st.session_state:
+            st.session_state[treatment_key] = preset.get("special_treatment", "None") or "None"
+        with col_sample:
+            sample_type_inputs.append(
+                st.selectbox(
+                    f"Sample Type for {file.name}",
+                    SAMPLE_TYPE_OPTIONS,
+                    index=None,
+                    key=sample_key,
+                    label_visibility="collapsed",
+                    placeholder="Select sample type",
+                )
+            )
         with col_file:
             st.markdown(
                 f"<div style='padding-top:6px'>{file.name}</div>",
@@ -1700,11 +1797,11 @@ def render_prep_mode() -> None:
             )
         with col_treatment:
             special_treatment_inputs.append(
-                st.text_input(
+                st.selectbox(
                     label=f"Treatment for {file.name}",
-                    key=f"txt2excel_treatment_{file.name}",
+                    options=SPECIAL_TREATMENT_OPTIONS,
+                    key=treatment_key,
                     label_visibility="collapsed",
-                    placeholder="e.g. heat kill",
                 )
             )
         with col_target:
@@ -1749,6 +1846,9 @@ def render_prep_mode() -> None:
     )
 
     if convert_clicked:
+        if any(value not in SAMPLE_TYPE_OPTIONS for value in sample_type_inputs):
+            st.error("Select Sample Type for every signal before exporting.")
+            return
         if not output_file_name.strip():
             st.warning("Please enter an output file name.")
             return
@@ -1797,6 +1897,7 @@ def render_prep_mode() -> None:
             actual_concentrations=actual_values,
             source_txt_filenames=source_txt_filenames,
             special_treatments=special_treatments,
+            sample_types=sample_type_inputs,
             raman_shift=raman_shift,
             intensity_columns=intensity_columns,
         )
@@ -1810,6 +1911,7 @@ def render_prep_mode() -> None:
             "actual_concentrations": actual_values,
             "source_txt_filenames": source_txt_filenames,
             "special_treatments": special_treatments,
+            "sample_types": sample_type_inputs,
         }
         st.session_state[EXPORT_BYTES_KEY] = excel_bytes
         st.session_state[EXPORT_FILENAME_KEY] = export_filename

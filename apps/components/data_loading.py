@@ -109,24 +109,24 @@ def render_upload_load_status(
 
 @st.cache_data
 def load_from_uploaded(
-    _files_data: tuple[tuple[str, bytes], ...],
+    files_data: tuple[tuple[str, bytes], ...],
 ) -> LoadedDataBundle:
     """
     Load SERS data from uploaded file bytes and convert to tidy format.
 
     Args:
-        _files_data: Tuple of (filename, file_bytes) per uploaded file.
-            Leading underscore to exclude from Streamlit's cache key display.
+        files_data: Tuple of (filename, file_bytes) per uploaded file.
+            Names and bytes are both included in the Streamlit cache key.
 
     Returns:
         Parsed upload bundle. Empty dataframes are returned on failure.
     """
-    if not _files_data:
+    if not files_data:
         logger.warning("load_from_uploaded called with no files")
         return LoadedDataBundle(wide_df=pd.DataFrame(), tidy_df=pd.DataFrame())
-    logger.info("Loading %d uploaded file(s): %s", len(_files_data), [n for n, _ in _files_data])
+    logger.info("Loading %d uploaded file(s): %s", len(files_data), [n for n, _ in files_data])
     try:
-        bundle = load_uploaded_bundle(_files_data)
+        bundle = load_uploaded_bundle(files_data)
     except BadZipFile:
         message = (
             "This file is not a valid Excel workbook (.xlsx). "
@@ -136,7 +136,7 @@ def load_from_uploaded(
         return LoadedDataBundle(
             wide_df=pd.DataFrame(),
             tidy_df=pd.DataFrame(),
-            load_report=_upload_failure_report(_files_data, message),
+            load_report=_upload_failure_report(files_data, message),
         )
     except OSError as exc:
         message = f"The upload could not be read from disk. Details: {exc}"
@@ -144,7 +144,7 @@ def load_from_uploaded(
         return LoadedDataBundle(
             wide_df=pd.DataFrame(),
             tidy_df=pd.DataFrame(),
-            load_report=_upload_failure_report(_files_data, message),
+            load_report=_upload_failure_report(files_data, message),
         )
     except Exception as exc:
         message = f"An unexpected error occurred while reading the uploaded files. Details: {exc}"
@@ -152,7 +152,7 @@ def load_from_uploaded(
         return LoadedDataBundle(
             wide_df=pd.DataFrame(),
             tidy_df=pd.DataFrame(),
-            load_report=_upload_failure_report(_files_data, message),
+            load_report=_upload_failure_report(files_data, message),
         )
 
     if bundle.wide_df.empty or bundle.tidy_df.empty:

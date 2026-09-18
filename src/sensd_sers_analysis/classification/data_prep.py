@@ -3,7 +3,7 @@ Serotype classification data preparation: strictly clean rows for ML.
 
 Filters to Pass sensors only, drops outlier-flagged points from intra-sensor
 regression, and assigns ``(N + 1)``-class targets: ``N`` serotypes observed on
-positive-CFU rows plus the **Rinsate** class (zero CFU).
+bacterial samples plus the explicitly identified **Rinsate** controls.
 """
 
 from typing import Optional
@@ -14,7 +14,7 @@ from sensd_sers_analysis.assessment import (
     fit_concentration_regression_cleaned,
     get_global_model_consistency_qa,
 )
-from sensd_sers_analysis.processing import extract_scalar_concentration
+from sensd_sers_analysis.processing.metadata import sample_type_masks
 
 
 def prepare_classification_dataset(
@@ -34,9 +34,8 @@ def prepare_classification_dataset(
 
     - Only rows from sensors marked Pass in Global Assessment (integral_area).
     - Re-runs intra-sensor outlier detection on integral_area; keeps inliers only.
-    - **Rinsate** when concentration is zero (or ``concentration_group`` is
-      exactly ``"0 CFU"`` when no numeric concentration is available).
-    - Positive-CFU rows: ``target`` is the row's ``serotype`` string; rows with
+    - **Rinsate** only for explicit ``sample_type = Rinsate control``.
+    - Bacteria sample rows: ``target`` is the row's ``serotype`` string; rows with
       missing or unusable serotype labels are dropped.
 
     Args:
@@ -52,7 +51,7 @@ def prepare_classification_dataset(
 
     Returns:
         DataFrame with ``target`` column (serotype names on positive CFU,
-        ``"Rinsate"`` on zero CFU). No merges; no dropna on feature columns.
+        ``"Rinsate"`` on explicit controls). No merges; no dropna on feature columns.
     """
     required = [sensor_col, serotype_col, concentration_group_col]
     if any(c not in df.columns for c in required):
@@ -71,9 +70,8 @@ def prepare_classification_dataset(
     all_sensors = set(df[sensor_col].dropna().astype(str).unique())
     keep_indices: set[int] = set()
 
-    for (sero, feat), excluded in excluded_map.items():
-        if feat != inlier_feature:
-            continue
+    for sero in df[serotype_col].dropna().astype(str).unique():
+        excluded = excluded_map.get((sero, inlier_feature), set())
         pass_sensors = all_sensors - excluded
         if not pass_sensors:
             continue
@@ -85,17 +83,12 @@ def prepare_classification_dataset(
         if subset.empty:
             continue
 
-        # 2. Rinsate: concentration == 0 or concentration_group == "0 CFU" (EXACT)
-        if concentration_col in df.columns:
-            conc = extract_scalar_concentration(subset[concentration_col], subset)
-            rinsate_mask = conc.notna() & (conc <= 0)
-        else:
-            rinsate_mask = subset[concentration_group_col].astype(str) == "0 CFU"
+        rinsate_mask, bacteria_mask = sample_type_masks(subset)
         for idx in subset.index[rinsate_mask]:
             keep_indices.add(idx)
 
-        # 3. >0 CFU: run outlier detection, keep inliers only
-        pos_mask = ~rinsate_mask
+        # Fit only loggable bacterial readings; retain non-loggable sample identities.
+        pos_mask = bacteria_mask
         subset_pos = subset.loc[pos_mask]
         if subset_pos.empty:
             continue
@@ -109,6 +102,8 @@ def prepare_classification_dataset(
             continue
 
         valid = subset_pos[[log_conc_col, inlier_feature]].notna().all(axis=1)
+        # Non-loggable bacterial samples remain bacteria, including zero counts.
+        keep_indices.update(subset_pos.index[~valid])
         sub_fit = subset_pos.loc[valid]
         inlier_mask = ~cres.outlier_mask
         for idx in sub_fit.index[inlier_mask]:
@@ -119,16 +114,12 @@ def prepare_classification_dataset(
 
     out = df.loc[list(keep_indices)].copy()
 
-    # 4. (N + 1)-class labeling: Rinsate vs serotype string on positive CFU
+    # Sample identity defines the class independently of measured concentration.
     out["target"] = "Unknown"
-    if concentration_col in out.columns:
-        conc = extract_scalar_concentration(out[concentration_col], out)
-        rinsate_mask = conc.notna() & (conc <= 0)
-    else:
-        rinsate_mask = out[concentration_group_col].astype(str) == "0 CFU"
+    rinsate_mask, bacteria_mask = sample_type_masks(out)
     out.loc[rinsate_mask, "target"] = "Rinsate"
 
-    pos_unknown = out["target"] == "Unknown"
+    pos_unknown = (out["target"] == "Unknown") & bacteria_mask
     if serotype_col in out.columns:
         sero_str = out[serotype_col].astype(str).str.strip()
         valid_sero = sero_str.notna() & (sero_str != "") & ~sero_str.str.lower().eq("nan")

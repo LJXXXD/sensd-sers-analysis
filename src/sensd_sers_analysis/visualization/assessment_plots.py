@@ -185,6 +185,285 @@ def plot_batch_boxplot(
     return fig
 
 
+def plot_sensor_batch_stability(
+    df: pd.DataFrame,
+    batch_table: pd.DataFrame,
+    feature_col: str,
+    *,
+    sensor_col: str = "sensor_id",
+    z_threshold: float = 2.0,
+    title: Optional[str] = None,
+    figsize: tuple[float, float] = (10, 5),
+    ax: Optional[plt.Axes] = None,
+) -> plt.Figure:
+    """
+    Between-sensor stability: each sensor's mean vs the batch consensus band.
+
+    A boxplot fabricates quartiles/IQR from 1–2 replicates and visually rewards
+    single-measurement sensors (a flat line looks "perfect"), while really
+    comparing within-sensor spread. This plot instead answers *do the sensors
+    agree with each other?*:
+
+    - Individual reads are drawn as jittered dots, so tiny replicate counts are
+      shown honestly (one dot means one measurement).
+    - Each sensor's mean is a marker, with a ±SD error bar only when it has ≥2
+      reads (single-read sensors get no error bar, not a zero-width one).
+    - The batch consensus is a horizontal line at ``batch_mean`` with a shaded
+      ``batch_mean ± z_threshold·batch_std`` band.
+    - Sensors whose mean falls outside the band (``|z_from_batch| > z_threshold``)
+      are highlighted as deviating.
+
+    Parameters
+    ----------
+    df:
+        Feature dataframe restricted to the analyzed serotype/target.
+    batch_table:
+        Output of :func:`compute_batch_variance` (one row per sensor with
+        ``mean``, ``std``, ``n_samples``, ``batch_mean``, ``batch_std``,
+        ``z_from_batch``).
+    feature_col:
+        Feature plotted on the y-axis.
+    sensor_col:
+        Sensor identifier column.
+    z_threshold:
+        Deviation cutoff for highlighting and the band width.
+    title, figsize, ax:
+        Standard matplotlib overrides.
+
+    Returns
+    -------
+    plt.Figure
+        The rendered figure.
+    """
+    required = [feature_col, sensor_col]
+    if any(c not in df.columns for c in required):
+        raise ValueError(f"Required columns '{feature_col}' or '{sensor_col}' not in DataFrame.")
+    if batch_table.empty:
+        raise ValueError("No batch variance rows to plot.")
+
+    df_clean = df.dropna(subset=[feature_col])
+    if df_clean.empty:
+        raise ValueError("No valid data for sensor batch stability plot.")
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.get_figure()
+
+    ordered = batch_table.sort_values("mean", na_position="last").reset_index(drop=True)
+    batch_mean = float(ordered["batch_mean"].iloc[0]) if "batch_mean" in ordered.columns else np.nan
+    batch_std = float(ordered["batch_std"].iloc[0]) if "batch_std" in ordered.columns else np.nan
+
+    # Batch consensus line + deviation band.
+    if np.isfinite(batch_mean):
+        ax.axhline(
+            batch_mean,
+            color="black",
+            linestyle="-",
+            linewidth=1.5,
+            alpha=0.7,
+            label="Batch mean",
+            zorder=2,
+        )
+    if np.isfinite(batch_mean) and np.isfinite(batch_std) and batch_std > 0:
+        ax.axhspan(
+            batch_mean - z_threshold * batch_std,
+            batch_mean + z_threshold * batch_std,
+            color="green",
+            alpha=0.08,
+            label=f"±{z_threshold:g}·batch SD",
+            zorder=1,
+        )
+
+    rng = np.random.default_rng(0)
+    deviating_labelled = False
+    for position, (_, row) in enumerate(ordered.iterrows()):
+        sensor = row[sensor_col]
+        sensor_mean = float(row["mean"]) if np.isfinite(row["mean"]) else np.nan
+        sensor_std = float(row["std"]) if "std" in row and np.isfinite(row["std"]) else np.nan
+        n_samples = int(row["n_samples"]) if "n_samples" in row else 0
+        z_val = float(row["z_from_batch"]) if "z_from_batch" in row else np.nan
+        is_deviating = np.isfinite(z_val) and abs(z_val) > z_threshold
+        color = "crimson" if is_deviating else "steelblue"
+
+        points = df_clean.loc[df_clean[sensor_col] == sensor, feature_col].astype(float).values
+        if len(points) > 0:
+            jitter = rng.uniform(-0.12, 0.12, size=len(points))
+            ax.scatter(
+                np.full(len(points), position) + jitter,
+                points,
+                s=28,
+                color=color,
+                alpha=0.35,
+                edgecolors="white",
+                linewidths=0.4,
+                zorder=3,
+            )
+
+        # Mean marker with a ±SD error bar only when spread is defined (n >= 2).
+        yerr = sensor_std if (n_samples >= 2 and np.isfinite(sensor_std)) else None
+        ax.errorbar(
+            position,
+            sensor_mean,
+            yerr=yerr,
+            fmt="D",
+            markersize=8,
+            color=color,
+            ecolor=color,
+            elinewidth=1.5,
+            capsize=4,
+            zorder=4,
+            label=("Deviating sensor" if (is_deviating and not deviating_labelled) else None),
+        )
+        if is_deviating:
+            deviating_labelled = True
+        if n_samples < 2:
+            ax.annotate(
+                "n=1",
+                (position, sensor_mean),
+                textcoords="offset points",
+                xytext=(8, 0),
+                fontsize=7,
+                color="gray",
+                va="center",
+            )
+
+    ax.set_xticks(range(len(ordered)))
+    ax.set_xticklabels(ordered[sensor_col].astype(str).tolist())
+    ax.tick_params(axis="x", rotation=45 if len(ordered) > 5 else 0)
+    ax.set_xlabel(sensor_col.replace("_", " ").title())
+    ax.set_ylabel(feature_col.replace("_", " ").title())
+    ax.set_title(
+        title
+        or (
+            f"Between-Sensor Stability: {feature_col.replace('_', ' ').title()} "
+            "(mean ± SD vs batch band)"
+        ),
+        fontweight="bold",
+        pad=12,
+    )
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(loc="best", fontsize=8, framealpha=0.85)
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    return fig
+
+
+def plot_signal_vs_concentration_cv(
+    consistency_table: pd.DataFrame,
+    *,
+    sensor_col: str = "sensor_id",
+    feature_col: str = "feature",
+    signal_cv_col: str = "cv_filtered",
+    conc_cv_col: str = "conc_cv_raw",
+    title: Optional[str] = None,
+    figsize: tuple[float, float] = (11, 5),
+    ax: Optional[plt.Axes] = None,
+) -> plt.Figure:
+    """
+    Grouped bars of signal CV% (per feature) vs sample concentration CV% per sensor.
+
+    This makes the sensor-added variability explicit: for each sensor, one bar
+    per feature shows the SERS **signal** CV%, and a final distinct bar shows the
+    actual-CFU **concentration** CV% (the inherent sample spread, shared across
+    features). Signal bars towering over the concentration bar mean the sensor
+    is adding variance beyond the sample; bars near the concentration bar mean
+    the observed spread is mostly the sample itself.
+
+    Undefined CVs (e.g. a single replicate) are NaN and simply draw no bar,
+    rather than a misleading zero-height bar.
+
+    Parameters
+    ----------
+    consistency_table:
+        Long per-(sensor, feature) table from
+        :func:`get_consistency_summary_table` with ``signal_cv_col`` and
+        ``conc_cv_col`` as fractions.
+    sensor_col, feature_col:
+        Grouping columns.
+    signal_cv_col:
+        Signal CV column (fraction) plotted per feature.
+    conc_cv_col:
+        Concentration CV column (fraction), feature-independent per sensor.
+    title, figsize, ax:
+        Standard matplotlib overrides.
+
+    Returns
+    -------
+    plt.Figure
+        The rendered figure.
+    """
+    required = [sensor_col, feature_col, signal_cv_col]
+    if any(c not in consistency_table.columns for c in required):
+        raise ValueError(f"consistency_table missing one of {required}.")
+    if consistency_table.empty:
+        raise ValueError("No consistency rows to plot.")
+
+    sensors = consistency_table[sensor_col].astype(str).drop_duplicates().tolist()
+    features = consistency_table[feature_col].astype(str).drop_duplicates().tolist()
+    has_conc = conc_cv_col in consistency_table.columns
+
+    # Signal CV% per (sensor, feature); concentration CV% per sensor (first row).
+    signal_pct: dict[tuple[str, str], float] = {}
+    conc_pct: dict[str, float] = {}
+    for _, row in consistency_table.iterrows():
+        sensor = str(row[sensor_col])
+        feature = str(row[feature_col])
+        signal_pct[(sensor, feature)] = float(row[signal_cv_col]) * 100
+        if has_conc and sensor not in conc_pct:
+            conc_pct[sensor] = float(row[conc_cv_col]) * 100
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.get_figure()
+
+    n_groups = len(features) + (1 if has_conc else 0)
+    bar_width = 0.8 / max(n_groups, 1)
+    x = np.arange(len(sensors), dtype=float)
+    palette = sns.color_palette("muted", n_colors=max(len(features), 1))
+
+    for i, feature in enumerate(features):
+        heights = [signal_pct.get((s, feature), np.nan) for s in sensors]
+        ax.bar(
+            x + (i - (n_groups - 1) / 2) * bar_width,
+            heights,
+            bar_width,
+            color=palette[i],
+            label=f"Signal: {feature}",
+            zorder=3,
+        )
+
+    if has_conc:
+        heights = [conc_pct.get(s, np.nan) for s in sensors]
+        ax.bar(
+            x + (len(features) - (n_groups - 1) / 2) * bar_width,
+            heights,
+            bar_width,
+            color="dimgray",
+            hatch="//",
+            edgecolor="white",
+            label="Concentration (sample spread)",
+            zorder=3,
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(sensors)
+    ax.tick_params(axis="x", rotation=45 if len(sensors) > 5 else 0)
+    ax.set_xlabel(sensor_col.replace("_", " ").title())
+    ax.set_ylabel("CV (%)")
+    ax.set_title(
+        title or "Signal CV% vs Sample Concentration CV% by Sensor",
+        fontweight="bold",
+        pad=12,
+    )
+    ax.legend(loc="best", fontsize=8, framealpha=0.85)
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    return fig
+
+
 def plot_concentration_regression(
     df: pd.DataFrame,
     feature_col: str,

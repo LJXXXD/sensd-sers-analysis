@@ -14,6 +14,7 @@ from sensd_sers_analysis.assessment import (
     ASSESSMENT_GROUP_COLS,
     compute_batch_variance,
     compute_degradation,
+    filter_outliers,
     get_consistency_summary_table,
     identify_deviating_sensors,
     prepare_degradation_data,
@@ -22,9 +23,52 @@ from sensd_sers_analysis.config import BATCH_DEVIATION_Z_THRESHOLD
 from sensd_sers_analysis.processing import filter_by_selections
 from sensd_sers_analysis.report import build_sensor_assessment_pdf
 from sensd_sers_analysis.visualization.assessment_plots import (
-    plot_batch_boxplot,
     plot_degradation_trend,
+    plot_sensor_batch_stability,
 )
+
+
+def _clean_degradation_replicates(
+    df: pd.DataFrame,
+    feature: str,
+    outlier_method: str,
+) -> pd.DataFrame:
+    """
+    Remove outlier reads within each test session before the degradation fit.
+
+    Outliers are dropped *within* each ``(sensor_id, test_id)`` group so aberrant
+    individual reads do not distort a session's mean. Filtering is deliberately
+    scoped to within-session replicates and never across time, so a genuine
+    across-test jump (e.g. a contamination/carryover spike) is preserved in the
+    trend rather than silently removed.
+
+    Parameters
+    ----------
+    df:
+        Assessment dataframe already restricted to one serotype/target.
+    feature:
+        Feature column used for outlier detection.
+    outlier_method:
+        ``"iqr"`` or ``"zscore"``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Rows surviving within-session outlier removal.
+    """
+
+    if feature not in df.columns or df.empty:
+        return df
+    group_cols = [c for c in ("sensor_id", "test_id") if c in df.columns]
+    if not group_cols:
+        inliers, _ = filter_outliers(df, feature, method=outlier_method)
+        return inliers
+
+    cleaned_parts = [
+        filter_outliers(group, feature, method=outlier_method)[0]
+        for _, group in df.groupby(group_cols, dropna=False)
+    ]
+    return pd.concat(cleaned_parts) if cleaned_parts else df
 
 
 def build_sensor_assessment_artifacts(
@@ -52,7 +96,7 @@ def build_sensor_assessment_artifacts(
         filtered_features,
         {
             "serotype": selection.serotype,
-            "concentration_group": selection.concentration_group,
+            "target_concentration_group": selection.target_concentration_group,
         },
     )
     consistency_group_cols = [
@@ -61,13 +105,15 @@ def build_sensor_assessment_artifacts(
     if not consistency_group_cols:
         consistency_group_cols = ["sensor_id"] if "sensor_id" in assessment_df.columns else None
 
+    display_feature_cols = list(selection.consistency_features) or [selection.feature]
+
     display_consistency_table = pd.DataFrame()
     pdf_consistency_table = pd.DataFrame()
     consistency_error = None
     try:
         display_consistency_table = get_consistency_summary_table(
             assessment_df,
-            feature_cols=[selection.feature],
+            feature_cols=display_feature_cols,
             group_cols=consistency_group_cols,
             outlier_method=selection.outlier_method,
         )
@@ -83,8 +129,13 @@ def build_sensor_assessment_artifacts(
     degradation_table = pd.DataFrame()
     degradation_error = None
     try:
-        degradation_input_df = prepare_degradation_data(
+        degradation_source = _clean_degradation_replicates(
             assessment_df,
+            selection.feature,
+            selection.outlier_method,
+        )
+        degradation_input_df = prepare_degradation_data(
+            degradation_source,
             selection.feature,
             test_col="test_id",
             date_col="date",
@@ -152,6 +203,8 @@ def build_sensor_assessment_artifacts(
 
 def build_sensor_assessment_pdf_bytes(
     artifacts: SensorAssessmentArtifacts,
+    *,
+    degradation_feature: str | None = None,
 ) -> bytes:
     """
     Build the sensor assessment PDF from precomputed artifacts.
@@ -160,6 +213,10 @@ def build_sensor_assessment_pdf_bytes(
     ----------
     artifacts:
         Precomputed artifacts returned by `build_sensor_assessment_artifacts`.
+    degradation_feature:
+        Feature column plotted for the degradation trend. Defaults to
+        ``artifacts.selection.feature``; pass an explicit value when the
+        degradation view uses a feature different from the consistency selection.
 
     Returns
     -------
@@ -167,11 +224,12 @@ def build_sensor_assessment_pdf_bytes(
         PDF document bytes.
     """
 
+    degradation_column = degradation_feature or artifacts.selection.feature
     degradation_fig = None
     if not artifacts.degradation_input_df.empty and len(artifacts.degradation_input_df) >= 2:
         degradation_fig = plot_degradation_trend(
             artifacts.degradation_input_df,
-            artifacts.selection.feature,
+            degradation_column,
             "test_ordinal",
             group_col=(
                 "sensor_id" if "sensor_id" in artifacts.degradation_input_df.columns else None
@@ -179,12 +237,17 @@ def build_sensor_assessment_pdf_bytes(
         )
 
     batch_fig = None
-    if "sensor_id" in artifacts.assessment_df.columns and not artifacts.assessment_df.empty:
-        batch_fig = plot_batch_boxplot(
+    if (
+        "sensor_id" in artifacts.assessment_df.columns
+        and not artifacts.assessment_df.empty
+        and not artifacts.pdf_batch_table.empty
+    ):
+        batch_fig = plot_sensor_batch_stability(
             artifacts.assessment_df,
+            artifacts.pdf_batch_table,
             artifacts.selection.feature,
             sensor_col="sensor_id",
-            group_col=None,
+            z_threshold=BATCH_DEVIATION_Z_THRESHOLD,
         )
 
     return build_sensor_assessment_pdf(
@@ -207,6 +270,7 @@ def build_sensor_assessment_pdf_bytes(
         outlier_method=artifacts.selection.outlier_method,
         report_title=(
             "SERS Sensor Assessment — "
-            f"{artifacts.selection.serotype}, {artifacts.selection.concentration_group}"
+            f"{artifacts.selection.serotype}, "
+            f"{artifacts.selection.target_concentration_group}"
         ),
     )

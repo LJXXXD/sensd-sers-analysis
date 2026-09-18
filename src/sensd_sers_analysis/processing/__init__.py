@@ -25,6 +25,7 @@ from .filters import (
 from .metadata import (
     add_concentration_group,
     add_log_concentration,
+    add_target_concentration_group,
     extract_scalar_concentration,
     preprocess_metadata,
     sorted_unique_canonical_serotypes,
@@ -46,6 +47,7 @@ from .targeted_peak_features import (
 
 __all__ = [
     "add_concentration_group",
+    "add_target_concentration_group",
     "add_pca_features",
     "BASIC_FEATURE_COLUMNS",
     "DEFAULT_GLOBAL_QA_FEATURES",

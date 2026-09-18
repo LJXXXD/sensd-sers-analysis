@@ -14,6 +14,15 @@ BATCH_DEVIATION_Z_THRESHOLD = 2.0
 CLASSIFICATION_INLIER_FEATURE = "integral_area"
 CLASSIFICATION_QA_FEATURES = (CLASSIFICATION_INLIER_FEATURE,)
 VALIDATION_ACCURACY_MIN_THRESHOLD = 0.80
+# Repeated sensor-holdout rounds for validation ML metrics (mean across splits).
+VALIDATION_N_SPLITS = 5
+
+# Minimum held-out (test-sensor) rows required before an ML metric
+# (accuracy / FP / FN / quantification) is reported for a validation-table cell.
+# Below this, per-category estimates from the single random split are too noisy
+# to trust, so the cell is left blank. This is a provisional guard, not a
+# validated evaluation design.
+VALIDATION_MIN_EVAL_ROWS = 5
 
 CLASSIFICATION_TEST_SIZE = 0.2
 CLASSIFICATION_RANDOM_STATE = 42
@@ -63,6 +72,8 @@ REGRESSION_MTL_LAMBDA_REGRESSION = 1.0
 
 __all__ = [
     "VALIDATION_ACCURACY_MIN_THRESHOLD",
+    "VALIDATION_MIN_EVAL_ROWS",
+    "VALIDATION_N_SPLITS",
     "BATCH_DEVIATION_Z_THRESHOLD",
     "GLOBAL_QA_IQR_WHIS",
     "GLOBAL_QA_R2_MIN_THRESHOLD",

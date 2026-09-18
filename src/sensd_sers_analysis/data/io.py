@@ -9,6 +9,7 @@ wide_to_tidy for plotting.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Union
@@ -55,25 +56,92 @@ RAMAN_SHIFT_ROW_LABEL = "raman shift"
 PER_SIGNAL_ROW_LABEL_TO_COLUMN = {
     "file name": "source_txt_filename",
     "special treatment": "special_treatment",
+    "sample type": "sample_type",
 }
 
-# Column names for sample identification and metadata
+# Preferred display/order for known metadata columns. The loader is generic and
+# will surface ANY file-level metadata row as a column (see
+# ``_normalize_metadata_key``); this list only controls ordering for the known
+# fields. Unknown/new rows are appended after these, so adding metadata rows to
+# the Excel template stays forward-compatible without touching the loader.
 META_COLS = [
+    # Instrument geometry
+    "disk_diameter_nm",
+    "periodicity_um",
+    "thickness_nm",
+    "core_diameter_um",
     "sensor_model",
+    # Acquisition settings
+    "integration_time_ms",
+    "scan_average",
+    # Sample / run identification
     "sensor_id",
     "test_id",
     "connection_id",
     "serotype",
+    "rinsate_type",
     "date",
+    "testing_time",
     "operator",
+    "notes",
+    # Per-signal columns
+    "target_concentration",
     "concentration",
     "filename",
     "source_txt_filename",
     "special_treatment",
+    "sample_type",
     "signal_index",
 ]
+
+# Per-signal columns produced from the concentration block and provenance rows.
+# These must not be overwritten by generic file-level metadata parsing.
+PER_SIGNAL_COLUMNS = frozenset(
+    {
+        "target_concentration",
+        "concentration",
+        "filename",
+        "source_txt_filename",
+        "special_treatment",
+        "sample_type",
+        "signal_index",
+    }
+)
+
+# Known file-level metadata columns guaranteed to exist on every loaded file
+# (blank when the source row is empty). Keeps the schema stable across files so
+# optional fields like ``notes`` or ``testing_time`` do not silently disappear
+# when one workbook leaves them blank.
+KNOWN_FILE_LEVEL_COLUMNS = tuple(c for c in META_COLS if c not in PER_SIGNAL_COLUMNS)
 RAMAN_SHIFT_DECIMALS = 2
 RS_COL_PREFIX = "rs_"
+
+
+def _normalize_metadata_key(raw_key: str) -> str:
+    """
+    Convert a raw column-A metadata label into a canonical snake_case column name.
+
+    The mapping mirrors the prep tool's field keys (e.g. ``"Disk Diameter (nm)"``
+    -> ``"disk_diameter_nm"``, ``"Core Diameter (µm)"`` -> ``"core_diameter_um"``)
+    so units are preserved in the name and micro signs collapse to ``u``. Any
+    label the loader has never seen is still converted deterministically, which
+    keeps the loader forward-compatible with new metadata rows.
+
+    Parameters
+    ----------
+    raw_key:
+        Raw label read from column A of the workbook.
+
+    Returns
+    -------
+    str
+        Snake_case column name (empty string if the label has no usable chars).
+    """
+
+    key = str(raw_key).strip().lower()
+    key = key.replace("µ", "u").replace("μ", "u")
+    key = re.sub(r"[^a-z0-9]+", "_", key)
+    return key.strip("_")
 
 
 def _normalize_column_a_labels(series: pd.Series) -> pd.Series:
@@ -226,13 +294,22 @@ def _align_per_signal_values(
 
 def _parse_embedded_format(
     file_path: Path,
-) -> tuple[dict[str, str], np.ndarray, np.ndarray, list[float], dict[str, list[str]]]:
+) -> tuple[dict[str, str], np.ndarray, np.ndarray, list[float], list[float], dict[str, list[str]]]:
     """
     Parse a SERS Excel file in the embedded-metadata format.
 
     Returns:
         Tuple of (metadata_dict with normalized keys, raman_shift, signals_matrix,
-        concentrations, per_signal_labels).
+        target_concentrations, actual_concentrations, per_signal_labels).
+
+    Notes
+    -----
+    Numeric analysis uses the **Actual Concentration** row when present (the
+    measured CFU/mL per signal). The **Target Concentration** row (the nominal
+    dosing level) is captured separately so downstream grouping can rely on the
+    intended target while sample-to-sample variability is derived from the
+    actual values. Legacy single-row workbooks expose only actual values; target
+    values are then filled with ``NaN``.
     """
     df = pd.read_excel(file_path, header=None)
 
@@ -249,6 +326,14 @@ def _parse_embedded_format(
     else:
         concentration_row_idx = first_concentration_row_idx
 
+    target_mask = keys_norm.str.contains("target concentration", na=False)
+    if target_mask.any():
+        target_row_idx: int | None = int(target_mask.idxmax())
+    elif first_concentration_row_idx != concentration_row_idx:
+        target_row_idx = first_concentration_row_idx
+    else:
+        target_row_idx = None
+
     metadata = _parse_file_metadata_block(
         df,
         first_concentration_row_idx=first_concentration_row_idx,
@@ -264,6 +349,14 @@ def _parse_embedded_format(
         raise ValueError(
             f"No valid concentrations in row {concentration_row_idx + 1} of {file_path.name}"
         )
+
+    # Target concentrations aligned to the same valid signal columns. Blank target
+    # cells become NaN so downstream code can fall back to the actual-derived bin.
+    if target_row_idx is not None:
+        target_numeric = pd.to_numeric(df.iloc[target_row_idx, 1:], errors="coerce")
+        target_concentrations = target_numeric.loc[valid_col_indices].tolist()
+    else:
+        target_concentrations = [float("nan")] * len(valid_col_indices)
 
     # Data block: locate by first row where col 0 is numeric (Raman shift)
     after_conc = df.iloc[concentration_row_idx + 1 :]
@@ -294,16 +387,7 @@ def _parse_embedded_format(
         concentration_row_idx=concentration_row_idx,
     )
 
-    return metadata, raman_shift, signals, concentrations, per_signal_labels
-
-
-def _metadata_get(metadata: dict[str, str], *keys: str) -> str:
-    """Look up metadata by multiple possible key variants (e.g., 'sensor model', 'sensor_model')."""
-    for key in keys:
-        val = metadata.get(key, "")
-        if val != "":
-            return str(val).strip()
-    return ""
+    return metadata, raman_shift, signals, target_concentrations, concentrations, per_signal_labels
 
 
 def _load_signal_file(file_path: str | Path) -> pd.DataFrame:
@@ -312,7 +396,9 @@ def _load_signal_file(file_path: str | Path) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
 
-    metadata, raman_shift, signals, concentrations, per_signal_labels = _parse_embedded_format(path)
+    metadata, raman_shift, signals, target_concentrations, concentrations, per_signal_labels = (
+        _parse_embedded_format(path)
+    )
     n_signals = signals.shape[1]
     rs_rounded = np.round(raman_shift, RAMAN_SHIFT_DECIMALS)
     rs_col_names = [f"{RS_COL_PREFIX}{v:.{RAMAN_SHIFT_DECIMALS}f}" for v in rs_rounded]
@@ -326,22 +412,38 @@ def _load_signal_file(file_path: str | Path) -> pd.DataFrame:
         n_signals=n_signals,
     )
 
-    meta_df = pd.DataFrame(
-        {
-            "sensor_model": _metadata_get(metadata, "sensor model", "sensor_model"),
-            "sensor_id": metadata.get("sensor id", metadata.get("sensor_id", "")),
-            "test_id": metadata.get("test id", metadata.get("test_id", "")),
-            "connection_id": metadata.get("connection id", metadata.get("connection_id", "")),
-            "serotype": metadata.get("serotype", ""),
-            "date": _metadata_get(metadata, "date"),
-            "operator": _metadata_get(metadata, "operator"),
-            "concentration": concentrations,
-            "filename": path.name,
-            "source_txt_filename": source_txt_filenames,
-            "special_treatment": special_treatments,
-            "signal_index": np.arange(n_signals),
-        }
-    )
+    # Generic file-level metadata: every parsed row becomes a column so no
+    # metadata is silently dropped. Known fields land on canonical names via
+    # ``_normalize_metadata_key``; unknown fields are preserved verbatim.
+    file_level_columns: dict[str, object] = {}
+    for raw_key, value in metadata.items():
+        column = _normalize_metadata_key(raw_key)
+        if not column or column in PER_SIGNAL_COLUMNS:
+            continue
+        file_level_columns[column] = value
+
+    # Guarantee a stable schema: known file-level fields always exist (blank
+    # when the workbook left them empty) so downstream code can rely on them.
+    for column in KNOWN_FILE_LEVEL_COLUMNS:
+        file_level_columns.setdefault(column, "")
+
+    per_signal_columns: dict[str, object] = {
+        "target_concentration": target_concentrations,
+        "concentration": concentrations,
+        "filename": path.name,
+        "source_txt_filename": source_txt_filenames,
+        "special_treatment": special_treatments,
+        "sample_type": _align_per_signal_values(
+            per_signal_labels.get("sample_type"), n_signals=n_signals
+        ),
+        "signal_index": np.arange(n_signals),
+    }
+
+    meta_df = pd.DataFrame({**file_level_columns, **per_signal_columns})
+    ordered = [c for c in META_COLS if c in meta_df.columns]
+    extras = [c for c in meta_df.columns if c not in META_COLS]
+    meta_df = meta_df[ordered + extras]
+
     signals_df = pd.DataFrame(signals.T, columns=rs_col_names)
     return pd.concat([meta_df, signals_df], axis=1)
 

@@ -29,6 +29,7 @@ from .visualization import (
     plot_batch_boxplot,
     plot_degradation_trend,
     plot_feature_distribution,
+    plot_sensor_batch_stability,
     plot_spectra,
 )
 
@@ -53,6 +54,7 @@ __all__ = [
     "plot_batch_boxplot",
     "plot_degradation_trend",
     "plot_feature_distribution",
+    "plot_sensor_batch_stability",
     "plot_spectra",
     "wide_to_tidy",
     "__version__",

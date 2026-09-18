@@ -37,12 +37,18 @@ DEFAULT_FILTER_ORDER = [
     "operator",
     "filename",
     "source_txt_filename",
+    "sample_type",
     "special_treatment",
     "connection_id",
 ]
 
 # Columns we never use as filters (spectral data)
 NON_FILTER_COLS = {"raman_shift", "intensity"}
+
+# Free-text / annotation metadata: loaded and viewable, but not offered as
+# filter or plot-grouping dropdowns because values are unstructured and often
+# unique per file (e.g. Notes), which would clutter the UI without adding value.
+ANNOTATION_COLS = {"notes"}
 
 
 def _filter_mask(
@@ -165,8 +171,8 @@ def get_filterable_columns(df) -> list[str]:
         List of column names in preferred display order.
     """
     all_cols = set(df.columns)
-    # Exclude spectral / non-metadata
-    exclude = NON_FILTER_COLS.copy()
+    # Exclude spectral / non-metadata and free-text annotation columns
+    exclude = NON_FILTER_COLS | ANNOTATION_COLS
     for c in all_cols:
         if isinstance(c, str) and c.startswith(RS_COL_PREFIX):
             exclude.add(c)
@@ -191,7 +197,7 @@ def get_plot_hue_columns(df: pd.DataFrame) -> list[str]:
         List of column names for hue/style dropdowns.
     """
     all_cols = set(df.columns)
-    exclude = NON_FILTER_COLS.copy()
+    exclude = NON_FILTER_COLS | ANNOTATION_COLS
     for c in all_cols:
         if isinstance(c, str) and c.startswith(RS_COL_PREFIX):
             exclude.add(c)

@@ -33,7 +33,7 @@ def build_validation_table_artifacts(
     accuracy_threshold: float = VALIDATION_ACCURACY_MIN_THRESHOLD,
 ) -> ValidationTableArtifacts:
     """
-    Build both validation summary tables from filtered feature data.
+    Build Metrics-docx Tables 1–3 from filtered feature data.
 
     Parameters
     ----------
@@ -44,12 +44,12 @@ def build_validation_table_artifacts(
     repeatability_feature:
         Scalar feature for CV and signal-change metrics.
     accuracy_threshold:
-        Minimum accuracy for Pass/Fail in Table 1.
+        Minimum mean identification accuracy for Meet Target? (Table 2).
 
     Returns
     -------
     ValidationTableArtifacts
-        Both tables; empty dataframes when prerequisites are not met.
+        Tables 1–3; empty dataframes when prerequisites are not met.
     """
     classification_clean = build_classification_clean_dataset(
         filtered_features,

@@ -91,6 +91,34 @@ def test_load_signal_file_reads_per_signal_rows(tmp_path: Path) -> None:
     assert list(wide["source_txt_filename"]) == ["heat_kill.txt", "live_1000.txt"]
     assert list(wide["special_treatment"]) == ["heat kill", ""]
     assert list(wide["concentration"]) == [500.0, 1000.0]
+    # Target concentration is preserved per signal; blank target cells become NaN.
+    target = wide["target_concentration"].tolist()
+    assert np.isnan(target[0])
+    assert target[1] == 1000.0
+
+
+def test_load_signal_file_captures_all_file_level_metadata(tmp_path: Path) -> None:
+    """Generic loader surfaces every file-level metadata row as a column."""
+
+    path = _write_minimal_embedded_xlsx(tmp_path)
+    wide = _load_signal_file(path)
+    # Previously-dropped instrument, acquisition, and annotation fields are kept.
+    for column in (
+        "disk_diameter_nm",
+        "periodicity_um",
+        "thickness_nm",
+        "core_diameter_um",
+        "integration_time_ms",
+        "scan_average",
+        "rinsate_type",
+        "testing_time",
+        "notes",
+    ):
+        assert column in wide.columns, f"missing metadata column {column}"
+    # File-level values broadcast to every per-signal row.
+    assert wide["rinsate_type"].iloc[0] == "meta-12"
+    assert wide["notes"].iloc[0] == "meta-16"
+    assert wide["notes"].nunique() == 1
 
 
 def test_load_signal_file_without_per_signal_rows(tmp_path: Path) -> None:
@@ -116,3 +144,4 @@ def test_load_signal_file_without_per_signal_rows(tmp_path: Path) -> None:
     wide = _load_signal_file(path)
     assert wide["source_txt_filename"].iloc[0] == ""
     assert wide["special_treatment"].iloc[0] == ""
+    assert wide["target_concentration"].iloc[0] == 100.0

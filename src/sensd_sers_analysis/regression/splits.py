@@ -67,6 +67,51 @@ def group_train_test_indices(
     return train_idx, test_idx
 
 
+def iter_group_train_test_indices(
+    groups: np.ndarray,
+    *,
+    n_splits: int,
+    test_size: float,
+    random_state: int,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """
+    Yield repeated sensor-holdout splits (no sensor in both train and test).
+
+    Parameters
+    ----------
+    groups:
+        Group label per row (e.g. ``sensor_id``).
+    n_splits:
+        Number of independent ``GroupShuffleSplit`` rounds.
+    test_size:
+        Fraction of **groups** reserved for test each round.
+    random_state:
+        Base RNG seed; split ``i`` uses ``random_state + i``.
+
+    Returns
+    -------
+    list[tuple[np.ndarray, np.ndarray]]
+        ``(train_idx, test_idx)`` pairs, one per successful split.
+    """
+    if n_splits < 1:
+        raise ValueError(f"n_splits must be >= 1, got {n_splits}.")
+    splits: list[tuple[np.ndarray, np.ndarray]] = []
+    for i in range(n_splits):
+        try:
+            splits.append(
+                group_train_test_indices(
+                    groups,
+                    test_size=test_size,
+                    random_state=random_state + i,
+                )
+            )
+        except ValueError as exc:
+            logger.warning("Repeated group split %d/%d failed: %s", i + 1, n_splits, exc)
+    if not splits:
+        raise ValueError("No valid sensor-holdout splits could be produced.")
+    return splits
+
+
 def assert_disjoint_group_split(
     df: pd.DataFrame,
     train_idx: np.ndarray,

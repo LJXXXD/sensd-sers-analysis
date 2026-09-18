@@ -81,7 +81,7 @@ def _make_assessment_features_df() -> pd.DataFrame:
         {
             "sensor_id": ["A", "A", "B", "B", "C", "C"],
             "serotype": ["ST", "ST", "ST", "ST", "SE", "SE"],
-            "concentration_group": [
+            "target_concentration_group": [
                 "1000 CFU",
                 "1000 CFU",
                 "1000 CFU",
@@ -89,7 +89,7 @@ def _make_assessment_features_df() -> pd.DataFrame:
                 "1000 CFU",
                 "1000 CFU",
             ],
-            "concentration": [1000, 1000, 1000, 1000, 1000, 1000],
+            "concentration": [980, 1100, 900, 1200, 1050, 970],
             "test_id": ["T1", "T2", "T1", "T2", "T1", "T2"],
             "date": [
                 "2025-01-01",
@@ -329,7 +329,7 @@ class ApplicationServiceTests(unittest.TestCase):
         filtered_features = _make_assessment_features_df()
         selection = SensorAssessmentSelection(
             serotype="ST",
-            concentration_group="1000 CFU",
+            target_concentration_group="1000 CFU",
             feature="integral_area",
             outlier_method="iqr",
             batch_feature="max_intensity",
@@ -338,7 +338,7 @@ class ApplicationServiceTests(unittest.TestCase):
 
         assessment_df = filtered_features[
             (filtered_features["serotype"] == "ST")
-            & (filtered_features["concentration_group"] == "1000 CFU")
+            & (filtered_features["target_concentration_group"] == "1000 CFU")
         ].copy()
         group_cols = [column for column in ASSESSMENT_GROUP_COLS if column in assessment_df.columns]
         expected_display_consistency = get_consistency_summary_table(
@@ -398,6 +398,33 @@ class ApplicationServiceTests(unittest.TestCase):
         )
         assert_frame_equal(artifacts.pdf_batch_table, expected_pdf_batch)
         assert_frame_equal(artifacts.pdf_deviating_sensors_table, expected_pdf_deviating)
+
+    def test_sensor_assessment_multi_feature_consistency(self) -> None:
+        """consistency_features drives a per-feature CV table with a feature column."""
+        filtered_features = _make_assessment_features_df()
+        consistency_features = ("integral_area", "max_intensity", "mean_intensity")
+        selection = SensorAssessmentSelection(
+            serotype="ST",
+            target_concentration_group="1000 CFU",
+            feature="integral_area",
+            outlier_method="iqr",
+            batch_feature="max_intensity",
+            consistency_features=consistency_features,
+        )
+        artifacts = build_sensor_assessment_artifacts(filtered_features, selection)
+
+        self.assertIsNone(artifacts.consistency_error)
+        table = artifacts.display_consistency_table
+        self.assertIn("feature", table.columns)
+        self.assertEqual(
+            set(table["feature"].unique()),
+            set(consistency_features),
+        )
+        # Two ST sensors (A, B) x three features -> six rows.
+        self.assertEqual(len(table), 6)
+        # Concentration CV is feature-independent: identical across features per sensor.
+        conc_by_sensor = table.groupby("sensor_id")["conc_cv_raw"].nunique()
+        self.assertTrue((conc_by_sensor == 1).all())
 
     def test_model_consistency_and_classification_services_match_direct_calls(self) -> None:
         filtered_features = _make_model_consistency_df()
