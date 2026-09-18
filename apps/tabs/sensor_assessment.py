@@ -6,6 +6,8 @@ import logging
 
 import streamlit as st
 
+from components.screening_summary import render_screening_summary
+
 from cache import (
     build_cached_global_qa_artifacts,
     build_cached_single_sensor_consistency_artifacts,
@@ -39,7 +41,14 @@ from sensd_sers_analysis.visualization import (
 logger = logging.getLogger(__name__)
 
 
-def render(filtered_features, peak_artifacts):
+def render(filtered_features, peak_artifacts, filtered_tidy_df):
+    """Show screening evidence first, with specialist diagnostics on demand."""
+    render_screening_summary(filtered_features, filtered_tidy_df)
+    if st.checkbox("Show advanced regression diagnostics", key="assessment_advanced"):
+        _render_advanced(filtered_features, peak_artifacts)
+
+
+def _render_advanced(filtered_features, peak_artifacts):
     """
     Render the Sensor assessment tab.
 
@@ -197,7 +206,7 @@ def render(filtered_features, peak_artifacts):
     st.caption(
         "Per-sensor concentration-response QA. Excluded if: Clean RMSE > "
         f"{GLOBAL_QA_REJECTION_MULTIPLIER:g}× batch median OR Clean R² < "
-        f"{GLOBAL_QA_R2_MIN_THRESHOLD:.2f} (dead/flat sensor)."
+        f"{GLOBAL_QA_R2_MIN_THRESHOLD:.2f} (weak concentration fit)."
     )
 
     global_qa_default = [f for f in DEFAULT_GLOBAL_QA_FEATURES if f in mc_feat_cols] or (

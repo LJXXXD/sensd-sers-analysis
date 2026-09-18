@@ -267,7 +267,7 @@ def preprocess_metadata(df: pd.DataFrame) -> pd.DataFrame:
     out = add_target_concentration_group(out)
 
     if "date" in out.columns:
-        out["date"] = pd.to_datetime(out["date"], errors="coerce")
+        out["date"] = pd.to_datetime(out["date"], errors="coerce", format="mixed")
         out["date"] = out["date"].dt.strftime("%Y-%m-%d").fillna("").astype(str)
 
     return out

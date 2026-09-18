@@ -254,41 +254,28 @@ st.caption(
 if filtered_bundle.filtered_tidy_df.empty:
     logger.warning("No data matches selected filters")
     st.warning("No data matches the selected filters. Adjust filters and try again.")
-    data_inventory.render(loaded_bundle.wide_df, filtered_bundle.filtered_tidy_df)
+    data_inventory.render(filtered_bundle.filtered_tidy_df)
     st.stop()
 
-(
-    tab_inventory,
-    tab_spectra,
-    tab_peak_viz,
-    tab_peak_features,
-    tab_stats,
-    tab_sensor_qc,
-    tab_sensor_assessment,
-    tab_serotype_classification,
-    tab_reg_v1,
-    tab_reg_v2,
-    tab_reg_v3,
-    tab_validation,
-) = st.tabs(
-    [
-        "Data inventory",
-        "Spectra Viewer",
-        "Peak Discovery",
-        "Peak Feature Extraction",
-        "Feature Analysis",
-        "Sensor QC",
-        "Sensor assessment",
-        "Serotype Classification",
-        "Regression V1: Global",
-        "Regression V2: Two-Stage",
-        "Regression V3: MTL",
-        "Validation Metrics",
-    ]
+tab_data, tab_features, tab_sensor_quality, tab_models, tab_validation = st.tabs(
+    ["Data", "Features", "Sensor quality", "Models", "Validation"]
 )
+with tab_data:
+    tab_inventory, tab_spectra = st.tabs(["Inventory", "Spectra"])
+with tab_features:
+    tab_peak_viz, tab_peak_features, tab_stats = st.tabs(
+        ["Discover peaks", "Extract features", "Analyze features"]
+    )
+with tab_sensor_quality:
+    tab_sensor_assessment, tab_sensor_qc = st.tabs(["Screening", "Variability diagnostics"])
+
+with tab_models:
+    tab_serotype_classification, tab_reg_v1, tab_reg_v2, tab_reg_v3 = st.tabs(
+        ["Classification", "Regression: Global", "Regression: Two-Stage", "Regression: MTL"]
+    )
 
 with tab_inventory:
-    data_inventory.render(loaded_bundle.wide_df, filtered_bundle.filtered_tidy_df)
+    data_inventory.render(filtered_bundle.filtered_tidy_df)
 
 with tab_spectra:
     spectra_viewer.render(filtered_bundle.filtered_tidy_df)
@@ -335,6 +322,7 @@ with tab_sensor_assessment:
     sensor_assessment.render(
         filtered_bundle_for_analysis.filtered_features_df,
         derived_bundle.peak_artifacts,
+        filtered_bundle.filtered_tidy_df,
     )
 
 with tab_serotype_classification:

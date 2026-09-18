@@ -144,7 +144,9 @@ def build_data_inventory(spectra: pd.DataFrame) -> DataInventory:
     )
 
 
-def build_inventory_chart_tables(spectra: pd.DataFrame) -> dict[str, pd.DataFrame]:
+def build_inventory_chart_tables(
+    spectra: pd.DataFrame, *, group_by: str = "operator"
+) -> dict[str, pd.DataFrame]:
     """
     Aggregate measured spectra for composition, coverage and acquisition charts.
 
@@ -163,7 +165,9 @@ def build_inventory_chart_tables(spectra: pd.DataFrame) -> dict[str, pd.DataFram
     from sensd_sers_analysis.config.inventory import MISSING_METADATA_LABEL
 
     records = spectra.copy()
-    dimensions = ("operator", "serotype", "sensor_id", "target_concentration")
+    dimensions = tuple(
+        dict.fromkeys((group_by, "operator", "serotype", "sensor_id", "target_concentration"))
+    )
     for column in dimensions:
         if column not in records:
             records[column] = MISSING_METADATA_LABEL
@@ -175,12 +179,8 @@ def build_inventory_chart_tables(spectra: pd.DataFrame) -> dict[str, pd.DataFram
                 .replace("", pd.NA)
                 .fillna(MISSING_METADATA_LABEL)
             )
-    composition = (
-        records.groupby(["operator", "serotype"], observed=True)
-        .size()
-        .rename("spectra")
-        .reset_index()
-    )
+    segment = "target_concentration" if group_by == "serotype" else "serotype"
+    composition = build_inventory_counts(spectra, (group_by, segment))
     coverage = (
         records.groupby(list(COVERAGE_COLUMNS), observed=True)
         .size()
@@ -201,3 +201,65 @@ def build_inventory_chart_tables(spectra: pd.DataFrame) -> dict[str, pd.DataFram
         timeline = counts.rename_axis("month").rename("spectra").reset_index()
         timeline["month"] = timeline["month"].astype(str)
     return {"composition": composition, "coverage": coverage, "timeline": timeline}
+
+
+def metadata_issues(spectra: pd.DataFrame) -> pd.DataFrame:
+    """Return actionable per-spectrum metadata problems without altering measurements."""
+    from sensd_sers_analysis.processing.metadata import sample_type_masks
+
+    issues = []
+    identifiers = [c for c in ("filename", "signal_index", "sensor_id") if c in spectra]
+    for field in (
+        "date",
+        "sensor_id",
+        "serotype",
+        "sample_type",
+        "target_concentration",
+        "concentration",
+    ):
+        values = spectra.get(field, pd.Series(index=spectra.index, dtype="object"))
+        missing = values.isna() | values.astype("string").str.strip().eq("").fillna(False)
+        if field == "date":
+            missing = pd.to_datetime(values, errors="coerce", format="mixed").isna()
+        elif field == "sample_type":
+            controls, bacteria = sample_type_masks(spectra)
+            missing = ~(controls | bacteria)
+        elif field in ("target_concentration", "concentration"):
+            missing = pd.to_numeric(values, errors="coerce").isna()
+        if missing.any():
+            rows = spectra.loc[missing, identifiers].copy()
+            rows["field"] = field
+            rows["value"] = values.loc[missing].astype("string")
+            rows["issue"] = "Missing or invalid value"
+            issues.append(rows)
+    return pd.concat(issues, ignore_index=True) if issues else pd.DataFrame()
+
+
+def inventory_dimension_values(spectra: pd.DataFrame, dimensions: tuple[str, ...]) -> pd.DataFrame:
+    """Prepare readable categorical values, retaining unknowns and deriving acquisition month."""
+    from sensd_sers_analysis.config.inventory import MISSING_METADATA_LABEL
+
+    records = pd.DataFrame(index=spectra.index)
+    for dimension in dimensions:
+        values = spectra.get(dimension, pd.Series(index=spectra.index, dtype="object"))
+        if dimension == "month":
+            dates = spectra.get("date", pd.Series(index=spectra.index, dtype="object"))
+            values = pd.to_datetime(dates, errors="coerce", format="mixed").dt.strftime("%Y-%m")
+        elif dimension == "target_concentration":
+            values = values.map(
+                lambda value: (
+                    f"{value:g}" if isinstance(value, (int, float)) and pd.notna(value) else value
+                )
+            )
+        records[dimension] = (
+            values.astype("string").str.strip().replace("", pd.NA).fillna(MISSING_METADATA_LABEL)
+        )
+    return records
+
+
+def build_inventory_counts(spectra: pd.DataFrame, dimensions: tuple[str, ...]) -> pd.DataFrame:
+    """Count spectra across distinct selected dimensions without dropping missing metadata."""
+    if len(set(dimensions)) != len(dimensions):
+        raise ValueError("Chart dimensions must be distinct.")
+    records = inventory_dimension_values(spectra, dimensions)
+    return records.groupby(list(dimensions), observed=True).size().rename("spectra").reset_index()

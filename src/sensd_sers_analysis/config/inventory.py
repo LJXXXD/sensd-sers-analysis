@@ -16,3 +16,18 @@ CHART_COLORS = ("#28618C", "#D69A36", "#708648", "#B16B86", "#7D739F")
 CHART_FONT_SIZE = 10
 CHART_DPI = 160
 MISSING_METADATA_LABEL = "Not recorded"
+
+INVENTORY_GROUP_LABELS = {
+    "serotype": "Serotype",
+    "operator": "Operator",
+    "sensor_id": "Sensor",
+    "target_concentration": "Initial target concentration (CFU/mL)",
+    "sample_type": "Sample type",
+    "special_treatment": "Treatment",
+}
+SCREENING_COLORS = {"Pass": "#216B88", "Excluded": "#BF6236", "Not assessed": "#9099A0"}
+
+INVENTORY_GROUP_LABELS["month"] = "Acquisition month"
+DEFAULT_COUNT_CHARTS = ("serotype", "sensor_id", "month")
+DEFAULT_COVERAGE_DIMENSIONS = ("sensor_id", "target_concentration", "serotype")
+COVERAGE_FACET_COLUMNS = 3

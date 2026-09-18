@@ -120,3 +120,40 @@ def test_inventory_charts_render_with_exact_heatmap_total(spectra):
     assert np.isclose(sum(axis.collections[0].get_array().sum() for axis in heatmap_axes), 4)
     for figure in figures:
         plt.close(figure)
+
+
+def test_serotype_composition_uses_concentration_segments(spectra):
+    """Serotype bars retain concentration coverage rather than collapsing to a single color."""
+    from sensd_sers_analysis.application.inventory_service import build_inventory_chart_tables
+
+    table = build_inventory_chart_tables(spectra, group_by="serotype")["composition"]
+    assert {"serotype", "target_concentration", "spectra"}.issubset(table.columns)
+    assert table.spectra.sum() == len(spectra)
+    assert set(table.target_concentration) == {"0", "10", "100"}
+
+
+def test_month_composition_preserves_unknown_dates(spectra):
+    """Missing dates remain visible as an unknown group in the configurable count chart."""
+    from sensd_sers_analysis.application.inventory_service import build_inventory_counts
+
+    table = build_inventory_counts(spectra, ("month", "serotype"))
+    assert table.spectra.sum() == len(spectra)
+    assert "Not recorded" in table.month.tolist()
+
+
+def test_custom_coverage_conserves_counts(spectra):
+    """Alternative facet/row/column assignments retain every spectrum."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from sensd_sers_analysis.application.inventory_service import build_inventory_counts
+    from sensd_sers_analysis.visualization.inventory_plots import plot_inventory_coverage
+
+    dims = ("operator", "serotype", "target_concentration")
+    table = build_inventory_counts(spectra, dims)
+    fig = plot_inventory_coverage(
+        table, row_dimension=dims[0], column_dimension=dims[1], facet_dimension=dims[2]
+    )
+    assert np.isclose(
+        sum(axis.collections[0].get_array().sum() for axis in fig.axes[:-1]), len(spectra)
+    )
+    plt.close(fig)

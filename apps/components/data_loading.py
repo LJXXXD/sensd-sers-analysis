@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from sensd_sers_analysis.application.contracts import LoadedDataBundle
+from sensd_sers_analysis.application.inventory_service import metadata_issues
 from sensd_sers_analysis.application.dataset_pipeline import load_uploaded_bundle
 from sensd_sers_analysis.data.io import SersLoadReport
 from sensd_sers_analysis.config.example_data import EXAMPLE_DATA_DIRECTORIES
@@ -84,7 +85,7 @@ def render_data_source() -> tuple[LoadedDataBundle | None, int]:
     with st.spinner("Loading spectra…"):
         bundle = load_from_uploaded(files_data)
     if "date" in bundle.wide_df:
-        dates = pd.to_datetime(bundle.wide_df["date"], errors="coerce").dropna()
+        dates = pd.to_datetime(bundle.wide_df["date"], errors="coerce", format="mixed").dropna()
         if not dates.empty:
             st.sidebar.caption(f"Dates: {dates.min():%Y-%m-%d} – {dates.max():%Y-%m-%d}")
     return bundle, len(files_data)
@@ -139,6 +140,12 @@ def render_upload_load_status(
     n_tidy = len(loaded_bundle.tidy_df)
     has_data = not loaded_bundle.tidy_df.empty
 
+    if has_data:
+        issues = metadata_issues(loaded_bundle.wide_df)
+        if not issues.empty:
+            sidebar_panel.warning(f"Metadata needs review: {len(issues)} field values.")
+            with sidebar_panel.expander("Metadata issues"):
+                st.dataframe(issues, hide_index=True, width="stretch")
     if report.n_skipped == 0 and has_data:
         sidebar_panel.success(
             "Loaded "

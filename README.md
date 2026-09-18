@@ -42,34 +42,24 @@ streamlit run apps/app.py   # run app
 
 **Jiahe (LJ) Li** — j.li@missouri.edu — University of Missouri
 
+## App organization
+
+The first three pages follow Data → Features → Sensor quality. Data contains Inventory and Spectra; Features contains peak discovery, fixed-anchor extraction and feature analysis; Sensor quality contains Screening and Variability diagnostics. Models groups classification and the three regression approaches; Validation remains a separate page. Basic integrated-intensity features are computed by the shared pipeline before screening; the page order communicates the workflow rather than triggering preprocessing.
+
 ## Data inventory and research scope
 
-The **Data inventory** tab reports all successfully loaded spectra alongside the
-current sidebar-filtered subset, before sensor QA or model exclusions. Coverage
-is available per recorded operator/provenance, sensor, serotype, and nominal target
-concentration (CFU/mL), with acquisition dates, file basenames and composite test
-sessions. CSV downloads provide the spectrum metadata ledger and coverage table. Charts
-show recorded-operator/serotype counts, sensor-by-concentration coverage with a
-shared color scale, and monthly acquisition counts; each chart can be downloaded
-as PNG. Exact counts remain available in expandable tables.
+The **Data inventory** tab follows the sidebar filters and summarizes spectra, sensors and files. Three count charts default to serotype (colored by initial target concentration), sensor (colored by serotype), and acquisition month (colored by serotype). Each chart exposes separate Group by and Color by selectors; Color by None shows a single-color total. Charts can be added or removed; new charts prefer an unused primary dimension, while repeated primary dimensions remain available for different color comparisons. Coverage defaults to sensor rows, concentration columns and serotype panels; charts can be added or removed, with three distinct dimensions configurable in a collapsed control panel. The full metadata ledger is not displayed here. Spectra Viewer uses compact color/display selectors, with line style and height under More plot options.
 
-A spectrum is one measurement, not one Raman-shift row or an independent biological
-replicate. Sensor IDs do not establish unique physical devices. Sessions use the
-available operator, sensor, date, test, connection and serotype metadata; missing
-fields can merge sessions. Shared sensor IDs across operator/source labels and
-ambiguous filename-plus-signal identities are surfaced for review. The uploader
-retains basenames and embedded metadata, not original source-folder paths;
-operator must not be interpreted automatically as data provider. Sparse coverage
-is descriptive and never changes QA or model selection. Empty filter selections
-still allow inspection of the all-loaded inventory.
+The **Sensor assessment** tab starts with per-sensor screening counts using the configured classification QA feature. Counts include controls belonging to each sensor/serotype pair and precede final spectrum cleaning; no deduplication is applied. Insufficient or non-finite fits appear as Not assessed. Selecting a pair displays the existing cleaned regression, optional same-serotype passing-sensor comparison on shared axes, a fit-point ledger and its spectra. Fit outliers are distinct from whole-pair exclusions and from final model preparation. Advanced regression diagnostics remain available on demand.
+
+Data Loading reports unreadable files and per-spectrum metadata issues with filenames and field values. Acquisition dates accept mixed date-only and timestamp formats. Sensor IDs represent devices in the UI; provenance conflicts still require source-data review. All charts describe the current data selection, not independent biological replicate counts or validated device yield.
 
 - [Current research data scope and provenance](docs/DATA_SCOPE.md)
-- `apps/tabs/data_inventory.py`: Streamlit presentation.
-- `src/sensd_sers_analysis/application/inventory_service.py`: metadata-only counts.
+- `apps/tabs/data_inventory.py`: inventory presentation.
+- `apps/components/screening_summary.py`: screening explanation and drill-down.
+- `src/sensd_sers_analysis/application/inventory_service.py`: metadata counts and diagnostics.
+- `src/sensd_sers_analysis/application/sensor_assessment_service.py`: screening counts and fit-point provenance.
 - `src/sensd_sers_analysis/config/inventory.py`: grouping definitions and display defaults.
-
-The inventory accepts existing loaded and filtered bundles without changing the
-loader, preprocessing, QA, or model APIs; sample-class analyses require explicit Sample Type metadata.
 
 ## Embedded metadata and migration
 

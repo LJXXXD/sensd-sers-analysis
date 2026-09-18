@@ -139,8 +139,8 @@ def render(filtered_features, peak_artifacts):
     st.markdown(
         "Interactive per-group QC at a fixed **target** concentration. "
         "**Signal CV%** = SERS feature spread; **Concentration CV%** = actual "
-        "plate-count CFU spread. Signal CV% ≫ Concentration CV% ⇒ sensor-added "
-        "variability."
+        "plate-count CFU spread. Compare them as diagnostics; their difference does not "
+        "isolate sensor variance."
     )
     with st.expander("Terms (aligned with the fiber-optics SERS testing protocol)", expanded=False):
         st.markdown(

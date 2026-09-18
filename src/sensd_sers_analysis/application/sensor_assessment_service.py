@@ -223,3 +223,49 @@ def build_sensor_assessment_qa_pdf_bytes(
         macro_items=macro_items,
         report_title=report_title,
     )
+
+
+def build_screening_counts(features: pd.DataFrame, qa_table: pd.DataFrame) -> pd.DataFrame:
+    """Count all spectra by sensor and single-feature QA status, including unassessed pairs.
+
+    Counts precede point-level cleaning. Missing or non-finite fit results are
+    not counted as passing; pair decisions are joined many-to-one to spectra.
+    """
+    import numpy as np
+
+    keys = ["sensor_id", "serotype"]
+    records = features[keys].copy()
+    if qa_table.empty:
+        records["status"] = "Not assessed"
+    else:
+        if qa_table.duplicated(keys).any():
+            raise ValueError("Screening counts require one QA feature per sensor/serotype pair.")
+        decisions = qa_table.copy()
+        finite = np.isfinite(decisions[["clean_r2", "clean_rmse"]]).all(axis=1)
+        decisions.loc[~finite, "status"] = "Not assessed"
+        records = records.merge(
+            decisions[keys + ["status"]], on=keys, how="left", validate="many_to_one"
+        )
+        records["status"] = records["status"].fillna("Not assessed")
+    return (
+        records.groupby(["sensor_id", "status"], dropna=False)
+        .size()
+        .rename("spectra")
+        .reset_index()
+    )
+
+
+def build_screening_point_ledger(artifacts: SingleSensorConsistencyArtifacts) -> pd.DataFrame:
+    """Label per-sensor fit points without claiming final model-training exclusions."""
+    records = artifacts.model_df.copy()
+    records["fit_use"] = "Outside fit (zero/missing concentration or feature)"
+    result = artifacts.regression_result
+    valid = records[["log_concentration", artifacts.selection.feature]].notna().all(axis=1)
+    if result is not None:
+        records.loc[valid, "fit_use"] = "Used in cleaned fit"
+        records.loc[records.index[valid][result.outlier_mask], "fit_use"] = (
+            "Outlier removed from fit"
+        )
+    elif valid.any():
+        records.loc[valid, "fit_use"] = "Not enough concentration variation for fit"
+    return records

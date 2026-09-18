@@ -8,6 +8,7 @@ import streamlit as st
 
 from components.shared_ui import render_figure_stretch
 from sensd_sers_analysis.processing import get_plot_hue_columns, pick_preferred_column
+from sensd_sers_analysis.utils import format_column_label
 from sensd_sers_analysis.visualization import VARIANCE_OPTIONS, plot_spectra
 from theme import (
     DEFAULT_FIGSIZE_WIDTH,
@@ -25,41 +26,33 @@ def render(filtered):
     hue_options = ["None"] + available_cols
     hue_default = pick_preferred_column(available_cols) or "None"
 
-    st.markdown("#### Spectra plot options")
-    c_hue, c_style, c_var, c_h = st.columns(4)
-    with c_hue:
-        hue_choice = st.radio(
-            "Hue _(color)_",
-            options=hue_options,
+    hue_default = "serotype" if "serotype" in available_cols else hue_default
+    variance_labels = [v[0] for v in VARIANCE_OPTIONS]
+    color, display = st.columns(2)
+    with color:
+        hue_choice = st.selectbox(
+            "Color by",
+            hue_options,
             index=hue_options.index(hue_default),
-            horizontal=False,
-            key="hue_radio",
+            format_func=format_column_label,
+            key="spectra_color",
         )
-    with c_style:
-        style_choice = st.radio(
-            "Style _(line)_",
-            options=["None"] + available_cols,
-            index=0,
-            horizontal=False,
-            key="style_radio",
+    with display:
+        variance_choice = st.selectbox("Display", variance_labels, key="spectra_display")
+    with st.expander("More plot options"):
+        style_choice = st.selectbox(
+            "Line style by",
+            ["None"] + available_cols,
+            format_func=format_column_label,
+            key="spectra_style",
         )
-    with c_var:
-        variance_labels = [v[0] for v in VARIANCE_OPTIONS]
-        variance_choice = st.radio(
-            "Display",
-            options=variance_labels,
-            index=0,
-            horizontal=False,
-            key="variance_radio",
-        )
-    with c_h:
         plot_height = st.slider(
             "Height (in)",
             min_value=PLOT_HEIGHT_MIN,
             max_value=PLOT_HEIGHT_MAX,
             value=PLOT_HEIGHT_DEFAULT,
             step=1,
-            key="plot_height_slider",
+            key="spectra_height",
         )
 
     _vo = VARIANCE_OPTIONS[variance_labels.index(variance_choice)]
