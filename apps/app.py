@@ -9,12 +9,8 @@ import logging
 import streamlit as st
 
 from cache import apply_cached_filters, build_cached_derived_bundle
-from components.data_loading import (
-    UPLOADER_RESET_KEY,
-    clear_app_data,
-    load_from_uploaded,
-    render_upload_load_status,
-)
+from components.data_loading import render_data_source, render_upload_load_status
+
 from components.filter_ui import (
     MAIN_FILTER_COUNT,
     _FILTER_DIVIDER,
@@ -81,27 +77,7 @@ if st.session_state.get(APP_MODE_KEY, APP_MODE_ANALYSIS) == APP_MODE_PREP:
 # ---------------------------------------------------------------------------
 render_prep_entry_in_sidebar(st.sidebar)
 
-header_col, btn_col = st.sidebar.columns([3, 1])
-with header_col:
-    st.markdown("# 📁 Data Loading")
-with btn_col:
-    st.button("Reload Data", type="primary", on_click=clear_app_data)
-uploaded = st.sidebar.file_uploader(
-    "Upload Excel (.xlsx) files",
-    type=["xlsx", "xls"],
-    accept_multiple_files=True,
-    key=f"file_uploader_{st.session_state.get(UPLOADER_RESET_KEY, 'default')}",
-)
-loaded_bundle = None
-if uploaded:
-    files_data = tuple((f.name, f.getvalue()) for f in uploaded)
-    loaded_bundle = load_from_uploaded(files_data)
-    logger.info(
-        "Loaded %d files: wide_df shape %s, tidy_df shape %s",
-        len(uploaded),
-        getattr(loaded_bundle.wide_df, "shape", None),
-        getattr(loaded_bundle.tidy_df, "shape", None),
-    )
+loaded_bundle, file_count = render_data_source()
 
 if loaded_bundle is None or loaded_bundle.tidy_df.empty:
     logger.warning("No data loaded: tidy_df is empty or None")
@@ -109,7 +85,7 @@ if loaded_bundle is None or loaded_bundle.tidy_df.empty:
     if loaded_bundle is not None:
         render_upload_load_status(
             loaded_bundle,
-            uploaded_count=len(uploaded) if uploaded else 0,
+            uploaded_count=file_count,
         )
     if loaded_bundle is None or loaded_bundle.load_report.n_loaded == 0:
         if loaded_bundle is None or loaded_bundle.load_report.n_skipped == 0:
@@ -129,7 +105,7 @@ if loaded_bundle is None or loaded_bundle.tidy_df.empty:
 
 render_upload_load_status(
     loaded_bundle,
-    uploaded_count=len(uploaded),
+    uploaded_count=file_count,
 )
 control_mask, bacteria_mask = sample_type_masks(loaded_bundle.wide_df)
 unknown_sample_count = int((~(control_mask | bacteria_mask)).sum())

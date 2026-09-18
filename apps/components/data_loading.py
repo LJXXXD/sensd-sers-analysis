@@ -12,6 +12,7 @@ import streamlit as st
 from sensd_sers_analysis.application.contracts import LoadedDataBundle
 from sensd_sers_analysis.application.dataset_pipeline import load_uploaded_bundle
 from sensd_sers_analysis.data.io import SersLoadReport
+from sensd_sers_analysis.config.example_data import EXAMPLE_DATA_DIRECTORIES
 
 from state import reset_ui_state
 
@@ -30,10 +31,63 @@ def clear_app_data() -> None:
     so filter states, file uploader state, and UI flags are wiped. Sets a new
     uploader reset key so the file_uploader remounts with no files.
     """
-    logger.info("Clearing app data (Reload Data clicked)")
+    logger.info("Unloading app data")
     st.cache_data.clear()
     reset_ui_state()
     st.session_state[UPLOADER_RESET_KEY] = str(uuid.uuid4())
+    st.session_state["_data_source"] = "empty"
+
+
+def use_example_data() -> None:
+    """Reset analysis state and select bundled dilution workbooks."""
+    clear_app_data()
+    st.session_state["_data_source"] = "example"
+
+
+def render_data_source() -> tuple[LoadedDataBundle | None, int]:
+    """Select bundled or uploaded bytes and load them through the shared pipeline."""
+    st.sidebar.markdown("# 📁 Data Loading")
+    left, right = st.sidebar.columns(2)
+    left.button("Unload data", on_click=clear_app_data)
+    right.button("Load example data", on_click=use_example_data)
+    uploaded = st.sidebar.file_uploader(
+        "Upload Excel (.xlsx) files",
+        type=["xlsx", "xls"],
+        accept_multiple_files=True,
+        key=f"file_uploader_{st.session_state.get(UPLOADER_RESET_KEY, 'default')}",
+        help="Uploaded files replace the bundled example data.",
+    )
+    source = st.session_state.setdefault("_data_source", "example")
+    files_data = ()
+    if uploaded:
+        st.session_state["_data_source"] = "upload"
+        files_data = tuple((file.name, file.getvalue()) for file in uploaded)
+        st.sidebar.caption("Source: Uploaded files")
+    elif source == "example":
+        st.sidebar.caption("Source: Bundled example data · Dilutions · All dates")
+        try:
+            missing = [path for path in EXAMPLE_DATA_DIRECTORIES if not path.is_dir()]
+            if missing:
+                st.sidebar.error("Bundled data is unavailable. Upload Excel files to continue.")
+                return None, 0
+            files_data = tuple(
+                (path.name, path.read_bytes())
+                for directory in EXAMPLE_DATA_DIRECTORIES
+                for path in sorted(directory.rglob("*.xlsx"))
+                if not path.name.startswith("~$")
+            )
+        except OSError as exc:
+            st.sidebar.error(f"Cannot read bundled data: {exc}")
+            return None, 0
+    if not files_data:
+        return None, 0
+    with st.spinner("Loading spectra…"):
+        bundle = load_from_uploaded(files_data)
+    if "date" in bundle.wide_df:
+        dates = pd.to_datetime(bundle.wide_df["date"], errors="coerce").dropna()
+        if not dates.empty:
+            st.sidebar.caption(f"Dates: {dates.min():%Y-%m-%d} – {dates.max():%Y-%m-%d}")
+    return bundle, len(files_data)
 
 
 def _upload_failure_report(
@@ -103,7 +157,7 @@ def render_upload_load_status(
         _render_skipped_files_expander(sidebar_panel, report)
         return
 
-    sidebar_panel.error(f"Could not load any of the **{uploaded_count}** uploaded files.")
+    sidebar_panel.error(f"Could not load any of the **{uploaded_count}** selected files.")
     _render_skipped_files_expander(sidebar_panel, report)
 
 

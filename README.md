@@ -6,6 +6,10 @@ This specific repository hosts the research and implementation conducted by Jiah
 
 ---
 
+## Default dataset
+
+The analysis app starts with the bundled Adheesha 2025/2026 Dilutions and Amjad New Format workbooks in `example_data/`. Heat kill, PAA and Repeatability collections are not loaded by default. All dates and serotypes are included before sidebar filtering. Uploading files replaces the bundled selection. **Unload data** keeps the session empty across reruns; **Load example data** restores the bundled collection. Both sources use the same parsing pipeline. Collection paths are configured in `src/sensd_sers_analysis/config/example_data.py`.
+
 ## Installation
 
 This project is packaged via standard `pyproject.toml` and requires Python 3.12+.
