@@ -141,7 +141,35 @@ def train_mtl_regressor(
 
     Uses a random sub-split of the **training** rows for early stopping. Test
     sensors never appear during training or validation.
+
+    ``random_state`` seeds the row sub-split and CPU PyTorch initialization,
+    dropout, and shuffling. The caller's CPU PyTorch RNG state is restored after
+    training. Reproducibility applies within the same runtime and hardware.
     """
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(random_state)
+        return _train_mtl_regressor(
+            df,
+            feature_cols,
+            train_idx,
+            test_idx,
+            target_col=target_col,
+            class_col=class_col,
+            random_state=random_state,
+        )
+
+
+def _train_mtl_regressor(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    train_idx: np.ndarray,
+    test_idx: np.ndarray,
+    *,
+    target_col: str,
+    class_col: str,
+    random_state: int,
+) -> MtlRegressionOutputs:
+    """Fit and evaluate the CPU model within the caller's seeded RNG scope."""
     available = [c for c in feature_cols if c in df.columns]
     if not available:
         raise ValueError(f"No feature columns found. Needed: {feature_cols}")
@@ -261,8 +289,7 @@ def train_mtl_regressor(
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    # Refit on **all** training sensors with the early-stopped weights as init — one short
-    # additional pass for stability on full train (optional). Per plan, evaluate on test only.
+    # Fine-tune early-stopped weights on all training rows before held-out evaluation.
     full_ds = TensorDataset(
         torch.tensor(X_train_scaled, dtype=torch.float32, device=device),
         torch.tensor(y_cls_train_full, dtype=torch.long, device=device),

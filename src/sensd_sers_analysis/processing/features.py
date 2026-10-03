@@ -6,6 +6,8 @@ components (PC1, PC2) for assessment. Designed for noisy spectra where
 peak-based features are not yet reliable.
 """
 
+import logging
+
 import numpy as np
 import pandas as pd
 from scipy.integrate import trapezoid as scipy_trapezoid
@@ -15,6 +17,8 @@ from sensd_sers_analysis.processing.pca_features import add_pca_features
 from sensd_sers_analysis.processing.targeted_peak_features import (
     list_targeted_peak_feature_columns,
 )
+
+logger = logging.getLogger(__name__)
 
 # Column names produced by extract_basic_features; use for stats plots and validation.
 BASIC_FEATURE_COLUMNS = [
@@ -98,35 +102,34 @@ def order_features_by_preference(
 
 def extract_basic_features(df_wide: pd.DataFrame) -> pd.DataFrame:
     """
-    Extract robust scalar features from a wide-format SERS DataFrame.
+    Extract scalar features and exploratory PCA scores from wide SERS data.
 
-    For each sample (row), computes three macro-level features across
-    all Raman shift intensity columns (rs_*):
+    Parameters
+    ----------
+    df_wide : pd.DataFrame
+        Samples as rows, with metadata and ``rs_*`` intensity columns. Raman
+        coordinates are read from column names and sorted numerically.
 
-    - max_intensity: Maximum intensity value in the spectrum.
-    - mean_intensity: Mean intensity value (average across wavenumbers).
-    - integral_area: Area under the curve via trapezoidal integration,
-      using the actual Raman shift values from column names as x-axis.
+    Returns
+    -------
+    pd.DataFrame
+        Metadata, maximum and mean intensity, trapezoidal integral area, and
+        available PCA columns, retaining the input index. Intensity columns
+        are excluded. Empty input is returned as an unchanged copy.
 
-    Args:
-        df_wide: Wide DataFrame from load_sers_data; rows = samples,
-            columns = metadata (sensor_id, serotype, etc.) + rs_* intensity
-            columns (e.g., rs_400.00, rs_401.00, ...).
+    Raises
+    ------
+    ValueError
+        If nonempty input has no Raman intensity columns.
 
-    Returns:
-        DataFrame containing all original metadata columns plus the three
-        feature columns (max_intensity, mean_intensity, integral_area).
-        Raman shift (rs_*) columns are excluded to keep the output lightweight.
-
-    Raises:
-        ValueError: If df_wide has no Raman intensity columns.
-
-    Example:
-        >>> from sensd_sers_analysis.data.io import load_sers_data
-        >>> from sensd_sers_analysis.processing.features import extract_basic_features
-        >>> df = load_sers_data("example_data/")
-        >>> df_feat = extract_basic_features(df)
-        >>> df_feat[["serotype", "max_intensity", "integral_area"]].head()
+    Notes
+    -----
+    Maximum and mean ignore missing intensities. Integral area uses the full
+    coordinate grid and has units of intensity times Raman-shift units. An
+    integral with nonfinite values or fewer than two coordinates is unavailable
+    (NaN), with a logged warning; it is not imputed or replaced by a sum.
+    Unavailable integrals do not affect other rows. PCA is fitted to the supplied
+    dataset for exploration; these scores are not training-only transforms.
     """
     if df_wide.empty:
         return df_wide.copy()
@@ -139,13 +142,19 @@ def extract_basic_features(df_wide: pd.DataFrame) -> pd.DataFrame:
     max_intensity = np.nanmax(signals, axis=1)
     mean_intensity = np.nanmean(signals, axis=1)
 
-    # Area under curve: trapezoidal integration, with fallback to sum for robustness
     if len(raman_shift) >= 2:
         integral_area = scipy_trapezoid(signals, x=raman_shift, axis=1)
-        if np.any(np.isnan(integral_area)):
-            integral_area = np.nansum(signals, axis=1).astype(float)
     else:
-        integral_area = np.nansum(signals, axis=1).astype(float)
+        integral_area = np.full(len(df_wide), np.nan)
+
+    unavailable = ~np.isfinite(integral_area)
+    if np.any(unavailable):
+        integral_area[unavailable] = np.nan
+        logger.warning(
+            "Integral area unavailable for %d spectra; finite values and at least "
+            "two Raman coordinates are required.",
+            np.count_nonzero(unavailable),
+        )
 
     metadata_cols = [
         c for c in df_wide.columns if not (isinstance(c, str) and c.startswith(RS_COL_PREFIX))

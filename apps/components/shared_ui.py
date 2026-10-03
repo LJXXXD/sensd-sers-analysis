@@ -47,38 +47,14 @@ def render_pdf_download_section(
     c = container if container is not None else st
 
     with c.container():
-        anchor_gen = f"pdf-gen-{session_key}"
-        anchor_dl = f"pdf-dl-{session_key}"
-
-        st.markdown(
-            f"""
-            <style>
-            div:has(#{anchor_gen}) + div button {{
-                background-color: #28a745 !important;
-                border-color: #28a745 !important;
-                color: white !important;
-            }}
-            div:has(#{anchor_dl}) + div button {{
-                background-color: #fd7e14 !important;
-                border-color: #fd7e14 !important;
-                color: white !important;
-            }}
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f'<div id="{anchor_gen}" style="display:none" aria-hidden="true"></div>',
-            unsafe_allow_html=True,
-        )
-        if st.button(button_label, key=f"{session_key}_btn"):
+        if st.button(button_label, key=f"{session_key}_btn", type="primary"):
             try:
                 pdf_bytes = generate_callback()
                 st.session_state[session_key] = pdf_bytes
                 logger.info("PDF report generated successfully: %s", session_key)
                 st.success("Report generated. Click Download below.")
             except Exception as e:
-                logger.error("Report generation failed (%s): %s", session_key, e)
+                logger.exception("Report generation failed (%s): %s", session_key, e)
                 st.session_state.pop(session_key, None)
                 st.error(f"Report generation failed: {e}")
 
@@ -88,10 +64,6 @@ def render_pdf_download_section(
             and len(st.session_state[session_key]) > 0
         )
         if _pdf_ready:
-            st.markdown(
-                f'<div id="{anchor_dl}" style="display:none" aria-hidden="true"></div>',
-                unsafe_allow_html=True,
-            )
             st.download_button(
                 label=download_label,
                 data=st.session_state[session_key],

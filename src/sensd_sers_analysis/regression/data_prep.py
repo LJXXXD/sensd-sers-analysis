@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 from sensd_sers_analysis.classification.data_prep import prepare_classification_dataset
@@ -46,8 +47,14 @@ def prepare_concentration_regression_data(
     Returns
     -------
     pd.DataFrame
-        Copy with ``target`` equal to the serotype string on each positive-CFU row
-        and valid regression target. Empty if prerequisites are missing.
+        Copy with ``target_col`` equal to the serotype string on each finite,
+        positive-CFU row and finite regression target. Source indices and row
+        order are retained for prediction alignment. Empty if prerequisites are missing.
+
+    Raises
+    ------
+    ValueError
+        If a custom ``target_col`` would overwrite another input column.
     """
     classification_clean = prepare_classification_dataset(
         df,
@@ -63,20 +70,20 @@ def prepare_concentration_regression_data(
     if classification_clean.empty:
         return pd.DataFrame()
 
-    if log_conc_col not in classification_clean.columns:
+    if any(c not in classification_clean.columns for c in (log_conc_col, concentration_col)):
         return pd.DataFrame()
 
-    out = classification_clean[classification_clean[target_col].astype(str) != "Rinsate"].copy()
-    out = out[out[log_conc_col].notna()].copy()
+    if target_col != "target":
+        if target_col in classification_clean.columns:
+            raise ValueError(f"Class target column {target_col!r} already exists.")
+        classification_clean = classification_clean.rename(columns={"target": target_col})
 
-    if concentration_col in out.columns:
-        conc = extract_scalar_concentration(out[concentration_col], out)
-        out = out.loc[conc.notna() & (conc > 0)].copy()
-    else:
-        out = out[out[concentration_group_col].astype(str) != "0 CFU"].copy()
+    out = classification_clean[classification_clean[target_col].astype(str) != "Rinsate"].copy()
+    conc = extract_scalar_concentration(out[concentration_col], out)
+    valid = np.isfinite(out[log_conc_col]) & np.isfinite(conc) & (conc > 0)
+    out = out.loc[valid].copy()
 
     if out.empty:
         return pd.DataFrame()
 
-    out = out.reset_index(drop=True)
     return out

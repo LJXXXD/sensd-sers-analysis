@@ -6,6 +6,8 @@ Collaborators can load datasets, filter dynamically, and generate plots without 
 
 import logging
 
+import numpy as np
+
 import streamlit as st
 
 from cache import apply_cached_filters, build_cached_derived_bundle
@@ -20,7 +22,7 @@ from components.filter_ui import (
     section_divider,
 )
 from components.raman_sidebar import list_serotypes_from_wide_df, render_raman_shift_sidebar
-from theme import N_PEAKS_DEFAULT
+from theme import N_PEAKS_DEFAULT, NAVIGATION_CSS
 from sensd_sers_analysis.application import (
     FilterSelection,
     build_filter_catalog,
@@ -30,6 +32,11 @@ from sensd_sers_analysis.application import (
 )
 from sensd_sers_analysis.config.targeted_peaks import TARGETED_PEAK_DEFAULT_ANCHORS_CM1
 from sensd_sers_analysis.processing.metadata import sample_type_masks
+from sensd_sers_analysis.processing.normalization import integration_times_ms
+from sensd_sers_analysis.config.preprocessing import (
+    INTEGRATION_REFERENCE_MS,
+    NORMALIZE_INTEGRATION_TIME_DEFAULT,
+)
 from sensd_sers_analysis.utils import format_column_label
 from state import write_peak_artifacts_to_state
 from txt_to_excel import (
@@ -135,11 +142,38 @@ if serotypes_for_peaks:
 else:
     n_peaks_by_serotype = None
 
+normalize_exposure = st.sidebar.toggle(
+    "Normalize integration time",
+    value=NORMALIZE_INTEGRATION_TIME_DEFAULT,
+    key="normalize_integration_time",
+    help="Scale intensities to a common exposure before spectra, features, QA and models. Disable if your input is already exposure-normalized.",
+)
+if normalize_exposure:
+    times = integration_times_ms(loaded_bundle.wide_df)
+    invalid_time = ~np.isfinite(times) | times.le(0)
+    if invalid_time.any():
+        st.sidebar.error(
+            f"Cannot normalize: {int(invalid_time.sum())} spectra have invalid integration time."
+        )
+        with st.sidebar.expander("Affected measurements"):
+            columns = [
+                c
+                for c in ("filename", "signal_index", "integration_time_ms")
+                if c in loaded_bundle.wide_df
+            ]
+            st.dataframe(loaded_bundle.wide_df.loc[invalid_time, columns], hide_index=True)
+        st.info(
+            "Correct integration-time metadata or disable normalization to inspect the original intensities."
+        )
+        st.stop()
+    st.sidebar.caption(f"Intensity × {INTEGRATION_REFERENCE_MS:g} / integration time (ms)")
+
 derived_bundle = build_cached_derived_bundle(
     loaded_bundle,
     min_shift=min_shift,
     max_shift=max_shift,
     n_peaks=int(n_peaks),
+    normalize_exposure=normalize_exposure,
     n_peaks_by_serotype_items=(
         tuple(sorted(n_peaks_by_serotype.items())) if n_peaks_by_serotype else ()
     ),
@@ -179,6 +213,11 @@ render_main_filter_header(st.sidebar, list(filter_catalog.filter_columns))
 st.sidebar.markdown(_TITLE_TO_FILTER_DIVIDER, unsafe_allow_html=True)
 
 filter_state: dict[str, FilterSelection] = {}
+layout_options = compute_filter_options(
+    derived_bundle.wide_df,
+    filter_catalog.filter_columns,
+    {},
+)
 
 for i, col in enumerate(filter_catalog.main_columns):
     if i > 0:
@@ -188,7 +227,7 @@ for i, col in enumerate(filter_catalog.main_columns):
         filter_catalog.filter_columns,
         filter_state,
     )
-    help_text = "Binned concentration." if col == "concentration_group" else ""
+    help_text = ""
     selected, exclude = _render_filter(
         col,
         format_column_label(col),
@@ -198,6 +237,7 @@ for i, col in enumerate(filter_catalog.main_columns):
         st.sidebar,
         help_text=help_text,
         reset_button_key=f"reset_{col}",
+        layout_options=layout_options[col],
     )
     filter_state[col] = FilterSelection(
         selected_values=tuple(str(value) for value in selected),
@@ -223,6 +263,7 @@ with st.sidebar.expander("More Filters", expanded=False):
             st,
             help_text=help_text,
             reset_button_key=f"reset_more_{col}",
+            layout_options=layout_options[col],
         )
         filter_state[col] = FilterSelection(
             selected_values=tuple(str(value) for value in selected),
@@ -246,6 +287,11 @@ logger.info(
 # ---------------------------------------------------------------------------
 st.title("SERS Data Explorer")
 st.caption(
+    f"Intensity: {INTEGRATION_REFERENCE_MS:g} ms equivalent"
+    if normalize_exposure
+    else "Intensity: original input values"
+)
+st.caption(
     f"Filtered to **{filtered_bundle.n_unique_spectra}** spectrum traces, "
     f"**{len(filtered_bundle.filtered_features_df)}** "
     "samples for feature analysis"
@@ -257,6 +303,7 @@ if filtered_bundle.filtered_tidy_df.empty:
     data_inventory.render(filtered_bundle.filtered_tidy_df)
     st.stop()
 
+st.markdown(NAVIGATION_CSS, unsafe_allow_html=True)
 tab_data, tab_features, tab_sensor_quality, tab_models, tab_validation = st.tabs(
     ["Data", "Features", "Sensor quality", "Models", "Validation"]
 )

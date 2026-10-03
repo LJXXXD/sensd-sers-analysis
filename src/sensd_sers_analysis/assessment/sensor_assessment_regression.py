@@ -255,30 +255,25 @@ def get_zero_cfu_baseline(
     concentration_col: str = "concentration",
 ) -> Optional[float]:
     """
-    Compute mean feature value for 0 CFU samples (baseline).
+    Compute mean feature value for explicitly labeled rinsate controls.
 
-    Identifies 0 CFU rows via concentration_group == "0 CFU" or
-    concentration <= 0 when concentration_group is unavailable.
+    Measured zero in a bacterial sample does not identify a control.
 
     Args:
         df: Feature DataFrame.
         feature_col: Column name of the feature.
-        concentration_group_col: Column with binned labels (e.g., "0 CFU").
-        concentration_col: Raw concentration column for fallback.
+        concentration_group_col: Retained for call compatibility; not used for identity.
+        concentration_col: Retained for call compatibility; not used for identity.
 
     Returns:
-        Mean feature value for 0 CFU replicates, or None if no 0 CFU samples.
+        Mean control feature value, or None if no labeled control is available.
     """
     if feature_col not in df.columns:
         return None
 
-    if concentration_group_col in df.columns:
-        zero_mask = df[concentration_group_col].astype(str) == "0 CFU"
-    elif concentration_col in df.columns:
-        conc = pd.to_numeric(df[concentration_col], errors="coerce")
-        zero_mask = conc.notna() & (conc <= 0)
-    else:
-        return None
+    from sensd_sers_analysis.processing.metadata import sample_type_masks
+
+    zero_mask, _ = sample_type_masks(df)
 
     zero_df = df.loc[zero_mask, feature_col].dropna()
     if zero_df.empty:
@@ -510,7 +505,7 @@ def get_global_model_consistency_qa(
 
 @dataclass
 class MacroRegressionResult:
-    """Result of two-pass pooled macro-regression across Pass sensors' inlier data."""
+    """Two-pass macro fit with point-aligned pooled coordinates and sensor IDs."""
 
     slope: float  # Clean fit slope
     intercept: float  # Clean fit intercept
@@ -526,6 +521,7 @@ class MacroRegressionResult:
     macro_outlier_mask: np.ndarray
     x_pooled: np.ndarray
     y_pooled: np.ndarray
+    pooled_sensor_ids: np.ndarray
 
 
 def compute_macro_batch_regression(
@@ -539,25 +535,33 @@ def compute_macro_batch_regression(
     log_conc_col: str = "log_concentration",
     iqr_whis: float = GLOBAL_QA_IQR_WHIS,
 ) -> Optional[MacroRegressionResult]:
-    """
-    Fit a single macro-regression to pooled inlier data from Pass sensors only.
+    """Fit a two-pass regression to pooled inliers from selected sensors.
 
-    For each Pass sensor, runs cleaned fit to identify inliers, then pools all
-    inlier (x, y) points and fits one regression. Provides batch-level RMSE
-    and R² for the good batch.
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Feature data containing sensor, serotype, concentration, and response columns.
+    serotype : str
+        Serotype to include.
+    feature_col : str
+        Response column.
+    pass_sensors : set[str]
+        Sensor IDs selected by the caller's QA policy.
+    sensor_col, serotype_col, log_conc_col : str
+        Identity and predictor column names.
+    iqr_whis : float
+        IQR multiplier for per-sensor and pooled residual outlier detection.
 
-    Args:
-        df: Feature DataFrame.
-        serotype: Serotype to filter.
-        feature_col: Feature column (Y-axis).
-        pass_sensors: Sensor IDs that passed QA (use only their inlier data).
-        sensor_col: Sensor identifier column.
-        serotype_col: Serotype column.
-        log_conc_col: Log concentration column (X-axis).
-        iqr_whis: IQR multiplier for residual outlier detection per sensor.
+    Returns
+    -------
+    MacroRegressionResult or None
+        Raw and cleaned fits, metrics, pooled coordinates, sensor IDs, and
+        point-aligned outlier mask. None if fewer than two points can be pooled.
 
-    Returns:
-        MacroRegressionResult or None if insufficient pooled data (n < 2).
+    Notes
+    -----
+    Plotting can reuse the pooled coordinates and labels without repeating the
+    per-sensor cleaning. This calculation does not determine which sensors pass QA.
     """
     required = [sensor_col, serotype_col, log_conc_col, feature_col]
     if any(c not in df.columns for c in required):
@@ -573,6 +577,7 @@ def compute_macro_batch_regression(
 
     x_pooled: list[float] = []
     y_pooled: list[float] = []
+    pooled_sensor_ids: list[str] = []
     sensors_contributing = 0
 
     for sens in pass_sensors:
@@ -593,6 +598,7 @@ def compute_macro_batch_regression(
         y_in = y_vals[inlier_mask]
         x_pooled.extend(x_in.tolist())
         y_pooled.extend(y_in.tolist())
+        pooled_sensor_ids.extend([str(sens)] * len(x_in))
         sensors_contributing += 1
 
     if len(x_pooled) < 2:
@@ -631,6 +637,7 @@ def compute_macro_batch_regression(
             macro_outlier_mask=macro_outlier_mask,
             x_pooled=x_arr,
             y_pooled=y_arr,
+            pooled_sensor_ids=np.asarray(pooled_sensor_ids),
         )
 
     x_clean = x_arr[inlier_mask]
@@ -655,4 +662,5 @@ def compute_macro_batch_regression(
         macro_outlier_mask=macro_outlier_mask,
         x_pooled=x_arr,
         y_pooled=y_arr,
+        pooled_sensor_ids=np.asarray(pooled_sensor_ids),
     )

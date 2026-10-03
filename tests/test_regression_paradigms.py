@@ -163,3 +163,27 @@ def test_train_mtl_regressor_smoke():
     )
     assert out.y_true_reg.shape == out.y_pred_reg.shape
     assert 0.0 <= out.clf_accuracy <= 1.0
+
+
+def test_mtl_random_state_controls_training_and_preserves_caller_rng(monkeypatch):
+    import torch
+    from sensd_sers_analysis.regression import models_mtl
+
+    monkeypatch.setattr(models_mtl, "REGRESSION_MTL_MAX_EPOCHS", 2)
+    monkeypatch.setattr(models_mtl, "REGRESSION_MTL_HIDDEN_DIMS", (4,))
+    monkeypatch.setattr(models_mtl, "REGRESSION_MTL_BATCH_SIZE", 4)
+    df = _synth_regression_df(n_per=3)
+    train_idx = np.arange(len(df) - 3)
+    test_idx = np.arange(len(df) - 3, len(df))
+    state_before = torch.get_rng_state().clone()
+    first = train_mtl_regressor(df, ["f1", "f2", "f3"], train_idx, test_idx, random_state=7)
+    assert torch.equal(torch.get_rng_state(), state_before)
+    second = train_mtl_regressor(df, ["f1", "f2", "f3"], train_idx, test_idx, random_state=7)
+    assert torch.equal(torch.get_rng_state(), state_before)
+    np.testing.assert_array_equal(first.y_pred_reg, second.y_pred_reg)
+    assert first.train_loss_history == second.train_loss_history
+    for name, weights in first.model.state_dict().items():
+        assert torch.equal(weights, second.model.state_dict()[name])
+    other = train_mtl_regressor(df, ["f1", "f2", "f3"], train_idx, test_idx, random_state=8)
+    assert torch.equal(torch.get_rng_state(), state_before)
+    assert not np.array_equal(first.y_pred_reg, other.y_pred_reg)

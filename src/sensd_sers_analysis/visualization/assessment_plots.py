@@ -16,7 +16,6 @@ from sensd_sers_analysis.assessment.sensor_assessment_regression import (
     ConcentrationRegressionResult,
     MacroRegressionResult,
     compute_macro_batch_regression,
-    fit_concentration_regression_cleaned,
 )
 
 
@@ -742,28 +741,39 @@ def plot_macro_batch_regression(
     figsize: tuple[float, float] = (10, 6),
     ax: Optional[plt.Axes] = None,
 ) -> tuple[plt.Figure, Optional[MacroRegressionResult]]:
-    """
-    Pool inlier data from Pass sensors and plot macro-regression line.
+    """Plot pooled sensor responses and their raw and cleaned macro fits.
 
-    Aggregates all valid inlier points from sensors that passed QA, fits a
-    single macro-regression, and displays Batch RMSE and Batch R². Use this
-    to assess overall batch consistency.
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Feature data with identity, predictor, and response columns.
+    serotype : str
+        Serotype to include when computing a result.
+    feature_col : str
+        Response column and axis label.
+    pass_sensors : set[str]
+        Sensor IDs selected by the caller's QA policy.
+    sensor_col, serotype_col, log_conc_col : str
+        Identity and predictor column names.
+    macro_result : MacroRegressionResult, optional
+        Fit artifact for the selected data. Its pooled points, labels, masks,
+        and coefficients are used directly. If absent, compute the artifact once.
+    title : str, optional
+        Plot title.
+    figsize : tuple[float, float]
+        Figure size in inches when creating axes.
+    ax : matplotlib.axes.Axes, optional
+        Existing axes to draw on.
 
-    Args:
-        df: Feature DataFrame.
-        serotype: Serotype to filter.
-        feature_col: Feature column (Y-axis).
-        pass_sensors: Sensor IDs that passed QA.
-        sensor_col: Sensor identifier column.
-        serotype_col: Serotype column.
-        log_conc_col: Log concentration column (X-axis).
-        macro_result: Pre-computed result; if None, computed internally.
-        title: Optional plot title.
-        figsize: Figure size in inches.
-        ax: Optional axes to draw on.
+    Returns
+    -------
+    tuple[matplotlib.figure.Figure, MacroRegressionResult or None]
+        Figure and fitted artifact. An unavailable fit produces an explanatory plot.
 
-    Returns:
-        Tuple of (Figure, MacroRegressionResult or None if insufficient data).
+    Raises
+    ------
+    ValueError
+        If required columns or valid responses for the requested serotype are absent.
     """
     required = [sensor_col, serotype_col, log_conc_col, feature_col]
     if any(c not in df.columns for c in required):
@@ -780,52 +790,18 @@ def plot_macro_batch_regression(
             f"{log_conc_col} and {feature_col}."
         )
 
-    # Pool inlier data from pass sensors
-    x_pooled: list[float] = []
-    y_pooled: list[float] = []
-    sensor_pooled: list[str] = []
-
-    for sens in pass_sensors:
-        sub = subset[subset[sensor_col].astype(str) == str(sens)]
-        if sub.empty:
-            continue
-        cres = fit_concentration_regression_cleaned(sub, feature_col, log_conc_col=log_conc_col)
-        if cres is None:
-            continue
-        valid = sub[[log_conc_col, feature_col]].notna().all(axis=1)
-        sub_fit = sub.loc[valid]
-        x_vals = sub_fit[log_conc_col].astype(float).values
-        y_vals = sub_fit[feature_col].astype(float).values
-        inlier_mask = ~cres.outlier_mask
-        x_pooled.extend(x_vals[inlier_mask].tolist())
-        y_pooled.extend(y_vals[inlier_mask].tolist())
-        sensor_pooled.extend([str(sens)] * int(np.sum(inlier_mask)))
-
-    if len(x_pooled) < 2:
-        if ax is None:
-            fig, ax = plt.subplots(figsize=figsize)
-        else:
-            fig = ax.get_figure()
-        ax.text(
-            0.5,
-            0.5,
-            "Insufficient pooled data from Pass sensors (need ≥2 points)",
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
+    result = (
+        macro_result
+        if macro_result is not None
+        else compute_macro_batch_regression(
+            df,
+            serotype,
+            feature_col,
+            pass_sensors,
+            sensor_col=sensor_col,
+            serotype_col=serotype_col,
+            log_conc_col=log_conc_col,
         )
-        return fig, None
-
-    x_arr = np.array(x_pooled)
-    y_arr = np.array(y_pooled)
-    result = macro_result or compute_macro_batch_regression(
-        df,
-        serotype,
-        feature_col,
-        pass_sensors,
-        sensor_col=sensor_col,
-        serotype_col=serotype_col,
-        log_conc_col=log_conc_col,
     )
 
     if result is None:
@@ -848,11 +824,13 @@ def plot_macro_batch_regression(
     else:
         fig = ax.get_figure()
 
-    # Separate inliers vs macro outliers
+    # Coordinates, sensor labels, and masks come from the same fitted artifact.
+    x_arr = result.x_pooled
+    y_arr = result.y_pooled
     inlier_mask = ~result.macro_outlier_mask
     x_in = x_arr[inlier_mask]
     y_in = y_arr[inlier_mask]
-    sensor_in = [s for s, m in zip(sensor_pooled, inlier_mask) if m]
+    sensor_in = result.pooled_sensor_ids[inlier_mask]
     x_out = x_arr[result.macro_outlier_mask]
     y_out = y_arr[result.macro_outlier_mask]
 

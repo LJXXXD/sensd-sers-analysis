@@ -10,13 +10,6 @@ import pandas as pd
 
 from sensd_sers_analysis.utils.natural_sort import natural_sort
 
-# Log10 of group centers (1, 10, 100, 1000). 0 CFU has no log.
-_CONC_GROUP_CENTERS_LOG = np.array([0.0, 1.0, 2.0, 3.0])  # log10(1), log10(10), ...
-_CONC_GROUP_LABELS = ["1 CFU", "10 CFU", "100 CFU", "1000 CFU"]
-
-# Ordered categories for pd.Categorical; pure text ("Unknown") sorts last
-_CONC_CATEGORIES = natural_sort(["0 CFU", "1 CFU", "10 CFU", "100 CFU", "1000 CFU", "Unknown"])
-
 _INVALID_SEROTYPE_STRINGS = frozenset(("", "NAN", "NONE"))
 
 
@@ -121,118 +114,31 @@ def add_log_concentration(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _bin_concentration_group(conc: pd.Series) -> pd.Categorical:
-    """
-    Bin scalar CFU/mL values to ordered concentration-group labels.
+def add_target_concentration_group(df: pd.DataFrame) -> pd.DataFrame:
+    """Label each recorded initial target exactly, without rounding actual values.
 
-    Group centers: 1, 10, 100, 1000 CFU (log10: 0, 1, 2, 3). Concentration 0
-    (or negative) maps to ``"0 CFU"``; positive values snap to the nearest
-    log10 center; missing values map to ``"Unknown"``.
-
-    Args:
-        conc: Numeric CFU/mL per row (NaN allowed).
-
-    Returns:
-        Ordered ``pd.Categorical`` of group labels aligned to ``conc``.
-    """
-    cat_dtype = pd.CategoricalDtype(categories=_CONC_CATEGORIES, ordered=True)
-    labels = pd.Series(["Unknown"] * len(conc), index=conc.index, dtype=object)
-
-    valid = conc.notna()
-    zero_mask = valid & (conc <= 0)
-    labels.loc[zero_mask] = "0 CFU"
-
-    pos_mask = valid & (conc > 0)
-    if pos_mask.any():
-        log_conc = np.log10(conc[pos_mask].astype(float).values)
-        # Nearest of 0, 1, 2, 3 (log10 of 1, 10, 100, 1000)
-        dists = np.abs(log_conc[:, np.newaxis] - _CONC_GROUP_CENTERS_LOG)
-        nearest_idx = np.argmin(dists, axis=1)
-        labels.loc[pos_mask] = [_CONC_GROUP_LABELS[i] for i in nearest_idx]
-
-    return pd.Categorical(labels, dtype=cat_dtype)
-
-
-def add_concentration_group(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add concentration_group from the **actual** concentration.
-
-    Assigns each signal to the nearest log10 center of its measured CFU/mL.
-    This column reflects the actual (plate-count) concentration, so downstream
-    consumers can quantify sample-to-sample variability. Use
-    :func:`add_target_concentration_group` for grouping by intended dose.
-
-    Args:
-        df: DataFrame with concentration column (scalar or list per row).
-
-    Returns:
-        Copy of df with concentration_group column (ordered Categorical).
+    Missing targets remain Unknown. Concentration labels describe intended dose,
+    never sample identity; Sample Type identifies rinsate controls.
     """
     out = df.copy()
-    if "concentration" not in out.columns:
-        out["concentration_group"] = pd.Categorical(
-            ["Unknown"] * len(out),
-            categories=_CONC_CATEGORIES,
-            ordered=True,
-        )
-        return out
-
-    conc = extract_scalar_concentration(out["concentration"], out)
-    out["concentration_group"] = _bin_concentration_group(conc)
+    target = extract_scalar_concentration(
+        out.get("target_concentration", pd.Series(np.nan, index=out.index)), out
+    )
+    labels = target.map(lambda value: f"{value:g} CFU" if pd.notna(value) else "Unknown")
+    out["target_concentration_group"] = pd.Categorical(
+        labels, categories=natural_sort(labels.unique().tolist()), ordered=True
+    )
     return out
 
 
-def add_target_concentration_group(df: pd.DataFrame) -> pd.DataFrame:
+def add_concentration_group(df: pd.DataFrame) -> pd.DataFrame:
+    """Provide the nominal-group compatibility key used by analysis consumers.
+
+    ``concentration_group`` aliases the exact initial-target labels. It never
+    bins measured concentration, including measured zeros in bacterial samples.
     """
-    Add target_concentration_group from the **nominal target** concentration.
-
-    Bins the intended dose (``target_concentration``) into 0/1/10/100/1000 CFU
-    groups. Missing initial targets remain Unknown for explicit sample-type
-    datasets. Only legacy dataframes without sample_type fall back to the
-    actual-derived ``concentration_group``. This is the canonical grouping key for QC drill-down and the
-    validation summary tables, while sample-to-sample variability is measured
-    from the actual ``concentration``.
-
-    Args:
-        df: DataFrame with target_concentration and/or concentration columns.
-
-    Returns:
-        Copy of df with target_concentration_group column (ordered Categorical).
-    """
-    out = df.copy()
-    if "target_concentration" not in out.columns:
-        # No target available: mirror the actual-derived group when present.
-        if "concentration_group" in out.columns:
-            out["target_concentration_group"] = pd.Categorical(
-                out["concentration_group"].astype(str),
-                categories=_CONC_CATEGORIES,
-                ordered=True,
-            )
-        else:
-            out["target_concentration_group"] = pd.Categorical(
-                ["Unknown"] * len(out),
-                categories=_CONC_CATEGORIES,
-                ordered=True,
-            )
-        return out
-
-    target = extract_scalar_concentration(out["target_concentration"], out)
-    target_group = _bin_concentration_group(target)
-
-    # Fall back to the actual-derived group where the target is missing.
-    if "concentration_group" in out.columns and "sample_type" not in out.columns:
-        target_labels = pd.Series(
-            np.asarray(target_group.astype(str)), index=out.index, dtype=object
-        )
-        missing_target = target.isna()
-        target_labels.loc[missing_target] = (
-            out.loc[missing_target, "concentration_group"].astype(str).values
-        )
-        cat_dtype = pd.CategoricalDtype(categories=_CONC_CATEGORIES, ordered=True)
-        out["target_concentration_group"] = pd.Categorical(target_labels, dtype=cat_dtype)
-    else:
-        out["target_concentration_group"] = target_group
-
+    out = add_target_concentration_group(df)
+    out["concentration_group"] = out["target_concentration_group"].copy()
     return out
 
 
@@ -246,8 +152,7 @@ def preprocess_metadata(df: pd.DataFrame) -> pd.DataFrame:
     Works on wide or tidy format. For wide DataFrames, concentration may be
     a list per row (one per signal); uses signal_index to pick the scalar.
 
-    Binning: concentration 0 -> "0 CFU". conc > 0 -> nearest of
-    log10(1), log10(10), log10(100), log10(1000).
+    Concentration groups retain exact initial targets; missing targets are Unknown.
     Date is normalized to YYYY-MM-DD string format.
 
     Args:
@@ -264,7 +169,6 @@ def preprocess_metadata(df: pd.DataFrame) -> pd.DataFrame:
         )
     out = add_log_concentration(out)
     out = add_concentration_group(out)
-    out = add_target_concentration_group(out)
 
     if "date" in out.columns:
         out["date"] = pd.to_datetime(out["date"], errors="coerce", format="mixed")

@@ -347,7 +347,7 @@ def _validate_common_shift(
         if common_shift is None:
             common_shift = shifts
             continue
-        if not np.allclose(common_shift, shifts, atol=atol):
+        if common_shift.shape != shifts.shape or not np.allclose(common_shift, shifts, atol=atol):
             return None, f"Raman shift mismatch in file: {name}"
     return common_shift, None
 

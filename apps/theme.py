@@ -77,3 +77,20 @@ FILTER_DIVIDER_HTML = (
     '<hr style="margin: 0.25rem 0; padding: 0; border: 0; '
     'border-top: 1px solid currentColor; opacity: 0.2;">'
 )
+
+
+NAVIGATION_CSS = """
+<style>
+[data-testid="stTabs"] button[role="tab"] p {
+    font-size: 1.25rem;
+    font-weight: 700;
+}
+[data-testid="stTabs"] [data-testid="stTabs"] button[role="tab"] p {
+    font-size: 0.9rem;
+    font-weight: 400;
+}
+[data-testid="stTabs"] [data-testid="stTabs"] button[role="tab"] {
+    background: transparent;
+}
+</style>
+"""

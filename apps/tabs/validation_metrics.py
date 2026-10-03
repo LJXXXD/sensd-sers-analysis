@@ -109,11 +109,16 @@ def render(filtered_features, peak_artifacts) -> None:
         help="Scalar feature for CV% and first-to-last signal change in the tables.",
     )
 
-    artifacts = build_cached_validation_artifacts(
-        filtered_features,
-        tuple(feat_cols),
-        repeatability_feature=repeatability_feature,
-    )
+    try:
+        artifacts = build_cached_validation_artifacts(
+            filtered_features,
+            tuple(feat_cols),
+            repeatability_feature=repeatability_feature,
+        )
+    except ValueError as exc:
+        logger.exception("Validation table generation failed")
+        st.error(f"Validation unavailable: {exc}")
+        return
 
     preds = artifacts.predictions
     if preds and preds.sensor_holdout_available:

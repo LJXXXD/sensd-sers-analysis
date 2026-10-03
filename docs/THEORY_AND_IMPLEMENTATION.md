@@ -2,7 +2,7 @@
 
 Practical reference for **what this repository currently does**: research context, data model, the processing pipeline from raw Excel ingestion through statistical quality assurance to machine-learning classification, the Streamlit application layer, and the main modules in the package. Dependencies and tool versions live in **`pyproject.toml`** (Python ≥ 3.12; NumPy, pandas, SciPy, scikit-learn, matplotlib, seaborn, openpyxl, Streamlit, ReportLab).
 
-This file is meant to be useful day to day, not to act as a formal spec. If this document and the code disagree, trust the code and update the document.
+This file is a practical reference. Resolve disagreements between scientific requirements and current behavior explicitly; neither code nor documentation alone establishes scientific correctness.
 
 **Keeping this file current:** When a change affects public behavior, module boundaries, data flow, or how someone runs the application, update this document in the same change as the code.
 
@@ -69,7 +69,7 @@ This codebase addresses all three problems in a single, modular pipeline that is
 
 **In scope:** Instrument `.txt` → embedded Excel prep (Streamlit), data loading and parsing, metadata normalization, master-grid Raman alignment, spectral trimming, scalar and peak-based feature extraction, PCA dimensionality reduction, IQR/z-score outlier detection, regression-based sensor consistency assessment, batch-level sensor exclusion, degradation trend analysis, baseline Random Forest / SVM classification, and concentration-regression paradigms (global, two-stage, MTL).
 
-**Not in scope (unless explicitly added):** Advanced spectral preprocessing (baseline correction, cosmic ray removal, spectral deconvolution), deep learning models, real-time inference pipelines, hardware-level sensor diagnostics, or cross-laboratory reproducibility studies.
+**Not implemented:** Additional spectral baseline correction, cosmic ray removal, spectral deconvolution, real-time inference, hardware diagnostics, and cross-laboratory reproducibility studies. The existing MTL model is a small neural network; further model complexity depends on demonstrated needs.
 
 ---
 
@@ -237,7 +237,8 @@ The entry point is `load_sers_data(paths)`, which accepts files, folders, or a m
 1. **`_collect_files`** resolves paths to a flat list of `.xlsx` files, skipping files prefixed with `~` or `_` (temp/hidden files).
 2. **`_parse_embedded_format`** reads each workbook headerlessly (`header=None`), locates concentration rows by scanning column 0 for `"concentration"`, prefers **Actual Concentration** when present, extracts the metadata block above the first concentration row (skipping per-signal label rows), parses optional **File Name** / **Special Treatment** rows, and reads the signal data below.
 3. **`_load_signal_file`** assembles metadata + transposed signal matrix into a wide DataFrame. Raman shift values are rounded to `RAMAN_SHIFT_DECIMALS = 2` decimal places and prefixed with `rs_`. Per-signal provenance lists are padded or trimmed to the signal count.
-4. Files are concatenated with `ignore_index=True`. If a `serotypes` filter is provided, files whose embedded serotype does not match are skipped.
+4. Non-finite spectral coordinates/intensities, duplicate rounded Raman labels, and metadata names colliding with spectral/computed fields are reported as per-file load failures. Within the parsed spectral block, rows containing intensity data require a coordinate; fully blank separator rows contain no measurement and may be ignored. Wide-to-tidy conversion retains all non-spectral metadata.
+5. Files are concatenated with `ignore_index=True`. If a `serotypes` filter is provided, files whose embedded serotype does not match are skipped.
 
 **Design choice:** Embedding metadata inside Excel files (rather than in filenames or a separate manifest) is driven by the experimental workflow—collaborators produce self-contained files from the instrument software. The parser is tolerant of optional fields (`date`, `operator`, `sensor_model`) but strict about required fields (`sensor id`, `test id`, `connection id`, `serotype`).
 
@@ -247,14 +248,7 @@ After loading, `preprocess_metadata(df)` enriches the DataFrame with derived col
 
 **Log concentration:** `add_log_concentration` computes `log10(concentration)` for all positive concentrations. Zero concentrations (0 CFU) produce `NaN` because `log10(0)` is undefined. This is intentional—0 CFU samples are excluded from regression-based analyses that use `log_concentration` as the independent variable.
 
-**Concentration grouping:** `add_concentration_group` assigns each sample to the nearest log-scale bin:
-
-```text
-concentration = 0     →  "0 CFU"
-concentration > 0     →  nearest of {1, 10, 100, 1000} CFU by log10 distance
-```
-
-The binning uses `np.argmin` over absolute distances in log-space between `log10(concentration)` and the centers `[0, 1, 2, 3]` (i.e., `log10` of `[1, 10, 100, 1000]`). The result is an ordered `pd.Categorical` with categories sorted by `natural_sort`: `["0 CFU", "1 CFU", "10 CFU", "100 CFU", "1000 CFU", "Unknown"]`.
+**Concentration grouping:** `add_target_concentration_group` labels each recorded initial target exactly, with categories in natural order. Missing targets remain `Unknown`; actual CFU values never supply nominal labels. `add_concentration_group` provides the same labels under the compatibility key `concentration_group`. Explicit Sample Type determines bacterial/control identity independently of target and actual concentration.
 
 **Date normalization:** Dates are parsed to `datetime` and formatted as `YYYY-MM-DD` strings.
 
@@ -309,7 +303,7 @@ Implemented as `np.nanmean(signals, axis=1)`. Averages over the full spectral wi
 integral_area ≈ Σ (I(νᵢ) + I(νᵢ₊₁)) / 2 × (νᵢ₊₁ - νᵢ)  for i = 1..N-1
 ```
 
-Implemented via `scipy.integrate.trapezoid(signals, x=raman_shift, axis=1)`. The trapezoidal rule approximates the area under the spectrum curve using the actual Raman shift values as the x-axis. This accounts for potentially non-uniform spacing in the wavenumber grid. Falls back to `np.nansum` if the result contains NaN (guard against degenerate grids).
+Implemented via `scipy.integrate.trapezoid(signals, x=raman_shift, axis=1)`. The trapezoidal rule approximates the area under the spectrum curve using the actual Raman shift values as the x-axis. This accounts for potentially non-uniform spacing in the wavenumber grid. Non-finite results or fewer than two coordinates produce an unavailable area (`NaN`) and a warning. No intensity sum or imputation substitutes for an integral, and unavailable rows do not change other rows.
 
 **Design choice:** These three features were chosen for their robustness to noise. They do not require peak identification or baseline subtraction—important when working with noisy SERS data where peak detection may fail for low-concentration samples. They serve as the primary features for sensor consistency assessment (§10–§12) and as base features for classification (§13).
 
@@ -372,7 +366,7 @@ The Savitzky-Golay filter fits a polynomial of degree `polyorder` to successive 
 
 For each serotype, `_compute_peak_windows_for_serotype` computes search windows around anchors using the high-concentration mean spectrum:
 
-1. **Mean spectrum:** Computed from the highest-concentration subset (preference order: 1000, 100, 10, 1 CFU) after excluding 0 CFU samples. Uses `np.nanmean` across all spectra in that subset.
+1. **Mean spectrum:** Computed from the highest-concentration subset (preference order: 1000, 100, 10, 1 CFU) using explicitly identified bacterial samples. Uses `np.nanmean` across all spectra in that subset.
 
 2. **Inner boundaries (between adjacent anchors):** For anchors A_i and A_{i+1}, the boundary is placed at the **argmin of the mean spectrum** in `[A_i, A_{i+1}]`. This finds the true valley between peaks, robust to jagged slopes.
 
@@ -394,7 +388,7 @@ For each spectrum (row), peak heights are extracted using the serotype-specific 
 4. Peak height = `max(window_intensities) - baseline`.
 5. If peak height < `noise_threshold_frac × global_max_intensity` (default 2%), mark as NaN (peak not detected).
 
-**0 CFU handling:** Zero-CFU rows use the **default serotype's** windows (preference: ST, then SE). This allows extracting peak heights from rinsate spectra using the pathogen-specific windows, which matters for serotype classification where rinsate is a negative-control class.
+**Control handling:** Explicit rinsate controls use the default serotype's windows, chosen lexicographically from serotypes with discovered peaks. A measured zero does not make a bacterial sample a rinsate control.
 
 ### 8.6 Success rate
 
@@ -528,7 +522,7 @@ This targets points that deviate more from the regression line than expected, no
 
 ### 11.4 Zero-CFU baseline
 
-`get_zero_cfu_baseline(df, feature_col)` computes the mean feature value for 0 CFU samples. This serves as a **noise floor reference**: an ideal sensor should produce feature values above this baseline at positive concentrations. Displayed as a horizontal reference line in regression plots.
+`get_zero_cfu_baseline(df, feature_col)` computes the mean feature value for explicitly identified rinsate controls. It is a control-response reference, displayed as a horizontal line. Concentration alone does not identify controls or establish a noise floor.
 
 ---
 
@@ -575,22 +569,24 @@ The pooling process:
 3. Fit a single regression on the pooled data.
 4. Apply another round of IQR-based outlier detection on the pooled residuals for macro-level outlier identification.
 
+`MacroRegressionResult` retains each pooled point's sensor ID alongside its coordinates and outlier mask. `plot_macro_batch_regression` uses this artifact directly; a supplied result does not trigger another per-sensor fit or pooling pass.
+
 ---
 
 ## 13. Stage 8: ML classification (serotyping)
 
 ### 13.1 Data preparation (`classification/data_prep.py`)
 
-`prepare_classification_dataset` produces strictly clean data for classification:
+`prepare_classification_dataset` prepares classification rows using the current QA and sample-identity policy:
 
-1. **Sensor filtering:** Only rows from sensors that passed the Global QA (§12.1) for `integral_area` are retained.
-2. **Inlier filtering:** For each Pass sensor × serotype, re-runs two-pass regression on `integral_area` and keeps only inlier points.
-3. **Rinsate inclusion:** 0 CFU (rinsate) rows from Pass sensors are included as-is (no regression filtering—there is nothing to regress on).
-4. **Target labeling:** Strict 3-class scheme:
-   - `concentration == 0` → **Rinsate**
-   - `serotype == "ST"` and `concentration > 0` → **ST**
-   - `serotype == "SE"` and `concentration > 0` → **SE**
-   - All others → dropped (no "Unknown" class in the final dataset)
+1. **Sensor filtering:** Remove sensor/serotype pairs listed in the exclusion map for `integral_area`. Absence from that map is not evidence of a valid Pass assessment; unassessed pairs can remain.
+2. **Inlier filtering:** Within each serotype, fit pooled bacterial readings from retained sensors and remove flagged residual outliers. Explicit controls and bacterial readings with unavailable log concentration or feature values remain identifiable; this is not per-sensor cleaning of every row.
+3. **Control identity:** Only explicit `sample_type = Rinsate control` rows receive the **Rinsate** class. Measured zero concentration does not determine sample identity.
+4. **Bacterial identity:** Explicit bacterial rows with usable serotype metadata receive that serotype as their class. The number of classes follows the selected data rather than a fixed ST/SE/Rinsate scheme. Unknown sample identity or unusable bacterial serotype labels are excluded.
+
+Preparation retains source row indices and order. Concentration regression uses only finite log targets and finite positive actual CFU; nominal targets do not supply missing actual concentrations. Custom class-column names cannot overwrite other columns.
+
+This cleaning is applied before the current model split. QA, response-dependent screening, and learned preprocessing require a separate evaluation design before the resulting scores can represent a prospective held-out workflow.
 
 ### 13.2 Feature set
 
@@ -602,9 +598,10 @@ The classification feature vector combines:
 | `max_intensity` | `processing/features.py` | Maximum spectral intensity |
 | `mean_intensity` | `processing/features.py` | Mean spectral intensity |
 | `PC1`, `PC2` | `processing/pca_features.py` | First two principal components |
-| `Peak_1_Height`, ..., `Peak_K_Height` | `processing/peak_features.py` | Dynamic peak heights |
+| `peak_near_*` | `processing/targeted_peak_features.py` | Heights near fixed anchors used by the current model tabs |
+| `Peak_1_Height`, ..., `Peak_K_Height` | `processing/peak_features.py` | Exploratory dynamic heights in the separate peak artifact |
 
-NaN values in peak columns are filled with 0 before training (`df[available].fillna(0)`), not dropped. This preserves rinsate and low-concentration samples where peaks may not be detected.
+Missing feature values are filled with zero before training (`df[available].fillna(0)`). Missing measurements, unavailable features, and undetected peaks are distinct cases; their coordinated scientific treatment remains pending.
 
 ### 13.3 Model training (`classification/models.py`)
 
@@ -621,17 +618,23 @@ NaN values in peak columns are filled with 0 before training (`df[available].fil
 - `random_state = 42`
 - Radial basis function kernel for nonlinear decision boundaries
 
-**Preprocessing:** Both models receive `StandardScaler`-transformed features. The scaler is fit on the training set and applied to the test set (no data leakage).
+**Preprocessing:** Both models receive `StandardScaler`-transformed features fitted on the outer training rows. Upstream PCA and screening use the derived cohort before splitting; the tuning CV also receives already-scaled outer-training data. The full path is not a training-only preprocessing pipeline.
 
 **Evaluation metrics:** Accuracy, weighted precision, weighted recall, weighted F1-score, and confusion matrix. The weighted averaging accounts for potentially imbalanced class sizes.
 
-**Best model selection:** The application layer (`classification_service.py`) selects the model with the higher weighted F1-score as the "best" result for display.
+**Best model selection:** The application selects the higher held-out weighted F1 result for display; the two-stage regressor also routes with that selection. Global regression selects by held-out RMSE. These are exploratory comparisons, not an untouched final test estimate after model selection.
 
 ### 13.4 Theoretical basis
 
 Random Forest is an **ensemble of decision trees** trained on bootstrap samples with random feature subsets at each split. It is robust to overfitting and provides feature importance scores. RBF-SVM maps inputs to a high-dimensional feature space via the kernel `K(x, x') = exp(-γ ||x - x'||²)` and finds the maximum-margin hyperplane. Both are well-established baselines for small-to-medium tabular classification tasks. The choice of these models (rather than deep learning) is appropriate given the dataset size (hundreds to low thousands of samples) and the interpretability requirements of a research setting.
 
 ---
+
+### 13.5 Validation tables and sample alignment
+
+`assessment/validation_metrics.py` predicts with repeated sensor holdouts and computes identification rates only on held-out rows. Classification and regression frames retain unique original source indices. Regression predictions are reindexed onto classification rows; controls and other rows without regression predictions remain unavailable. Model arrays and split masks use row positions independently of source labels.
+
+A failed classifier or regressor fit raises a contextual exception including the fold, and the Validation UI displays an error without tables or downloads for that request. True labels never substitute for predictions. With fewer than two sensors, no model is fitted; counts/CV remain available, evaluation counts are zero, and ML rates are blank or N/A.
 
 ## 14. Application layer: Streamlit frontend
 
@@ -818,7 +821,7 @@ This package holds **alternative concentration-regression experiments** (predict
 - **`get_raman_shift(df)`** — Extracts the wavenumber array from `rs_*` column names.
 - **`get_metadata_columns(df)`** — Returns metadata-only DataFrame.
 - **`wide_to_tidy(df)`** — Melts wide → long format with `raman_shift` and `intensity` columns.
-- **`load_sers_data_as_wide_and_tidy(paths)`** — Convenience: returns `(wide_df, tidy_df)`.
+- **`load_sers_data_as_wide_and_tidy(paths)`** — Returns `(wide_df, tidy_df, load_report)` with per-file outcomes.
 - **`count_unique_spectra(df)`** — Counts unique `(filename, signal_index)` pairs.
 
 **Constants:** `REQUIRED_METADATA_KEYS`, `META_COLS`, `RS_COL_PREFIX = "rs_"`, `RAMAN_SHIFT_DECIMALS = 2`.
@@ -835,6 +838,7 @@ This package holds **alternative concentration-regression experiments** (predict
 ### `features.py`
 
 - **`extract_basic_features(df_wide)`** — Computes `max_intensity`, `mean_intensity`, `integral_area`, `PC1`, `PC2` per sample. Joins PCA features from `add_pca_features`.
+  Integral area uses the actual Raman coordinates, with units of intensity times Raman-shift units. Nonfinite integrals and spectra with fewer than two coordinates have `NaN` area and a logged warning; unavailable rows do not alter valid rows, and no sum or implicit imputation substitutes for the integral. PCA scores are fitted to the supplied dataset for exploration, not within classification training folds.
 - **`get_available_feature_columns(df, peak_infos_by_serotype)`** — Returns ordered list of available feature columns (basic + dynamic peaks) in preferred display order.
 - **`order_features_by_preference(features)`** — Sorts by `PREFERRED_FEATURE_ORDER`; extras appended alphabetically.
 - **Constants:** `BASIC_FEATURE_COLUMNS`, `PREFERRED_FEATURE_ORDER`, `DEFAULT_GLOBAL_QA_FEATURES`, `CLASSIFICATION_FEATURE_BASE`.
@@ -898,7 +902,7 @@ This package holds **alternative concentration-regression experiments** (predict
 - **`CleanedRegressionResult`** — Two-pass: raw + clean metrics, outlier mask.
 - **`fit_concentration_regression(df, feature_col)`** — Single OLS fit on `log_concentration` vs. feature.
 - **`fit_concentration_regression_cleaned(df, feature_col)`** — Two-pass with residual IQR outlier removal.
-- **`get_zero_cfu_baseline(df, feature_col)`** — Mean feature for 0 CFU samples.
+- **`get_zero_cfu_baseline(df, feature_col)`** — Mean feature for explicit rinsate controls.
 - **`get_global_model_consistency(df, feature_cols)`** — Raw metrics for all `(sensor, serotype, feature)` combinations.
 - **`get_global_model_consistency_qa(df, feature_cols)`** — Full QA pipeline with dual-threshold exclusion.
 - **`MacroRegressionResult`** — Pooled batch-level: two-pass with macro outlier detection.
@@ -964,7 +968,7 @@ Typed dataclasses for all inter-layer data transfer (see §14.4 for the complete
 
 ### `dataset_pipeline.py`
 
-- **`load_uploaded_bundle(files_data)`** — Writes uploaded bytes to temp dir → `load_sers_data_as_wide_and_tidy` → `LoadedDataBundle`.
+- **`load_uploaded_bundle(files_data)`** — Validates simple, unique filenames before writing bytes to a temporary directory, then parses into `LoadedDataBundle`. Case/Unicode-equivalent names are rejected because spectrum identity is `(filename, signal_index)`.
 - **`build_derived_bundle(loaded_bundle, min_shift, max_shift, n_peaks, ...)`** — Full preprocessing: `preprocess_metadata` → **`snap_spectra_to_master_grid`** → `trim_raman_shift` → `extract_basic_features` → `extract_dynamic_peak_features` → `DerivedDataBundle`.
 
 ### `filtering_service.py`
@@ -1134,23 +1138,13 @@ The `tests/test_application_services.py` module is compatible with both **`pytes
 
 ---
 
-## 27. Policy constants & configuration SSOT
+## 27. Settings ownership and reproducibility
 
-The project is moving toward a config SSOT, but it is not fully there yet.
+`config/model_policies.py` owns shared QA thresholds, model/search settings, split seeds, and Validation evaluation guards. `config/preprocessing.py` owns the reference exposure and App normalization default. Spectral grid tolerances and default fixed anchors have their own shared config modules.
 
-`config/model_policies.py` now centralizes several important cross-module values:
-- global QA thresholds
-- batch-deviation z-threshold used by the app-facing assessment service
-- Classification train/test split, seed, forest size, and inlier feature policy
+Function parameters and local constants own settings used by one calculation, such as the degradation stability threshold and peak-detection defaults. A value belongs in shared configuration when multiple callers need the same policy; centralized storage is not a requirement for every numeric literal.
 
-There are still some hardcoded values outside `config`, for example:
-- the `0.5%` stability threshold in `assessment/degradation.py`
-- the `min_per_class = 2` guard in `classification/models.py`
-- the peak-detection constants in `processing/peak_features.py`
-
-This design follows the project's `AGENTS.md` rule: *"Read parameters, paths, and magic numbers strictly from config files. NEVER hardcode them."*
-
-So the current state is better than before, but not finished. If more thresholds or model settings become shared policy rather than local implementation detail, they should move into `config/`.
+MTL's `random_state` controls the training-row sub-split and CPU PyTorch initialization, dropout, and minibatch shuffling. Training restores the caller's CPU RNG state. Repeatability applies within the same runtime/hardware; it is not a cross-platform numerical guarantee. The existing MTL validation split and fine-tuning policy are separate from RNG ownership.
 
 ---
 
@@ -1160,7 +1154,7 @@ So the current state is better than before, but not finished. If more thresholds
 
 1. **Wide-format as canonical representation.** The wide format (one row per spectrum, one column per wavenumber) enables fast NumPy vectorized operations. Tidy format is derived for plotting only. This means column names encode data (Raman shift values), which is unusual but enables the `rs_` prefix convention for programmatic column selection.
 
-2. **Serotype-specific peak detection.** Peaks are learned per serotype because different bacteria have distinct SERS fingerprints. Using a global peak set would conflate serotype-specific peaks, reducing feature quality. The 0 CFU exclusion prevents background-dominated peaks from appearing as anchors.
+2. **Serotype-specific peak detection.** Exploratory anchors are learned separately per serotype from explicit bacterial samples. Controls do not supply anchors. The efficacy of this representation for held-out prediction requires training-only evaluation.
 
 3. **Two-pass regression for robustness.** The residual IQR approach for outlier detection in regression (§11.3) is more targeted than applying IQR to the raw feature values. A point can be an outlier *relative to the regression model* (high residual) without being extreme in the feature distribution. This distinction matters when the feature naturally varies with concentration.
 
@@ -1172,13 +1166,13 @@ So the current state is better than before, but not finished. If more thresholds
 
 ### 28.2 Limitations
 
-1. **No baseline correction.** The pipeline does not implement spectral baseline subtraction (e.g., SNIP, polynomial fitting, or asymmetric least squares). Features like `integral_area` include baseline contribution. This is acceptable when comparing sensors under identical conditions but limits cross-instrument comparability.
+1. **Input preprocessing provenance.** The pipeline does not implement additional spectral baseline subtraction. LJ identifies current New Format inputs as provider-corrected Clean Peaks; see `DATA_SCOPE.md`. Integral area includes any remaining baseline contribution. Do not infer raw instrument provenance from the Raman Shift coordinate label.
 
 2. **No cosmic ray removal.** Single-point intensity spikes from cosmic rays are not explicitly handled. They may inflate `max_intensity` and skew peak detection. The outlier detection at the feature level (§9) provides indirect mitigation.
 
 3. **Linear dose-response assumption.** The regression model assumes `feature = a × log₁₀(concentration) + b`. If the true dose-response is nonlinear (e.g., saturation at high concentrations), the linear model will underperform. R² values should be interpreted with this limitation in mind.
 
-4. **Small classifier evaluation.** The 80/20 split with a single seed (`random_state=42`) provides a point estimate of classification performance. Cross-validation or repeated splits would provide uncertainty estimates but are not currently implemented.
+4. **Exploratory evaluation.** Classification uses a stratified row holdout, while regression and Validation tables use sensor holdouts (Validation repeats five rounds). Repeated spectra can share a sensor across classification splits. Pre-split PCA/screening and held-out model selection limit prospective interpretation; repeated holdout alone does not resolve these issues.
 
 5. **No spectral deconvolution.** Overlapping peaks are not decomposed. The peak height extraction uses a simple max-within-window approach (§8.5), which may underestimate heights for partially overlapping peaks.
 

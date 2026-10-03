@@ -5,7 +5,8 @@ Application-layer dataset pipeline for the Streamlit app.
 from __future__ import annotations
 
 import tempfile
-from pathlib import Path
+import unicodedata
+from pathlib import Path, PureWindowsPath
 
 import pandas as pd
 
@@ -15,6 +16,7 @@ from sensd_sers_analysis.application.contracts import (
     PeakArtifacts,
 )
 from sensd_sers_analysis.data import load_sers_data_as_wide_and_tidy, wide_to_tidy
+from sensd_sers_analysis.processing.normalization import normalize_integration_time
 from sensd_sers_analysis.processing import (
     extract_basic_features,
     extract_dynamic_peak_features,
@@ -33,22 +35,42 @@ def load_uploaded_bundle(
     Parameters
     ----------
     files_data:
-        Tuple of `(filename, file_bytes)` pairs from the Streamlit uploader.
+        Tuple of `(filename, file_bytes)` pairs. Filenames must be simple,
+        unique basenames because spectrum identity uses filename/signal index.
 
     Returns
     -------
     LoadedDataBundle
         Parsed bundle containing the raw wide and tidy dataframes.
+
+    Raises
+    ------
+    ValueError
+        For path-like or duplicate filenames, before writing uploaded bytes.
+        Name comparisons ignore case and Unicode normalization differences.
     """
 
     if not files_data:
         return LoadedDataBundle(wide_df=pd.DataFrame(), tidy_df=pd.DataFrame())
 
+    seen_names: set[str] = set()
+    for name, _ in files_data:
+        if (
+            not name
+            or name in {".", ".."}
+            or any(char in name for char in ("/", "\\", "\0"))
+            or PureWindowsPath(name).drive
+        ):
+            raise ValueError(f"Upload filename must be a simple basename: {name!r}")
+        identity = unicodedata.normalize("NFC", name).casefold()
+        if identity in seen_names:
+            raise ValueError(f"Duplicate upload filename: {name!r}. Use distinct filenames.")
+        seen_names.add(identity)
+
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
         paths = [tmp_path / name for name, _ in files_data]
-        for (name, content), file_path in zip(files_data, paths):
-            del name
+        for (_, content), file_path in zip(files_data, paths):
             file_path.write_bytes(content)
         wide_df, tidy_df, load_report = load_sers_data_as_wide_and_tidy(
             [str(file_path) for file_path in paths]
@@ -64,6 +86,7 @@ def build_derived_bundle(
     max_shift: float | None = None,
     n_peaks: int = 6,
     n_peaks_by_serotype: dict[str, int] | None = None,
+    normalize_exposure: bool = False,
 ) -> DerivedDataBundle:
     """
     Build the full derived dataframe bundle used across the Streamlit app.
@@ -80,6 +103,9 @@ def build_derived_bundle(
         Default peak count used when serotype-specific counts are not provided.
     n_peaks_by_serotype:
         Optional mapping of serotype to peak count.
+
+    normalize_exposure:
+        Scale raw intensities to the configured reference exposure before extracting features.
 
     Returns
     -------
@@ -104,6 +130,8 @@ def build_derived_bundle(
         )
 
     wide_df = preprocess_metadata(loaded_bundle.wide_df)
+    if normalize_exposure:
+        wide_df = normalize_integration_time(wide_df)
     wide_df = snap_spectra_to_master_grid(wide_df)
     wide_df = trim_raman_shift(wide_df, min_shift=min_shift, max_shift=max_shift)
 

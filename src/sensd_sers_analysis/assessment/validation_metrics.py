@@ -162,8 +162,8 @@ def _add_target_concentration_group(df: pd.DataFrame) -> pd.DataFrame:
     Attach ``_target_group`` for table grouping using the nominal target.
 
     Reuses :func:`~sensd_sers_analysis.processing.add_target_concentration_group`
-    so the binning policy (target-first, with actual-concentration fallback)
-    matches the rest of the pipeline. The resulting label is copied into the
+    so exact recorded-target labels match the rest of the pipeline; missing
+    targets remain unknown. The resulting label is copied into the
     internal ``_TARGET_GROUP_COL`` used by the table builders.
     """
     out = df.copy()
@@ -249,7 +249,7 @@ def _fit_global_classifier_predict_all(
     Parameters
     ----------
     work:
-        Full labeled dataframe (reset index).
+        Full labeled dataframe; array positions preserve its row order.
     feature_cols:
         Model input columns.
     train_idx:
@@ -318,14 +318,11 @@ def _map_regression_predictions_to_classification_rows(
     pred_log_reg: np.ndarray,
 ) -> np.ndarray:
     """Align regressor outputs (regression row order) onto classification rows."""
-    n_rows = len(classification_work)
-    pred_log_all = np.full(n_rows, np.nan, dtype=float)
-    orig_to_pos = {orig_idx: pos for pos, orig_idx in enumerate(classification_work.index)}
-    for reg_pos, orig_idx in enumerate(regression_df.index):
-        work_pos = orig_to_pos.get(orig_idx)
-        if work_pos is not None:
-            pred_log_all[work_pos] = float(pred_log_reg[reg_pos])
-    return pred_log_all
+    return (
+        pd.Series(pred_log_reg, index=regression_df.index)
+        .reindex(classification_work.index)
+        .to_numpy(dtype=float)
+    )
 
 
 def _fit_one_validation_fold(
@@ -343,8 +340,6 @@ def _fit_one_validation_fold(
     n_rows = len(classification_work)
     eval_mask = np.zeros(n_rows, dtype=bool)
     eval_mask[test_idx] = True
-    y_true = classification_work[target_col].map(str).to_numpy(dtype=object)
-
     try:
         y_pred = _fit_global_classifier_predict_all(
             classification_work,
@@ -353,8 +348,7 @@ def _fit_one_validation_fold(
             target_col=target_col,
         )
     except (ValueError, TypeError) as exc:
-        logger.warning("Validation classifier fold failed: %s", exc)
-        y_pred = y_true.copy()
+        raise ValueError(f"Validation classifier fold failed: {exc}") from exc
 
     pred_log_all: Optional[np.ndarray] = None
     if (
@@ -379,7 +373,7 @@ def _fit_one_validation_fold(
                     pred_log_reg,
                 )
             except (ValueError, TypeError) as exc:
-                logger.warning("Validation regressor fold failed: %s", exc)
+                raise ValueError(f"Validation regressor fold failed: {exc}") from exc
 
     return ValidationFoldPredictions(
         y_pred=y_pred,
@@ -412,7 +406,8 @@ def fit_validation_predictions(
     classification_work:
         Classification dataframe with ``_target_group`` already attached.
     regression_df:
-        Positive-CFU regression rows (may be empty).
+        Positive-CFU rows with their original source indices (may be empty).
+        Indices must be unique and a subset of the classification indices.
     feature_cols:
         Shared ML feature columns.
     test_size:
@@ -429,23 +424,33 @@ def fit_validation_predictions(
     Returns
     -------
     ValidationPredictions
-        True labels plus one prediction bundle per successful fold.
+        True labels and predictions for every requested holdout fold. With fewer
+        than two sensors, no models are fitted and the fold tuple is empty.
+
+    Raises
+    ------
+    ValueError
+        For ambiguous row indices, invalid splits, or a failed model fit. Failed
+        predictions are never replaced with labels or omitted from a fold average.
     """
-    n_rows = len(classification_work)
+    if not classification_work.index.is_unique or not regression_df.index.is_unique:
+        raise ValueError("Validation input indices must uniquely identify source spectra.")
+    if not regression_df.index.isin(classification_work.index).all():
+        raise ValueError("Regression indices must be a subset of classification source indices.")
     y_true = classification_work[target_col].map(str).to_numpy(dtype=object)
     groups = classification_work[sensor_col].astype(str).to_numpy(dtype=object)
     unique_sensors = np.unique(groups)
 
     folds: list[ValidationFoldPredictions] = []
     if unique_sensors.size >= 2:
-        try:
-            split_pairs = iter_group_train_test_indices(
-                groups,
-                n_splits=n_splits,
-                test_size=test_size,
-                random_state=random_state,
-            )
-            for train_idx, test_idx in split_pairs:
+        split_pairs = iter_group_train_test_indices(
+            groups,
+            n_splits=n_splits,
+            test_size=test_size,
+            random_state=random_state,
+        )
+        for fold_number, (train_idx, test_idx) in enumerate(split_pairs, start=1):
+            try:
                 folds.append(
                     _fit_one_validation_fold(
                         classification_work,
@@ -458,41 +463,20 @@ def fit_validation_predictions(
                         target_col=target_col,
                     )
                 )
-        except ValueError as exc:
-            logger.warning("Validation sensor holdout unavailable: %s", exc)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Validation fold {fold_number}/{len(split_pairs)}: {exc}"
+                ) from exc
     else:
         logger.warning(
             "Validation sensor holdout skipped: need >=2 sensors, found %d.",
             unique_sensors.size,
         )
 
-    if not folds:
-        # Fallback: train on all rows; no honest eval mask (metrics stay blank).
-        train_idx = np.arange(n_rows, dtype=np.intp)
-        test_idx = np.array([], dtype=np.intp)
-        folds.append(
-            _fit_one_validation_fold(
-                classification_work,
-                regression_df,
-                feature_cols,
-                train_idx,
-                test_idx,
-                groups,
-                sensor_col=sensor_col,
-                target_col=target_col,
-            )
-        )
-        return ValidationPredictions(
-            y_true=y_true,
-            folds=tuple(folds),
-            sensor_holdout_available=False,
-            n_splits=0,
-        )
-
     return ValidationPredictions(
         y_true=y_true,
         folds=tuple(folds),
-        sensor_holdout_available=True,
+        sensor_holdout_available=bool(folds),
         n_splits=len(folds),
     )
 
@@ -754,7 +738,7 @@ def build_concentration_repeatability_table(
     Parameters
     ----------
     work:
-        Classification dataframe with ``_target_group`` attached (reset index).
+        Classification dataframe with ``_target_group`` attached; source indices retained.
     predictions:
         Repeated sensor-holdout outputs from :func:`fit_validation_predictions`.
     repeatability_feature:
@@ -805,7 +789,7 @@ def build_quantification_table(
     Parameters
     ----------
     work:
-        Classification dataframe with ``_target_group`` attached (reset index).
+        Classification dataframe with ``_target_group`` attached; source indices retained.
     predictions:
         Repeated sensor-holdout outputs.
     accuracy_threshold:
@@ -892,7 +876,7 @@ def build_consistency_reusability_table(
     Parameters
     ----------
     work:
-        Classification dataframe with ``_target_group`` attached (reset index).
+        Classification dataframe with ``_target_group`` attached; source indices retained.
     predictions:
         Repeated sensor-holdout outputs from :func:`fit_validation_predictions`.
     repeatability_feature:
@@ -1040,7 +1024,7 @@ def build_validation_tables(
             predictions=None,
         )
 
-    work = _add_target_concentration_group(classification_df.copy()).reset_index(drop=True)
+    work = _add_target_concentration_group(classification_df)
     predictions = fit_validation_predictions(work, regression_df, feature_cols)
 
     table1 = build_concentration_repeatability_table(

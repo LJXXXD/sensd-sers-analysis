@@ -13,7 +13,9 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
-from sensd_sers_analysis.utils.natural_sort import order_concentration_labels
+from sensd_sers_analysis.utils.natural_sort import order_concentration_labels, natural_sort
+from sensd_sers_analysis.utils import format_column_label
+from sensd_sers_analysis.config.metadata_schema import SPECTRA_CONTINUOUS_FACTORS
 
 RAMAN_SHIFT_COL = "raman_shift"
 INTENSITY_COL = "intensity"
@@ -70,7 +72,26 @@ def plot_spectra(
 
     spectrum_id = df[FILENAME_COL].astype(str) + "_" + df[SIGNAL_INDEX_COL].astype(str)
 
-    hue_is_numeric = hue is not None and hue in df.columns and df[hue].dtype.kind in ("i", "f")
+    hue_is_numeric = hue in SPECTRA_CONTINUOUS_FACTORS and hue in df.columns
+    df = df.copy()
+    for factor in dict.fromkeys(value for value in (hue, style) if value is not None):
+        if factor not in df:
+            raise ValueError(f"Unknown plot factor: {factor}")
+        if factor == hue and hue_is_numeric:
+            df[factor] = pd.to_numeric(df[factor], errors="coerce")
+        else:
+            df[factor] = (
+                df[factor]
+                .map(
+                    lambda value: (
+                        f"{value:g}"
+                        if isinstance(value, (int, float)) and pd.notna(value)
+                        else value
+                    )
+                )
+                .astype("string")
+                .fillna("Not recorded")
+            )
 
     if hue_is_numeric:
         norm = _prepare_continuous_hue(df, hue, vmin, vmax)
@@ -95,6 +116,8 @@ def plot_spectra(
     }
     if hue is not None:
         plot_kwargs["hue"] = hue
+        if not hue_is_numeric:
+            plot_kwargs["hue_order"] = natural_sort(df[hue].unique().tolist())
         if hue == "concentration_group" and hue in df.columns:
             vals = df[hue].astype(str).dropna().unique().tolist()
             vals = [v for v in vals if v]
@@ -181,7 +204,7 @@ def _format_errorbar_text(errorbar: Union[str, tuple]) -> str:
 
 def _hue_to_label(hue_name: str) -> str:
     """Convert hue column name to colorbar label."""
-    return hue_name.replace("_", " ").strip().capitalize()
+    return format_column_label(hue_name)
 
 
 def _validate_data(df: pd.DataFrame) -> None:

@@ -1,190 +1,93 @@
-# Architectural audit: `src/sensd_sers_analysis` and `apps/`
+# Architecture and maintenance review
 
-**Scope:** Software architecture, separation of concerns, Streamlit execution patterns, and structural code quality.
+This document describes the current `src/sensd_sers_analysis` and `apps` implementation. It records responsibilities and maintenance questions, not permanent directory requirements or authorization for proposed migrations. Scientific contracts and algorithms are described in [THEORY_AND_IMPLEMENTATION.md](THEORY_AND_IMPLEMENTATION.md); input scope and metadata are described in [DATA_SCOPE.md](DATA_SCOPE.md).
 
-**Out of scope:** Mathematical formulas, ML hyperparameters, or scientific algorithm choices unless noted as coupling or configuration drift.
+## Current responsibilities
 
-**Codebase:** Installable package `sensd_sers_analysis` (repository `sensd-sers-analysis`).
-
-**Companion doc:** [`THEORY_AND_IMPLEMENTATION.md`](THEORY_AND_IMPLEMENTATION.md) describes the scientific pipeline, data model, and module responsibilities for day-to-day use. **This audit is not redundant with that file:** THEORY focuses on *what the pipeline computes*; this document focuses on *layer boundaries, UI coupling, and maintainability debt*.
-
-**History:** An older “deep” audit file (`ARCHITECTURE_AUDIT_SRC_AND_APPS_DETAILED.md`) duplicated most of this material at greater length; it was merged here and retired so a single audit stays current.
-
----
-
-## 1. Layered topology (current)
-
-| Layer | Location | Responsibility |
-| --- | --- | --- |
-| Presentation | `apps/` | Streamlit layout, widgets, messaging, downloads |
-| Application orchestration | `src/sensd_sers_analysis/application/` | Cached pipelines, filter serialization, PDF/report orchestration, DTOs (`contracts.py`) |
-| Domain | `data/`, `processing/`, `assessment/`, `classification/`, `regression/` | Parsing, features, QA, classification, concentration-regression paradigms |
-| Visualization | `visualization/` | Matplotlib/seaborn figures (some paths still pull fitting helpers from `assessment/`) |
-| Reporting | `report/` | ReportLab PDF assembly from precomputed tables and figures |
-| Policy SSOT | `config/` | Thresholds and policy constants (`model_policies.py`, `spectral_policies.py`, `targeted_peaks.py`, …) |
-| Utilities | `utils/` | Labels, natural sort, parsing |
-
-**Dependency rule:** Lower layers do not import Streamlit. `apps/` imports `sensd_sers_analysis.application` and domain subpackages as needed.
-
----
-
-## 2. What improved since earlier audits
-
-These items previously flagged as gaps have largely been addressed:
-
-- **`application/` layer:** `dataset_pipeline.py`, `filtering_service.py`, assessment/sensor/classification/regression services, and typed contracts replace much of the old “fat `app.py` doing everything” pattern.
-- **Caching:** `apps/cache.py` memoizes derived bundles, filters, and several assessment/classification/regression artifact builders.
-- **Session state:** `apps/state.py` centralizes peak artifact persistence and filter widget keys (`get_filter_widget_key(column)`), avoiding display-label coupling that older audits criticized.
-- **Peak diagnostics:** Plotting for peak discovery lives under `visualization/peak_discovery.py` with preparation in `application/peak_discovery_service.py`; tabs delegate rather than owning all matplotlib logic.
-- **Legacy Sensor QC PDF:** `sensor_qc_legacy` routes through cached `build_cached_sensor_assessment_artifacts` and `build_sensor_assessment_pdf_bytes`, reducing duplicate orchestration versus the older pattern.
-- **Config:** Global QA, serotype-classification policy, batch deviation, and related constants are centralized in `config/model_policies.py` (with ongoing migration noted in THEORY §27).
-- **TXT → Excel prep mode:** `apps/txt_to_excel.py` is a separate Streamlit shell (session key `_app_mode`) for merging instrument `.txt` exports into embedded-metadata workbooks. Analysis mode links to it via sidebar **Convert TXT → Excel**; prep does not import domain modules beyond shared visualization.
-- **Extended embedded Excel I/O:** `data/io.py` now parses per-signal **File Name** and **Special Treatment** rows, prefers an **Actual Concentration** row when present (falling back to the first concentration-labeled row), and allows blank target CFU cells in prep-generated workbooks.
-- **Master-grid Raman alignment:** `processing/alignment.py:snap_spectra_to_master_grid` runs in `build_derived_bundle` before trim/features, aligning heterogeneous sensor grids via overlap-localized linear interpolation (dedupe tolerances in `config/spectral_policies.py`).
-- **Empty-state onboarding:** Analysis and prep modes both render title + info + numbered **Next steps** when no files are loaded, reducing first-run confusion without adding domain logic.
-- **Prep metadata UX:** Sixteen-field grid layout, JSON preset v1 with selective export, reload snapshot that preserves instrument settings while clearing run-specific IDs, and merged-preview legends that show Target/Actual/source-TXT provenance.
-
----
-
-## 3. Architectural map (concise)
-
-### 3.1 Package layout
-
-| Area | Role |
+| Area | Responsibility |
 | --- | --- |
-| `src/sensd_sers_analysis/` | Library: I/O, preprocessing, features, assessment, classification, **regression paradigms**, visualization, PDF reports, application services |
-| `apps/` | Streamlit “SERS Data Explorer”: dual-mode shell (analysis + TXT prep), upload, sidebar filters, **ten** analysis tabs |
+| `apps/app.py` | Streamlit composition, analysis/prep mode selection, sidebar controls, and tab dispatch |
+| `apps/components`, `apps/tabs` | Widgets, messages, tables, figures, and downloads |
+| `apps/cache.py`, `apps/state.py` | Streamlit caching and session-state adapters |
+| `application` | Dataset preparation, filtering, inventory, assessment/model orchestration, and artifact contracts |
+| `data`, `processing` | Embedded-workbook parsing, metadata, normalization, grid alignment, features, and filters |
+| `assessment`, `classification`, `regression` | Scientific calculations, screening, model preparation, training, and evaluation |
+| `visualization`, `report` | Figure construction and PDF assembly |
+| `config`, `utils` | Shared settings/policies and small utilities with identifiable ownership |
 
-**Import boundary:** `apps/` imports `sensd_sers_analysis.*`, `cache`, `components`, `tabs`, `theme`, `state`, and (for prep only) `txt_to_excel`. The library does not import `apps/`.
+The library currently has no dependency on Streamlit or `apps`. Streamlit cache decorators live in `apps/cache.py` and the upload component; the application services remain callable independently of the UI.
 
-### 3.2 `apps/app.py` (composition root)
+`apps/txt_to_excel.py` contains both the prep UI and parsing/workbook-export logic. Its current single-file form reflects deferred extraction, not a permanent architecture exception. Structural extraction is pending LJ's review; narrow converter correctness fixes do not require treating that layout as the intended long-term design.
 
-**Dual app modes:** When `st.session_state["_app_mode"] == "prep"`, `app.py` calls `render_prep_mode()` from `txt_to_excel.py` and `st.stop()`s before analysis UI. Otherwise it renders `render_prep_entry_in_sidebar` (link into prep mode) and the analysis pipeline below.
+## Active analysis flow
 
-Analysis mode orchestrates: upload → `load_from_uploaded` / `LoadedDataBundle` → Raman sidebar bounds → `build_cached_derived_bundle` (includes master-grid snap) → `write_peak_artifacts_to_state` → filter catalog + `apply_cached_filters` → optional `merge_targeted_peaks_into_filtered_bundle` for downstream tabs → tab dispatch.
+1. `render_data_source` chooses bundled dilution workbooks or uploaded bytes. Uploads replace the bundled selection; Unload retains an empty state and Load example data restores bundled input.
+2. `load_uploaded_bundle` parses embedded workbooks into wide/tidy data and a per-file load report. File names and bytes participate in the upload cache key.
+3. `build_derived_bundle` enriches metadata, optionally normalizes integration time, aligns native Raman grids, trims the spectral window, and builds basic/PCA/dynamic-peak artifacts.
+4. Filter services produce aligned tidy and feature views. Inventory and Spectra use the filtered pre-QA data; targeted peak features are merged for downstream analysis.
+5. Tabs call cached services or domain functions and render their results. PDF actions assemble reports from the corresponding data/artifacts.
 
-When no workbook is uploaded, analysis mode renders a branded empty state (`st.title("SERS Data Explorer")`, sidebar-oriented info callout, numbered **Next steps** checklist) instead of stopping silently — same onboarding pattern as prep mode.
+The default bundled source uses the three directories in `config/example_data.py`, not every file under `example_data`. Raw TXT inputs under `example_data/txt_to_excel` are available for manual prep-mode use and are not part of the bundled workbook loader.
 
-Compared to legacy audits, **`app.py` is materially thinner**: derivation and filtering are delegated to `application/` + `cache.py`. Prep orchestration stays in `txt_to_excel.py` (~1.8k lines) by design — it is presentation-layer I/O tooling, not domain logic.
+## Current navigation
 
-### 3.3 Notable library surfaces
-
-- **`data/io.py`:** Embedded-metadata Excel → wide/tidy; per-signal provenance columns (`source_txt_filename`, `special_treatment`); Actual-vs-Target concentration row selection; `RS_COL_PREFIX`, `META_COLS`, `load_sers_data`, `wide_to_tidy`, etc.
-- **`processing/`:** Metadata enrichment, **master-grid snap** + trim (`alignment.py`), filters (including new metadata filter columns), PCA, dynamic peaks (`peak_features.py`), **targeted peaks** (`targeted_peak_features.py`).
-- **`assessment/`:** Consistency, outliers, degradation, batch variance, regression-based sensor QA (`sensor_assessment_regression.py`).
-- **`classification/`:** Clean-frame prep for serotype ML, RF/SVM training, plots.
-- **`regression/`:** Alternative concentration-regression paradigms (global, two-stage, multi-task / `MtlSpectralNet`), splits, metrics, plots — exercised from Streamlit tabs `regression_global`, `regression_two_stage`, `regression_mtl`.
-- **`application/`:** Services bridging UI and domain (`*_service.py`), `contracts.py` DTOs, `dataset_pipeline.py`, `merge_targeted_peaks_into_filtered_bundle`, regression PDF builders via `regression_service.py`.
-- **`visualization/`:** Spectra, stats, assessment plots, peak discovery plots, targeted peak plots.
-- **`report/pdf_builder.py`:** Sensor assessment PDFs, sensor-assessment QA PDF, serotype classification report PDF, **regression** PDF helpers consumed by application services.
-
----
-
-## 4. Primary data flows (end-to-end)
-
-### 4.1 Instrument TXT → embedded Excel (prep mode)
-
-1. **Upload `.txt` files** in prep sidebar → parse tab-separated instrument exports (`txt_to_excel._parse_txt_content`).
-2. **Metadata + per-signal rows:** Sixteen file-level metadata fields (sensor geometry, IDs, date/time, …), optional JSON **metadata preset** import/export, per-file Target/Actual concentration inputs (target may be blank), optional Special Treatment labels.
-3. **Merge + export:** Spectra merged on a shared Raman grid within user bounds → `_build_embedded_workbook_rows` → styled `.xlsx` bytes → download; merged preview uses shared `plot_spectra` inside an `@st.fragment` to limit rerun churn.
-
-Prep output workbooks feed the analysis pipeline via normal sidebar upload.
-
-### 4.2 Analysis mode (embedded Excel onward)
-
-1. **Upload → wide/tidy:** Bytes → temp paths → `load_uploaded_bundle` / `load_sers_data_as_wide_and_tidy` (reads per-signal provenance when present).
-2. **Derived bundle:** `preprocess_metadata` → **`snap_spectra_to_master_grid`** → trim Raman → basic features + dynamic peaks → `DerivedDataBundle` + `PeakArtifacts`.
-3. **Optional targeted peaks:** Session-managed anchor list merged into filtered features for analysis tabs (`merge_targeted_peaks_into_filtered_bundle`).
-4. **Filtering:** `FilterCatalog` + serialized `FilterState` → `FilteredBundle` (tidy + features; index alignment preserved).
-5. **Assessment / QA / Serotype classification / Regression tabs:** Call cached service builders then render tables and figures.
-
----
-
-## 5. Remaining separation-of-concerns and debt
-
-### 5.1 Visualization ↔ assessment coupling
-
-`visualization/assessment_plots.py` imports fitting helpers from `assessment.sensor_assessment_regression`. That keeps plotting convenient but binds presentation to regression internals. **Mitigation:** Prefer passing precomputed regression results into plot functions where feasible (pattern already used in places).
-
-### 5.2 Duplicate or parallel numerical machinery
-
-- Residual IQR in `sensor_assessment_regression.py` vs generic IQR in `assessment/outliers.py` — semantically related but separate implementations.
-- Macro batch pooling logic has historically appeared in both regression helpers and plotting paths; consolidate orchestration in domain/application layers when touching those modules.
-
-### 5.3 Broad exception handling in PDF UI
-
-`apps/components/shared_ui.py` — `render_pdf_download_section` still catches generic `Exception` around PDF generation. **Prefer:** narrow exceptions plus logging, or re-raise after logging in debug workflows.
-
-### 5.4 Session lifecycle
-
-`clear_app_data` remains a blunt reset (clears caches and session state). Namespaced state would scale better if many unrelated keys accumulate.
-
-### 5.5 Remaining rerun cost
-
-Caching covers major dataframe/service stages; plot construction and some tab bodies still rerun with Streamlit’s execution model. Prep mode already isolates post-convert download/preview in `@st.fragment` (`_render_prep_export_and_preview`); analysis tabs could adopt the same pattern where widget jitter is noticeable. Further gains would come from deferring expensive actions behind buttons or artifact caching keyed more aggressively — without changing scientific outputs.
-
-### 5.6 Package-level hygiene
-
-- Root `__init__.py` exposes a **small** curated API (data, assessment summaries, core plots, one PDF builder); the app correctly imports `processing`, `classification`, `application`, etc. via subpackages.
-- **`ConsistencyResult` / `DegradationResult`:** Defined dataclasses are not always the outward API; either adopt them as return types or simplify exports over time.
-
-### 5.7 Documentation drift
-
-Single source for “what exists” should remain aligned with `THEORY_AND_IMPLEMENTATION.md` (modules, tabs, config, prep mode). This audit should be updated when adding new tabs, services, prep/I/O format changes, or cross-cutting concerns.
-
----
-
-## 6. Refactoring backlog (prioritized, behavior-preserving)
-
-1. **Tighten PDF error boundaries** in `shared_ui` (specific exceptions + structured logging).
-2. **Reduce visualization→assessment imports** by threading precomputed results into assessment plots.
-3. **Namespace session reset** keys under a single prefix for safer reload behavior.
-4. **Consolidate duplicated pooling/IQR orchestration** between plotting and regression QA when next refactoring those files.
-5. **Extend characterization tests** beyond application services as critical paths grow (`regression/`, targeted peaks). Recent additions (`test_embedded_io_per_signal_rows.py`, `test_txt_to_excel_template.py`) cover prep/I/O edges but are not yet wired into CI documentation in README.
-
----
-
-## Appendix A — Streamlit tabs (current)
-
-| Tab | Module | Purpose |
-| --- | --- | --- |
-| Spectra Viewer | `tabs/spectra_viewer.py` | Tidy spectra plots |
-| Peak Discovery | `tabs/peak_discovery.py` | Peak window diagnostics |
-| Peak Feature Extraction | `tabs/peak_feature_extraction.py` | Targeted/dynamic peak tooling |
-| Feature Analysis | `tabs/feature_analysis.py` | Distributions / exploratory stats |
-| Sensor QC (legacy) | `tabs/sensor_qc_legacy.py` | CV-style QC + PDF |
-| Sensor assessment | `tabs/sensor_assessment.py` | Regression QA, overlays, sensor-assessment QA PDF |
-| Serotype Classification | `tabs/serotype_classification.py` | Serotype ML + classification report PDF |
-| Regression V1: Global | `tabs/regression_global.py` | Global concentration regressors |
-| Regression V2: Two-Stage | `tabs/regression_two_stage.py` | Two-stage paradigm |
-| Regression V3: MTL | `tabs/regression_mtl.py` | Multi-task / spectral-net style paradigm |
-
-Supporting: `tabs/regression_common.py` for shared regression UI glue.
-
----
-
-## Appendix B — Prep mode (`apps/txt_to_excel.py`)
-
-| Concern | Detail |
+| Main tab | Views and modules |
 | --- | --- |
-| Entry | Sidebar **Convert TXT → Excel** → `enter_prep_mode()` sets `_app_mode = "prep"` |
-| Exit | Prep sidebar **← Back to Analysis** → `enter_analysis_mode()` |
-| Empty state | Title **Raman TXT to Excel Merger** + info callout + numbered **Next steps** (mirrors analysis-mode onboarding) |
-| Metadata UI | Sixteen fields in a five-column grid (`METADATA_FIELD_SPECS`); required vs optional marked in labels; Notes (field 16) optional |
-| Workbook layout | 16 metadata rows → File Name / Special Treatment (per signal) → Target Concentration → Actual Concentration → spectral block |
-| Per-signal ordering | Uploaded `.txt` files sorted by CFU token extracted from filename (`_extract_cfu_sort_key`) before row/column assembly |
-| Concentration policy | Actual values required per signal; Target optional (blank → em dash `—` in merged preview legend: `Target: — / Actual: {n}`) |
-| Metadata presets | JSON import/export (`SERS_metadata_preset.json`, `TEMPLATE_VERSION = 1`); selective per-field export checkboxes |
-| Reload persistence | Prep **Reload Data** clears uploads and run-specific widgets (`sensor_id`, `test_id`, `connection_id`, `serotype`, `testing_time`, `notes`) but restores instrument geometry, acquisition settings, date, operator, and rinsate from `_txt2excel_persistent_metadata` |
-| Preview / export isolation | Post-convert download + merged spectrum preview live in `@st.fragment` (`_render_prep_export_and_preview`) to limit widget-layout jitter |
-| Library coupling | Uses `visualization.plot_spectra` + `components.shared_ui.render_figure_stretch`; workbook row builders are test-importable from `tests/` |
+| Data | Inventory (`data_inventory`), Spectra (`spectra_viewer`) |
+| Features | Discover peaks (`peak_discovery`), Extract features (`peak_feature_extraction`), Analyze features (`feature_analysis`) |
+| Sensor quality | Screening (`sensor_assessment`), Variability diagnostics (`sensor_qc`) |
+| Models | Classification (`serotype_classification`), Global/Two-Stage/MTL regression |
+| Validation | Validation tables (`validation_metrics`) |
 
----
+These are nested tabs in the current UI. Further navigation integration remains a product-design question; the table does not establish the desired final layout.
 
-## Appendix C — Session state and keys (representative)
+## Numerical and artifact boundaries
 
-Peak artifacts are written via `state.write_peak_artifacts_to_state`; filter widgets use canonical column keys from `state.get_filter_widget_key`. PDF bytes typically live under keys passed to `render_pdf_download_section`. Prep mode uses prefixed keys (`txt2excel_*`, `_txt2excel_*`) documented in `txt_to_excel.py`. For definitive key names, refer to `apps/state.py`, `apps/txt_to_excel.py`, and call sites — avoid duplicating string literals in new tabs.
+- Basic feature integration uses the actual Raman coordinates. Non-finite integrals or fewer than two coordinates produce an unavailable area rather than a sum of intensity samples.
+- Uploaded filenames are simple, unique basenames; case/Unicode-equivalent names fail before writing. The existing `(filename, signal_index)` spectrum identity does not support duplicate uploaded basenames. All non-spectral metadata survives wide-to-tidy conversion; reserved computed/spectral names and duplicate normalized metadata fields produce explicit per-file failures.
+- Workbook coordinates and intensities must be finite, with distinct Raman labels at the loader's two-decimal precision. Rows containing intensity data within the parsed block require a coordinate; only fully blank separator rows may be ignored. Invalid files appear in the load report instead of supplying ambiguous or substituted measurements.
+- Classification and concentration preparation retain original row labels and source order. Regression targets require finite log values and finite positive actual CFU. Validation maps predictions by unique source labels while split arrays/masks remain positional. Failed model fits abort that Validation request with a visible error; unavailable sensor holdout has no fallback fit and no ML scores.
+- MTL's seed controls CPU PyTorch initialization, dropout and shuffling as well as its NumPy sub-split. Its scoped RNG ownership restores the caller's CPU state; runtime/hardware differences remain outside the reproducibility guarantee.
+- `MacroRegressionResult` owns pooled coordinates, sensor labels, fit coefficients, metrics, and the point-aligned outlier mask. Macro plotting consumes that artifact directly; without a supplied result it computes one once.
+- Other assessment plotting functions can still call fitting helpers. Passing existing results is useful where it eliminates repeated work; splitting every plotting helper into a new service is not inherently necessary.
+- Dynamic peak discovery and shared PCA are fitted on the derived input before the classification/regression split. The current classification cleaning also uses labeled responses before splitting. Those paths support exploration but need a training-only evaluation design before scores represent a prospective held-out workflow.
+- PCA replaces missing/non-finite spectral values with zero; several model paths fill missing feature values with zero. Missing measurement, unavailable feature, and an undetected peak are different cases. Their scientific policy needs review rather than a generic fallback replacement.
 
----
+## Maintenance questions
 
-*End of audit document.*
+| Area | Evidence and next decision |
+| --- | --- |
+| Model evaluation | Define the intended independent unit, training-only preprocessing, screening, and model selection together. Avoid repairing PCA in isolation while leaving other leakage paths unchanged. |
+| Converter structure | Parsing and serialization are independently useful, but extraction is deferred. Keep its current UI/workbook behavior stable while choosing whether it remains a tool or becomes a separate package. |
+| Large modules | `validation_metrics`, `assessment_plots`, and `pdf_builder` group several related operations. Split only when responsibilities or repeated changes justify it; line count alone is insufficient. |
+| Error boundaries | Workbook loading records per-file failures; upload and PDF UI boundaries display failures. Broad catches at these outer boundaries are observable rather than silent. PDF failures retain a traceback through logging. |
+| PDF figure omissions | Sensor-assessment report preparation currently skips some plot `ValueError`s. Missing sections need an explicit report policy before those failures can be interpreted as complete assessment. |
+| Rerun cost | Cached numerical stages are separated from rendering. Profile actual reruns before adding more caching, fragments, or session abstractions. |
+| Session reset | `clear_app_data` clears caches and session state. Its lifecycle is deliberate; namespacing is useful only if unrelated state needs preservation. |
+
+Active checks are `pytest tests`, `ruff check apps src tests`, and formatting checks for affected code. Legacy tests depend on retired imports and are not part of this active suite. Numerical regression tests use independent expected quantities; artifact presence and a passing suite do not independently validate model generalization or archived scientific claims.
+
+## Evaluation paths requiring a coordinated design
+
+| Current path | Consequence to resolve before prospective claims |
+| --- | --- |
+| PCA/dynamic anchors fitted on the derived cohort before splitting | Held-out observations influence representation. Dynamic anchors also use serotype and nominal-dose labels. |
+| QA and pooled residual screening before splitting | The evaluated cohort depends on labeled concentration-response evidence. Define what screening evidence would be available for a future sample/sensor. |
+| Classification stratifies rows; regression/Validation hold out sensor IDs | These answer different generalization questions. Repeated spectra can share a sensor across classification train/test sets; recorded IDs do not establish physical-device or biological independence. |
+| Outer-training scaling precedes tuning CV | Inner validation folds influence the scaler used by the search. Use training-fold transformations when redesigning tuning. |
+| MTL early stopping splits training rows and scales using all outer-training rows | Within-training validation can share sensors and influence scaling. The tiny-training fallback can overlap training/validation rows; outer test sensors remain separate under the application split. |
+| Classification/two-stage select by held-out F1; global regression selects by held-out RMSE | The same holdout informs model choice and displayed performance. Keep final assessment separate from selection in a future design. |
+| Missing features filled with zero | Unavailable measurements and measured zeros share a representation. Define missingness and feature availability together with evaluation. |
+
+## Review coverage and verification boundary
+
+The active inventory contains 67 library and 25 App Python modules, including package export files. Inventory, imports, callable boundaries, error/imputation sites, and test routing are scanned across that surface. This is not a line-by-line acceptance of all 92 modules.
+
+| Area | Review depth |
+| --- | --- |
+| Workbook loading → metadata/normalization/grid alignment → scalar/peak features → filtering | Detailed source and caller review, independent input/quantity regressions, bundled-data smoke |
+| QA/classification/concentration preparation → model/split code → Validation tables/UI | Detailed identity, array/split, error handling, and reproducibility review; focused regressions |
+| Inventory, assessment/peak orchestration, configuration/utilities, plotting/report boundaries, App composition/cache/reset | Interface and selected calculation/caller review; existing focused coverage retained |
+| Converter metadata/template UI, the full plotting/PDF layout surface, other tab presentation branches | Not fully reviewed line by line; converter extraction and broader navigation/layout work remain outside this pass |
+
+The current checkpoint passes 155 active tests with five existing warnings (degenerate PCA fixtures and small search spaces), Ruff, and formatting for affected code. The bundled upload pipeline loads all 125 default workbooks/580 spectra, trims to 249 points at 450–1800 cm⁻¹ with normalization enabled, and retains finite integral areas matching an independent segment-by-segment trapezoidal sum. Its 412 classification and 322 regression rows retain aligned source indices; this smoke does not train new models. Counts describe all default categories/dates, not the restricted recent ST/SE cohort. Full live-App reruns, every PDF layout, archived accuracy reproduction, and prospective scientific validity are not established by these checks.

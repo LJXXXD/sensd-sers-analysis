@@ -116,6 +116,21 @@ KNOWN_FILE_LEVEL_COLUMNS = tuple(c for c in META_COLS if c not in PER_SIGNAL_COL
 RAMAN_SHIFT_DECIMALS = 2
 RS_COL_PREFIX = "rs_"
 
+# Computed fields cannot be supplied as file-level metadata and overwritten later.
+RESERVED_METADATA_COLUMNS = frozenset(
+    {
+        "raman_shift",
+        "intensity",
+        "log_concentration",
+        "concentration_group",
+        "target_concentration_group",
+        "target",
+        "max_intensity",
+        "mean_intensity",
+        "integral_area",
+    }
+)
+
 
 def _normalize_metadata_key(raw_key: str) -> str:
     """
@@ -274,6 +289,8 @@ def _parse_file_metadata_block(
         key = str(key_cell).strip().lower()
         value = str(value_cell).strip()
         if key:
+            if key in metadata:
+                raise ValueError(f"Duplicate file-level metadata field: {key!r}")
             metadata[key] = value
     return metadata
 
@@ -350,8 +367,7 @@ def _parse_embedded_format(
             f"No valid concentrations in row {concentration_row_idx + 1} of {file_path.name}"
         )
 
-    # Target concentrations aligned to the same valid signal columns. Blank target
-    # cells become NaN so downstream code can fall back to the actual-derived bin.
+    # Missing targets remain unavailable; actual values never supply nominal labels.
     if target_row_idx is not None:
         target_numeric = pd.to_numeric(df.iloc[target_row_idx, 1:], errors="coerce")
         target_concentrations = target_numeric.loc[valid_col_indices].tolist()
@@ -368,13 +384,18 @@ def _parse_embedded_format(
 
     # Use exact valid_col_indices for signal columns (col 0 = raman)
     data_df = df.loc[first_data_idx:, [0] + valid_col_indices].copy()
+    missing_coordinate = data_df[0].isna() & data_df[valid_col_indices].notna().any(axis=1)
+    if missing_coordinate.any():
+        raise ValueError(f"Missing Raman shift for rows containing signal data in {file_path.name}")
     data_valid = data_df.dropna(subset=[0])
     raman_shift = pd.to_numeric(data_valid[0], errors="coerce").values
     signal_cols = valid_col_indices
     signals = data_valid[signal_cols].astype(float).values
 
-    if np.isnan(signals).any():
-        raise ValueError(f"NaN detected in signals in {file_path.name}")
+    if not np.isfinite(raman_shift).all():
+        raise ValueError(f"Raman shifts must be finite in {file_path.name}")
+    if not np.isfinite(signals).all():
+        raise ValueError(f"Non-finite values detected in signals in {file_path.name}")
 
     missing = REQUIRED_METADATA_KEYS - metadata.keys()
     if missing:
@@ -401,6 +422,10 @@ def _load_signal_file(file_path: str | Path) -> pd.DataFrame:
     )
     n_signals = signals.shape[1]
     rs_rounded = np.round(raman_shift, RAMAN_SHIFT_DECIMALS)
+    if np.unique(rs_rounded).size != rs_rounded.size:
+        raise ValueError(
+            f"Raman shifts collide at {RAMAN_SHIFT_DECIMALS}-decimal precision in {path.name}"
+        )
     rs_col_names = [f"{RS_COL_PREFIX}{v:.{RAMAN_SHIFT_DECIMALS}f}" for v in rs_rounded]
 
     source_txt_filenames = _align_per_signal_values(
@@ -418,8 +443,14 @@ def _load_signal_file(file_path: str | Path) -> pd.DataFrame:
     file_level_columns: dict[str, object] = {}
     for raw_key, value in metadata.items():
         column = _normalize_metadata_key(raw_key)
-        if not column or column in PER_SIGNAL_COLUMNS:
-            continue
+        if (
+            not column
+            or column in PER_SIGNAL_COLUMNS | RESERVED_METADATA_COLUMNS
+            or column.startswith((RS_COL_PREFIX, "peak_near_"))
+        ):
+            raise ValueError(f"Reserved or unusable file-level metadata field: {raw_key!r}")
+        if column in file_level_columns:
+            raise ValueError(f"Duplicate normalized metadata field: {column!r}")
         file_level_columns[column] = value
 
     # Guarantee a stable schema: known file-level fields always exist (blank
@@ -577,19 +608,17 @@ def get_raman_shift(df: pd.DataFrame) -> np.ndarray:
 
 
 def get_metadata_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Return metadata (sensor_id, serotype, concentration, etc.) as a DataFrame."""
-    available = [c for c in META_COLS if c in df.columns]
-    if not available:
-        return pd.DataFrame()
-    return df[available].reset_index(drop=True)
+    """Return all non-spectral columns of a wide frame with a positional index."""
+    columns = [c for c in df.columns if not (isinstance(c, str) and c.startswith(RS_COL_PREFIX))]
+    return df[columns].reset_index(drop=True)
 
 
 def wide_to_tidy(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Convert wide DataFrame to long format (raman_shift, intensity) for plotting.
+    Convert wide data to long format, retaining all non-spectral metadata.
     """
     rs_cols = _get_raman_columns(df)
-    id_cols = [c for c in META_COLS if c in df.columns]
+    id_cols = [c for c in df.columns if c not in rs_cols]
     tidy = df.melt(
         id_vars=id_cols,
         value_vars=rs_cols,

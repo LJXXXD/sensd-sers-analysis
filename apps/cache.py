@@ -37,6 +37,7 @@ def build_cached_derived_bundle(
     max_shift: float | None,
     n_peaks: int,
     n_peaks_by_serotype_items: tuple[tuple[str, int], ...],
+    normalize_exposure: bool = False,
 ):
     """
     Cache the derived dataset bundle for a fixed set of sidebar controls.
@@ -54,6 +55,9 @@ def build_cached_derived_bundle(
     n_peaks_by_serotype_items:
         Serialized serotype-specific peak-count mapping.
 
+    normalize_exposure:
+        Whether to apply reference-exposure scaling; included in the cache key.
+
     Returns
     -------
     DerivedDataBundle
@@ -67,6 +71,7 @@ def build_cached_derived_bundle(
         max_shift=max_shift,
         n_peaks=n_peaks,
         n_peaks_by_serotype=n_peaks_by_serotype,
+        normalize_exposure=normalize_exposure,
     )
 
 

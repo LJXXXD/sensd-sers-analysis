@@ -42,6 +42,10 @@ streamlit run apps/app.py   # run app
 
 **Jiahe (LJ) Li** — j.li@missouri.edu — University of Missouri
 
+## Integration-time normalization
+
+The App enables integration-time normalization by default: `I_reference = I_input × 100 ms / integration_time_ms`. The sidebar toggle restores original intensities when disabled. Scaling precedes shared spectral alignment and feature extraction, so spectra, peaks, QA and model inputs use the same representation. Excel files and acquisition metadata are unchanged. Invalid exposure values block enabled normalization and are listed for review. The calculation assumes approximately linear unsaturated response and input values not already exposure-normalized; scan averages are not treated as summed exposure counts. Historical results require rerunning before comparison with normalized results. The core `build_derived_bundle` API retains an explicit opt-in `normalize_exposure` argument for existing scripts.
+
 ## App organization
 
 The first three pages follow Data → Features → Sensor quality. Data contains Inventory and Spectra; Features contains peak discovery, fixed-anchor extraction and feature analysis; Sensor quality contains Screening and Variability diagnostics. Models groups classification and the three regression approaches; Validation remains a separate page. Basic integrated-intensity features are computed by the shared pipeline before screening; the page order communicates the workflow rather than triggering preprocessing.

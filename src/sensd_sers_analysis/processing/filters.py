@@ -11,25 +11,13 @@ import pandas as pd
 from sensd_sers_analysis.utils.natural_sort import order_concentration_labels
 from sensd_sers_analysis.data import RS_COL_PREFIX
 
-# Preferred display order for plot hue/style columns (subset of filter order).
-DEFAULT_PLOT_HUE_ORDER = [
-    "concentration_group",
-    "serotype",
-    "sensor_model",
-    "date",
-    "operator",
-    "concentration",
-    "log_concentration",
-    "sensor_id",
-    "test_id",
-    "connection_id",
-    "filename",
-]
+from sensd_sers_analysis.config.metadata_schema import SPECTRA_FACTOR_ORDER
+
 
 # Preferred display order for known metadata. Extras are appended.
 DEFAULT_FILTER_ORDER = [
     "serotype",
-    "concentration_group",
+    "target_concentration",
     "date",
     "sensor_id",
     "test_id",
@@ -91,7 +79,7 @@ def get_filter_options(
             return []
         series = df.loc[mask, col].dropna().astype(str)
         raw_vals = [v for v in series.unique() if v != ""]
-        if col == "concentration_group" and raw_vals:
+        if col in {"target_concentration", "concentration"} and raw_vals:
             return order_concentration_labels(raw_vals)
         return sorted(raw_vals)
 
@@ -172,7 +160,11 @@ def get_filterable_columns(df) -> list[str]:
     """
     all_cols = set(df.columns)
     # Exclude spectral / non-metadata and free-text annotation columns
-    exclude = NON_FILTER_COLS | ANNOTATION_COLS
+    exclude = (
+        NON_FILTER_COLS
+        | ANNOTATION_COLS
+        | {"concentration_group", "target_concentration_group", "log_concentration"}
+    )
     for c in all_cols:
         if isinstance(c, str) and c.startswith(RS_COL_PREFIX):
             exclude.add(c)
@@ -187,7 +179,7 @@ def get_plot_hue_columns(df: pd.DataFrame) -> list[str]:
     """
     Get metadata columns suitable for plot hue/style, in preferred order.
 
-    Excludes spectral columns. Returns known columns first (DEFAULT_PLOT_HUE_ORDER),
+    Excludes spectral columns. Returns known columns first (SPECTRA_FACTOR_ORDER),
     then extras present in the DataFrame.
 
     Args:
@@ -196,15 +188,17 @@ def get_plot_hue_columns(df: pd.DataFrame) -> list[str]:
     Returns:
         List of column names for hue/style dropdowns.
     """
+    from sensd_sers_analysis.config.metadata_schema import SPECTRA_HIDDEN_FACTORS
+
     all_cols = set(df.columns)
-    exclude = NON_FILTER_COLS | ANNOTATION_COLS
+    exclude = NON_FILTER_COLS | ANNOTATION_COLS | set(SPECTRA_HIDDEN_FACTORS)
     for c in all_cols:
         if isinstance(c, str) and c.startswith(RS_COL_PREFIX):
             exclude.add(c)
     plotable = [c for c in all_cols if c not in exclude]
 
-    ordered = [c for c in DEFAULT_PLOT_HUE_ORDER if c in plotable]
-    extras = sorted(c for c in plotable if c not in DEFAULT_PLOT_HUE_ORDER)
+    ordered = [c for c in SPECTRA_FACTOR_ORDER if c in plotable]
+    extras = sorted(c for c in plotable if c not in SPECTRA_FACTOR_ORDER)
     return ordered + extras
 
 
@@ -230,7 +224,7 @@ def get_feature_metadata_columns(
 
 def pick_preferred_column(
     available: list[str],
-    preferred: tuple[str, ...] = ("concentration_group", "serotype"),
+    preferred: tuple[str, ...] = ("target_concentration", "serotype"),
 ) -> str | None:
     """
     Pick the first preferred column that exists in available, or None.

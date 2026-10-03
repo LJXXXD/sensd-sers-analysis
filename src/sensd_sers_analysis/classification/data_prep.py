@@ -112,7 +112,7 @@ def prepare_classification_dataset(
     if not keep_indices:
         return pd.DataFrame()
 
-    out = df.loc[list(keep_indices)].copy()
+    out = df.loc[df.index.isin(keep_indices)].copy()
 
     # Sample identity defines the class independently of measured concentration.
     out["target"] = "Unknown"
