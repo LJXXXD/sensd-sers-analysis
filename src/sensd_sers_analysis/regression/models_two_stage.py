@@ -11,6 +11,8 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
+from sensd_sers_analysis.modeling import feature_matrix, select_by_training_cv
+from sensd_sers_analysis.splits import assert_disjoint_group_split
 
 from sensd_sers_analysis.classification.models import (
     ClassificationResult,
@@ -27,11 +29,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SerotypeRegressorBundle:
-    """One serotype-specific RF regressor and its training scaler."""
+    """One serotype-specific RF pipeline, including training-fold scaling."""
 
     serotype: str
     model: Any
-    scaler: StandardScaler
+    scaler: StandardScaler | None = None
     best_params: Optional[dict[str, Any]] = None
 
 
@@ -66,17 +68,15 @@ def _fit_per_serotype_regressor(
     serotype: str,
     random_state: int,
 ) -> SerotypeRegressorBundle:
-    scaler = StandardScaler()
-    X_s = scaler.fit_transform(X_train)
     n_groups = int(np.unique(groups_train).size) if len(groups_train) else 0
-    run_search = _should_run_regression_search(len(X_s), n_groups)
-    rf, params = _fit_random_forest_regressor(
-        X_s, y_train, groups_train, random_state, run_search=run_search
+    run_search = _should_run_regression_search(len(X_train), n_groups)
+    rf, params, _ = _fit_random_forest_regressor(
+        X_train, y_train, groups_train, random_state, run_search=run_search
     )
     return SerotypeRegressorBundle(
         serotype=serotype,
         model=rf,
-        scaler=scaler,
+        scaler=None,
         best_params=params,
     )
 
@@ -92,8 +92,7 @@ def _predict_routed_row(
             f"Available: {sorted(bundles)!r}."
         )
     b = bundles[predicted_serotype]
-    xs = b.scaler.transform(x_row.reshape(1, -1))
-    return float(b.model.predict(xs)[0])
+    return float(b.model.predict(x_row.reshape(1, -1))[0])
 
 
 def train_two_stage_regressors(
@@ -111,17 +110,20 @@ def train_two_stage_regressors(
     Stage 1: RF + SVM multi-class serotype discrimination on the training sensors.
 
     Stage 2: one Random Forest regressor per serotype observed in the training
-    split. Test predictions use the stage-1 model with higher held-out F1.
-    ``oracle`` predictions route using the true serotype (upper bound on stage 2).
+    split. Test predictions use training-CV stage-1 selection, with RF as the fixed reference when CV is infeasible.
+    ``oracle`` predictions route using the true serotype (diagnostic true-serotype routing).
     """
     available = [c for c in feature_cols if c in df.columns]
     if not available:
         raise ValueError(f"No feature columns found. Needed: {feature_cols}")
 
-    X_all = df[available].fillna(0).to_numpy(dtype=np.float64, copy=False)
+    X_all = feature_matrix(df, feature_cols)
+    assert_disjoint_group_split(df, train_idx, test_idx, group_col=group_col)
     y_reg_all = df[target_col].to_numpy(dtype=np.float64, copy=False)
+    if not np.isfinite(y_reg_all).all():
+        raise ValueError("Regression targets must be finite log concentrations.")
     y_cls_all = df[class_col].astype(str).to_numpy(dtype=object, copy=False)
-    groups_all = df[group_col].astype(str).to_numpy(dtype=object, copy=False)
+    groups_all = df[group_col].astype(str).str.strip().to_numpy(dtype=object, copy=False)
 
     X_train, X_test = X_all[train_idx], X_all[test_idx]
     y_reg_train, y_reg_test = y_reg_all[train_idx], y_reg_all[test_idx]
@@ -159,8 +161,9 @@ def train_two_stage_regressors(
         y_cls_test,
         available,
         random_state=random_state,
+        groups_train=groups_train,
     )
-    stage1_best = stage1_rf if stage1_rf.f1 >= stage1_svm.f1 else stage1_svm
+    stage1_best = select_by_training_cv(stage1_rf, stage1_svm)
     y_cls_pred = stage1_best.y_pred
 
     regressor_bundles: dict[str, SerotypeRegressorBundle] = {}

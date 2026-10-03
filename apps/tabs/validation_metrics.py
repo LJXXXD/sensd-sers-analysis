@@ -71,7 +71,7 @@ def render(filtered_features, peak_artifacts) -> None:
         f"ML metrics use **{VALIDATION_N_SPLITS}× sensor-holdout** "
         f"(~20% sensors each round); reported rates are the **mean across "
         f"rounds**, blanked when total held-out **Eval N** < "
-        f"{VALIDATION_MIN_EVAL_ROWS}. CV / counts use all clean Pass+inlier rows."
+        f"{VALIDATION_MIN_EVAL_ROWS}. CV / counts use identity-eligible rows without response-based screening."
     )
 
     has_required = (
@@ -79,17 +79,15 @@ def render(filtered_features, peak_artifacts) -> None:
         and "serotype" in filtered_features.columns
         and "concentration_group" in filtered_features.columns
         and "test_id" in filtered_features.columns
-        and "PC1" in filtered_features.columns
+        and "sample_type" in filtered_features.columns
     )
     peak_cols = list_targeted_peak_feature_columns(filtered_features.columns)
-    feat_cols = [
-        c for c in CLASSIFICATION_FEATURE_BASE + peak_cols if c in filtered_features.columns
-    ]
+    feat_cols = CLASSIFICATION_FEATURE_BASE + peak_cols
 
     if not has_required:
         st.warning(
             "Validation metrics require **sensor_id**, **serotype**, "
-            "**concentration_group**, **test_id**, and **PC1**. "
+            "**concentration_group**, **test_id**, and **sample_type**. "
             "Load embedded Excel data and ensure preprocessing has run."
         )
         return
@@ -139,8 +137,8 @@ def render(filtered_features, peak_artifacts) -> None:
 
     if artifacts.n_classification_rows == 0:
         st.warning(
-            "No clean rows for validation. Ensure sensors pass QA and both "
-            "positive-CFU serotypes and Rinsate (0 CFU) samples are present."
+            "No identity-eligible rows for validation. Ensure both "
+            "positive-CFU bacteria and explicitly labeled Rinsate controls are present."
         )
         return
 

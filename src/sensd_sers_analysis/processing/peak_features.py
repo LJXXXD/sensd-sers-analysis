@@ -6,7 +6,6 @@ computed per serovar using bacteria samples. Explicit rinsate controls
 are excluded from learning to avoid background-driven variance inflation.
 """
 
-import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -109,11 +108,9 @@ def _find_peaks_on_spectrum(
     """
     if len(x) < 3 or len(y) < 3 or n_peaks < 1:
         return np.array([], dtype=int)
-    valid = np.isfinite(y)
-    if not valid.all():
-        y_clean = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
-    else:
-        y_clean = np.asarray(y, dtype=float)
+    if not np.isfinite(x).all() or not np.isfinite(y).all():
+        return np.array([], dtype=int)
+    y_clean = np.asarray(y, dtype=float)
     if smooth_before_peaks:
         y_clean = _smooth_spectrum(y_clean)
     peak_range = np.max(y_clean) - np.min(y_clean) if np.ptp(y_clean) > 0 else 1.0
@@ -163,6 +160,7 @@ def _compute_peak_windows_for_serotype(
     Inner boundaries: argmin of mean spectrum between adjacent anchors (true
     valley, robust to jagged slopes). Outer boundaries: search left/right until
     signal drops to baseline (≤5% of peak height). Uses explicitly identified bacteria samples.
+    Only complete spectra define anchors. Unavailable extraction windows remain NaN.
     Returns (list of PeakWindowInfo, mean_spectrum).
     """
     if df_sero.empty:
@@ -175,14 +173,10 @@ def _compute_peak_windows_for_serotype(
         return [], np.array([])
 
     high_signals = get_signals_matrix(high_conc)
-    n_rows = high_signals.shape[0] if high_signals.ndim else 0
-    if high_signals.size == 0 or n_rows == 0 or not np.any(np.isfinite(high_signals)):
-        mean_spec = np.zeros_like(x, dtype=float)
-    else:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="Mean of empty slice")
-            mean_spec = np.nanmean(high_signals, axis=0)
-    mean_spec = np.nan_to_num(mean_spec, nan=0.0)
+    complete = high_signals[np.isfinite(high_signals).all(axis=1)]
+    if not complete.size:
+        return [], np.full_like(x, np.nan, dtype=float)
+    mean_spec = complete.mean(axis=0)
 
     peak_indices = _find_peaks_on_spectrum(x, mean_spec, n_peaks)
     if len(peak_indices) == 0:
@@ -359,7 +353,8 @@ def extract_dynamic_peak_features(
     n_anchors = max_peaks
     n_samples = signals.shape[0]
 
-    global_max_int = np.nanmax(signals) if np.any(np.isfinite(signals)) else 1.0
+    finite_values = signals[np.isfinite(signals)]
+    global_max_int = float(finite_values.max()) if finite_values.size else 1.0
     noise_threshold = noise_threshold_frac * global_max_int
 
     # Extraction: per row, use serotype-specific windows
@@ -367,7 +362,7 @@ def extract_dynamic_peak_features(
     rinsate_mask = _is_rinsate_control(df_wide, concentration_group_col).values
 
     for i in range(n_samples):
-        y_row = np.nan_to_num(signals[i], nan=0.0)
+        y_row = signals[i]
         if rinsate_mask[i]:
             sero = default_sero
         elif serotype_col in df_wide.columns:
@@ -385,6 +380,8 @@ def extract_dynamic_peak_features(
             if not mask.any():
                 continue
             window_y = y_row[mask]
+            if not np.isfinite(window_y).all():
+                continue
             n_edge = max(1, int(len(window_y) * 0.1))
             baseline = np.mean(np.concatenate([window_y[:n_edge], window_y[-n_edge:]]))
             peak_height = np.max(window_y) - baseline

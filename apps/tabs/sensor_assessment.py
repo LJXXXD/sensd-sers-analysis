@@ -17,6 +17,7 @@ from components.shared_ui import (
     render_figure_stretch,
     render_metrics_row,
     render_pdf_download_section,
+    report_context_key,
 )
 
 from sensd_sers_analysis.application import (
@@ -336,6 +337,9 @@ def _render_advanced(filtered_features, peak_artifacts):
     render_pdf_download_section(
         session_key="sensor_assessment_qa_pdf",
         filename="sensor_assessment_regression_report.pdf",
+        context_key=report_context_key(
+            filtered_features, tuple(global_qa_artifacts.selected_features), repr(overlay_artifacts)
+        ),
         generate_callback=_generate_sensor_assessment_qa_pdf_bytes,
         button_label="Generate Sensor Assessment Report",
         download_label="Download Sensor Assessment Report",

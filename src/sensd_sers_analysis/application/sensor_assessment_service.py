@@ -4,7 +4,10 @@ Application-layer orchestration for sensor assessment (regression QA) workflows.
 
 from __future__ import annotations
 
+from sensd_sers_analysis.utils.availability import PlotUnavailableError
+from contextlib import ExitStack
 import pandas as pd
+from sensd_sers_analysis.report.figures import own_figure
 
 from sensd_sers_analysis.application.contracts import (
     GlobalQaArtifacts,
@@ -176,53 +179,57 @@ def build_sensor_assessment_qa_pdf_bytes(
     bytes
         PDF document bytes.
     """
+    with ExitStack() as figures:
+        unavailable_sections = []
+        overlay_items: list[dict] = []
+        macro_items: list[dict] = []
+        for artifact in overlay_artifacts:
+            try:
+                overlay_fig = plot_multi_sensor_regression(
+                    filtered_features,
+                    artifact.serotype,
+                    artifact.feature,
+                    excluded_sensors=set(artifact.excluded_sensors),
+                )
+                own_figure(figures, overlay_fig)
+                overlay_items.append(
+                    {
+                        "fig": overlay_fig,
+                        "serotype": artifact.serotype,
+                        "feature": artifact.feature,
+                    }
+                )
+            except PlotUnavailableError as exc:
+                unavailable_sections.append((f"{artifact.serotype} — {artifact.feature}", str(exc)))
 
-    overlay_items: list[dict] = []
-    macro_items: list[dict] = []
-    for artifact in overlay_artifacts:
-        try:
-            overlay_fig = plot_multi_sensor_regression(
-                filtered_features,
-                artifact.serotype,
-                artifact.feature,
-                excluded_sensors=set(artifact.excluded_sensors),
-            )
-            overlay_items.append(
-                {
-                    "fig": overlay_fig,
-                    "serotype": artifact.serotype,
-                    "feature": artifact.feature,
-                }
-            )
-        except ValueError:
-            pass
+            try:
+                macro_fig, macro_result = plot_macro_batch_regression(
+                    filtered_features,
+                    artifact.serotype,
+                    artifact.feature,
+                    set(artifact.pass_sensors),
+                )
+                own_figure(figures, macro_fig)
+                macro_items.append(
+                    {
+                        "fig": macro_fig,
+                        "macro_result": macro_result,
+                        "serotype": artifact.serotype,
+                        "feature": artifact.feature,
+                    }
+                )
+            except PlotUnavailableError as exc:
+                unavailable_sections.append((f"{artifact.serotype} — {artifact.feature}", str(exc)))
 
-        try:
-            macro_fig, macro_result = plot_macro_batch_regression(
-                filtered_features,
-                artifact.serotype,
-                artifact.feature,
-                set(artifact.pass_sensors),
-            )
-            macro_items.append(
-                {
-                    "fig": macro_fig,
-                    "macro_result": macro_result,
-                    "serotype": artifact.serotype,
-                    "feature": artifact.feature,
-                }
-            )
-        except ValueError:
-            pass
-
-    return build_sensor_assessment_qa_pdf(
-        global_qa_table=(
-            global_qa_artifacts.table if not global_qa_artifacts.table.empty else None
-        ),
-        overlay_items=overlay_items,
-        macro_items=macro_items,
-        report_title=report_title,
-    )
+        return build_sensor_assessment_qa_pdf(
+            global_qa_table=(
+                global_qa_artifacts.table if not global_qa_artifacts.table.empty else None
+            ),
+            overlay_items=overlay_items,
+            macro_items=macro_items,
+            report_title=report_title,
+            unavailable_sections=unavailable_sections,
+        )
 
 
 def build_screening_counts(features: pd.DataFrame, qa_table: pd.DataFrame) -> pd.DataFrame:

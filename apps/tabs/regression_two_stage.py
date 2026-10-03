@@ -15,6 +15,7 @@ from components.shared_ui import (
     render_dataframe_stretch,
     render_figure_stretch,
     render_pdf_download_section,
+    report_context_key,
 )
 from sensd_sers_analysis.application import build_two_stage_regression_pdf_bytes
 from sensd_sers_analysis.classification.plots import plot_confusion_matrix
@@ -42,7 +43,7 @@ def render(filtered_features, peak_artifacts):
     if not regression_prerequisites_ok(filtered_features):
         st.warning(
             "Concentration regression requires **sensor_id**, **serotype**, "
-            "**concentration_group**, **log_concentration**, **PC1**, and **PC2**."
+            "**sample_type**, actual **concentration**, and **log_concentration**."
         )
         return
 
@@ -57,12 +58,12 @@ def render(filtered_features, peak_artifacts):
         inlier_feature=REGRESSION_INLIER_FEATURE,
     )
     if reg_clean.empty:
-        st.warning("No clean positive-CFU rows for regression.")
+        st.warning("No identity-eligible positive actual-CFU rows for regression.")
         return
 
     counts_txt = format_regression_target_counts(reg_clean)
     st.caption(
-        f"Clean regression data: **{len(reg_clean)}** samples"
+        f"Eligible regression data: **{len(reg_clean)}** samples"
         + (f" — {counts_txt}" if counts_txt else "")
     )
 
@@ -96,7 +97,7 @@ def render(filtered_features, peak_artifacts):
         },
     )
     st.caption(
-        f"Stage-1 **routing accuracy** on test (best of RF/SVM by F1): **{out.routing_accuracy:.3f}**."
+        f"Stage-1 **routing accuracy** on test (selected by training CV): **{out.routing_accuracy:.3f}**."
     )
 
     st.markdown("##### Stage 1: Serotype classifiers (multi-class)")
@@ -126,7 +127,7 @@ def render(filtered_features, peak_artifacts):
         fig_o = plot_actual_vs_predicted(
             out.y_true_reg,
             out.y_pred_oracle,
-            title="Oracle routing (upper bound on stage 2)",
+            title="Oracle routing (diagnostic true-serotype routing)",
             hue=hue,
         )
         render_figure_stretch(fig_o)
@@ -140,6 +141,7 @@ def render(filtered_features, peak_artifacts):
     render_pdf_download_section(
         session_key="reg_two_stage_pdf",
         filename="regression_two_stage_report.pdf",
+        context_key=report_context_key(reg_clean, tuple(feat_cols), out.stage1_best.model_name),
         generate_callback=_pdf,
         button_label="Generate Two-Stage Regression Report",
         download_label="Download Two-Stage Regression Report",

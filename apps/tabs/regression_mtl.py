@@ -16,6 +16,7 @@ from components.shared_ui import (
     render_dataframe_stretch,
     render_figure_stretch,
     render_pdf_download_section,
+    report_context_key,
 )
 from sensd_sers_analysis.application import build_mtl_regression_pdf_bytes
 from sensd_sers_analysis.config import (
@@ -48,7 +49,7 @@ def render(filtered_features, peak_artifacts):
     if not regression_prerequisites_ok(filtered_features):
         st.warning(
             "Concentration regression requires **sensor_id**, **serotype**, "
-            "**concentration_group**, **log_concentration**, **PC1**, and **PC2**."
+            "**sample_type**, actual **concentration**, and **log_concentration**."
         )
         return
 
@@ -63,12 +64,12 @@ def render(filtered_features, peak_artifacts):
         inlier_feature=REGRESSION_INLIER_FEATURE,
     )
     if reg_clean.empty:
-        st.warning("No clean positive-CFU rows for regression.")
+        st.warning("No identity-eligible positive actual-CFU rows for regression.")
         return
 
     counts_txt = format_regression_target_counts(reg_clean)
     st.caption(
-        f"Clean regression data: **{len(reg_clean)}** samples"
+        f"Eligible regression data: **{len(reg_clean)}** samples"
         + (f" — {counts_txt}" if counts_txt else "")
     )
 
@@ -123,6 +124,7 @@ def render(filtered_features, peak_artifacts):
     render_pdf_download_section(
         session_key="reg_mtl_pdf",
         filename="regression_mtl_report.pdf",
+        context_key=report_context_key(reg_clean, tuple(feat_cols)),
         generate_callback=_pdf,
         button_label="Generate MTL Regression Report",
         download_label="Download MTL Regression Report",

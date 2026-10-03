@@ -23,7 +23,7 @@ from sensd_sers_analysis.processing.metadata import sample_type_masks
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.preprocessing import StandardScaler
+from sensd_sers_analysis.modeling import feature_matrix, fit_model_pipeline
 
 from sensd_sers_analysis.assessment.consistency import coefficient_of_variation
 from sensd_sers_analysis.assessment.degradation import prepare_degradation_data
@@ -44,7 +44,7 @@ from sensd_sers_analysis.processing import (
     add_target_concentration_group,
     extract_scalar_concentration,
 )
-from sensd_sers_analysis.regression.splits import iter_group_train_test_indices
+from sensd_sers_analysis.splits import iter_group_train_test_indices, normalize_sensor_groups
 from sensd_sers_analysis.utils import order_concentration_labels
 
 logger = logging.getLogger(__name__)
@@ -228,12 +228,8 @@ def _group_concentration_cv(group_df: pd.DataFrame) -> float:
 
 
 def _feature_matrix(df: pd.DataFrame, feature_cols: list[str]) -> tuple[np.ndarray, list[str]]:
-    """Build a float64 feature matrix with NaN filled to zero."""
-    available = [c for c in feature_cols if c in df.columns]
-    if not available:
-        raise ValueError(f"No feature columns found. Needed: {feature_cols}")
-    X = df[available].fillna(0).to_numpy(dtype=np.float64, copy=False)
-    return X, available
+    """Preserve the selected features and require finite measured inputs."""
+    return feature_matrix(df, feature_cols), list(feature_cols)
 
 
 def _fit_global_classifier_predict_all(
@@ -264,14 +260,22 @@ def _fit_global_classifier_predict_all(
     """
     X, _ = _feature_matrix(work, feature_cols)
     y = work[target_col].map(str).to_numpy(dtype=object)
-    scaler = StandardScaler()
-    X_train_s = scaler.fit_transform(X[train_idx])
     clf = RandomForestClassifier(
         random_state=CLASSIFICATION_RANDOM_STATE,
         n_estimators=CLASSIFICATION_RF_N_ESTIMATORS,
     )
-    clf.fit(X_train_s, y[train_idx])
-    return clf.predict(scaler.transform(X))
+    unknown = set(y) - set(y[train_idx])
+    if unknown:
+        raise ValueError(f"Held-out classes have no training support: {sorted(unknown)}.")
+    pipeline, _, _ = fit_model_pipeline(
+        clf,
+        X[train_idx],
+        y[train_idx],
+        scoring="f1_weighted",
+        n_iter=1,
+        random_state=CLASSIFICATION_RANDOM_STATE,
+    )
+    return pipeline.predict(X)
 
 
 def _fit_global_regressor_predict_all(
@@ -302,14 +306,21 @@ def _fit_global_regressor_predict_all(
     """
     X, _ = _feature_matrix(regression_work, feature_cols)
     y = regression_work[target_col].to_numpy(dtype=np.float64, copy=False)
-    scaler = StandardScaler()
-    X_train_s = scaler.fit_transform(X[train_idx])
     reg = RandomForestRegressor(
         random_state=REGRESSION_RANDOM_STATE,
         n_estimators=CLASSIFICATION_RF_N_ESTIMATORS,
     )
-    reg.fit(X_train_s, y[train_idx])
-    return reg.predict(scaler.transform(X))
+    if not np.isfinite(y).all():
+        raise ValueError("Regression targets must be finite log concentrations.")
+    pipeline, _, _ = fit_model_pipeline(
+        reg,
+        X[train_idx],
+        y[train_idx],
+        scoring="neg_root_mean_squared_error",
+        n_iter=1,
+        random_state=REGRESSION_RANDOM_STATE,
+    )
+    return pipeline.predict(X)
 
 
 def _map_regression_predictions_to_classification_rows(
@@ -357,7 +368,7 @@ def _fit_one_validation_fold(
         and sensor_col in regression_df.columns
     ):
         reg_work = regression_df.reset_index(drop=True)
-        reg_groups = reg_work[sensor_col].astype(str).to_numpy(dtype=object)
+        reg_groups = normalize_sensor_groups(reg_work[sensor_col].to_numpy(dtype=object))
         train_sensors = set(groups[train_idx].astype(str))
         reg_train_idx = np.flatnonzero(np.isin(reg_groups, list(train_sensors)))
         if reg_train_idx.size >= 2:
@@ -438,7 +449,7 @@ def fit_validation_predictions(
     if not regression_df.index.isin(classification_work.index).all():
         raise ValueError("Regression indices must be a subset of classification source indices.")
     y_true = classification_work[target_col].map(str).to_numpy(dtype=object)
-    groups = classification_work[sensor_col].astype(str).to_numpy(dtype=object)
+    groups = normalize_sensor_groups(classification_work[sensor_col].to_numpy(dtype=object))
     unique_sensors = np.unique(groups)
 
     folds: list[ValidationFoldPredictions] = []

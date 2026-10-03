@@ -20,7 +20,7 @@ import pandas as pd
 from tabs.validation_metrics import render
 render(pd.DataFrame({
     "sensor_id": ["S1"], "serotype": ["ST"], "test_id": ["T1"],
-    "concentration_group": ["10 CFU"], "integral_area": [1.0], "PC1": [0.1],
+    "sample_type": ["Bacteria sample"], "concentration_group": ["10 CFU"], "integral_area": [1.0], "PC1": [0.1],
 }), None)
 """
     ).run(timeout=30)

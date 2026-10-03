@@ -15,17 +15,16 @@ def regression_prerequisites_ok(filtered_features) -> bool:
     return (
         "sensor_id" in filtered_features.columns
         and "serotype" in filtered_features.columns
-        and "concentration_group" in filtered_features.columns
+        and "sample_type" in filtered_features.columns
+        and "concentration" in filtered_features.columns
         and "log_concentration" in filtered_features.columns
-        and "PC1" in filtered_features.columns
-        and "PC2" in filtered_features.columns
     )
 
 
 def list_regression_feature_columns(filtered_features_columns) -> list[str]:
-    """Same feature union as serotype classification (integral, PCs, peak_near_*)."""
+    """Independent per-spectrum predictors shared with classification."""
     peak_cols = list_targeted_peak_feature_columns(filtered_features_columns)
-    return [c for c in CLASSIFICATION_FEATURE_BASE + peak_cols if c in filtered_features_columns]
+    return CLASSIFICATION_FEATURE_BASE + peak_cols
 
 
 def format_regression_target_counts(reg_clean: pd.DataFrame, target_col: str = "target") -> str:

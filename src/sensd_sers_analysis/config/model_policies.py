@@ -1,8 +1,8 @@
 """
 Shared analysis-policy constants.
 
-These constants preserve the current analytical behavior while centralizing
-cross-module policy values that were previously duplicated in multiple files.
+These constants define assessment thresholds, holdout protocols, and estimator
+defaults shared by application services and domain functions.
 """
 
 GLOBAL_QA_REJECTION_MULTIPLIER = 2.0
@@ -19,7 +19,7 @@ VALIDATION_N_SPLITS = 5
 
 # Minimum held-out (test-sensor) rows required before an ML metric
 # (accuracy / FP / FN / quantification) is reported for a validation-table cell.
-# Below this, per-category estimates from the single random split are too noisy
+# Below this, per-category estimates within a holdout round are too noisy
 # to trust, so the cell is left blank. This is a provisional guard, not a
 # validated evaluation design.
 VALIDATION_MIN_EVAL_ROWS = 5
@@ -30,7 +30,7 @@ CLASSIFICATION_RF_N_ESTIMATORS = 100
 
 # Serotype classification hyperparameter search (RandomizedSearchCV on the training split only).
 # Skipped when the training set is smaller than CLASSIFICATION_TUNING_MIN_TRAIN_SAMPLES or
-# when stratified CV is not viable (too few samples per class).
+# when training-sensor folds cannot support every training class.
 CLASSIFICATION_HYPERPARAMETER_TUNING = True
 CLASSIFICATION_TUNING_MIN_TRAIN_SAMPLES = 30
 CLASSIFICATION_TUNING_CV_SPLITS = 3

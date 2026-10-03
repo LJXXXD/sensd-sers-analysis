@@ -38,6 +38,8 @@ def plot_inventory_composition(
     matplotlib.figure.Figure
         Horizontal stacked bars with zero-based count axis and exact counts.
     """
+    if composition.empty:
+        raise ValueError("No inventory composition counts to plot.")
     segment = color_by
     if segment == group_by:
         raise ValueError("Group and color dimensions must differ.")
@@ -54,10 +56,11 @@ def plot_inventory_composition(
     else:
         table = table.loc[table.sum(axis=1).sort_values(ascending=True).index]
     with plt.rc_context({"font.size": CHART_FONT_SIZE}):
-        figure, axis = plt.subplots(
+        figure = Figure(
             figsize=(CHART_WIDTH, max(CHART_HEIGHT, len(table) * HEATMAP_ROW_HEIGHT)),
             layout="constrained",
         )
+        axis = figure.subplots()
         left = pd.Series(0, index=table.index)
         for index, serotype in enumerate(table.columns):
             values = table[serotype]
@@ -129,6 +132,8 @@ def plot_inventory_coverage(
     from math import ceil
     from sensd_sers_analysis.config.inventory import COVERAGE_FACET_COLUMNS
 
+    if coverage.empty:
+        raise ValueError("No inventory coverage counts to plot.")
     facets = natural_sort(coverage[facet_dimension].unique().tolist())
     rows = natural_sort(coverage[row_dimension].unique().tolist())
     columns = natural_sort(coverage[column_dimension].unique().tolist())
@@ -136,13 +141,10 @@ def plot_inventory_coverage(
     n_columns = min(len(facets), COVERAGE_FACET_COLUMNS)
     n_rows = ceil(len(facets) / n_columns)
     with plt.rc_context({"font.size": CHART_FONT_SIZE}):
-        figure, axes = plt.subplots(
-            n_rows,
-            n_columns,
-            figsize=(HEATMAP_PANEL_WIDTH * n_columns, height * n_rows),
-            squeeze=False,
-            layout="constrained",
+        figure = Figure(
+            figsize=(HEATMAP_PANEL_WIDTH * n_columns, height * n_rows), layout="constrained"
         )
+        axes = figure.subplots(n_rows, n_columns, squeeze=False)
         for axis, facet in zip(axes.flat, facets):
             subset = coverage.loc[coverage[facet_dimension] == facet]
             matrix = subset.pivot(index=row_dimension, columns=column_dimension, values="spectra")
@@ -190,7 +192,8 @@ def plot_inventory_timeline(timeline: pd.DataFrame) -> Figure:
         Monthly bars; missing acquisition dates are reported separately by UI.
     """
     with plt.rc_context({"font.size": CHART_FONT_SIZE}):
-        figure, axis = plt.subplots(figsize=(CHART_WIDTH, CHART_HEIGHT), layout="constrained")
+        figure = Figure(figsize=(CHART_WIDTH, CHART_HEIGHT), layout="constrained")
+        axis = figure.subplots()
         bars = axis.bar(
             timeline["month"], timeline["spectra"], color=CHART_COLORS[0], label="Dated spectra"
         )
@@ -213,13 +216,19 @@ def plot_screening_counts(counts: pd.DataFrame) -> Figure:
     """Show sensor-screening outcomes with counts conserved across all statuses."""
     from sensd_sers_analysis.config.inventory import SCREENING_COLORS
 
+    if counts.empty:
+        raise ValueError("No screening counts to plot.")
+    unknown = set(counts["status"]) - set(SCREENING_COLORS)
+    if unknown:
+        raise ValueError(f"Unknown screening statuses: {sorted(unknown)}.")
     table = counts.pivot(index="sensor_id", columns="status", values="spectra").fillna(0)
     table = table.reindex(index=natural_sort(table.index.astype(str).tolist()))
     with plt.rc_context({"font.size": CHART_FONT_SIZE}):
-        figure, axis = plt.subplots(
+        figure = Figure(
             figsize=(CHART_WIDTH, max(CHART_HEIGHT, len(table) * HEATMAP_ROW_HEIGHT)),
             layout="constrained",
         )
+        axis = figure.subplots()
         left = pd.Series(0.0, index=table.index)
         for status, color in SCREENING_COLORS.items():
             values = table.get(status, pd.Series(0, index=table.index))

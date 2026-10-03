@@ -7,6 +7,8 @@ Provides publication-ready plots for the Sensor Assessment & Report module.
 from typing import Optional
 
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from sensd_sers_analysis.utils.availability import PlotUnavailableError
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -52,10 +54,11 @@ def plot_degradation_trend(
 
     df_clean = df.dropna(subset=[feature_col, sequence_col])
     if df_clean.empty:
-        raise ValueError("No valid data for degradation plot.")
+        raise PlotUnavailableError("No valid data for degradation plot.")
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig = Figure(figsize=figsize)
+        ax = fig.subplots()
     else:
         fig = ax.get_figure()
 
@@ -68,7 +71,7 @@ def plot_degradation_trend(
                 x = df_clean.loc[mask, sequence_col].astype(float).values
                 y = df_clean.loc[mask, feature_col].astype(float).values
                 ax.scatter(x, y, alpha=0.6, s=40, label=str(g))
-                if len(x) >= 2:
+                if len(x) >= 2 and np.unique(x).size >= 2:
                     res = stats.linregress(x, y)
                     x_line = np.linspace(x.min(), x.max(), 50)
                     ax.plot(
@@ -86,7 +89,7 @@ def plot_degradation_trend(
         y = df_clean[feature_col].astype(float).values
         ax.scatter(x, y, alpha=0.6, s=50, color="steelblue", edgecolors="white")
 
-        if len(x) >= 2:
+        if len(x) >= 2 and np.unique(x).size >= 2:
             res = stats.linregress(x, y)
             x_line = np.linspace(x.min(), x.max(), 50)
             ax.plot(
@@ -146,10 +149,11 @@ def plot_batch_boxplot(
 
     df_clean = df.dropna(subset=[feature_col])
     if df_clean.empty:
-        raise ValueError("No valid data for batch boxplot.")
+        raise PlotUnavailableError("No valid data for batch boxplot.")
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig = Figure(figsize=figsize)
+        ax = fig.subplots()
     else:
         fig = ax.get_figure()
 
@@ -238,14 +242,15 @@ def plot_sensor_batch_stability(
     if any(c not in df.columns for c in required):
         raise ValueError(f"Required columns '{feature_col}' or '{sensor_col}' not in DataFrame.")
     if batch_table.empty:
-        raise ValueError("No batch variance rows to plot.")
+        raise PlotUnavailableError("No batch variance rows to plot.")
 
     df_clean = df.dropna(subset=[feature_col])
     if df_clean.empty:
-        raise ValueError("No valid data for sensor batch stability plot.")
+        raise PlotUnavailableError("No valid data for sensor batch stability plot.")
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig = Figure(figsize=figsize)
+        ax = fig.subplots()
     else:
         fig = ax.get_figure()
 
@@ -366,9 +371,8 @@ def plot_signal_vs_concentration_cv(
     This makes the sensor-added variability explicit: for each sensor, one bar
     per feature shows the SERS **signal** CV%, and a final distinct bar shows the
     actual-CFU **concentration** CV% (the inherent sample spread, shared across
-    features). Signal bars towering over the concentration bar mean the sensor
-    is adding variance beyond the sample; bars near the concentration bar mean
-    the observed spread is mostly the sample itself.
+    features). The two CVs compare observed relative spread; their difference does not
+    identify a sensor variance component or establish its cause.
 
     Undefined CVs (e.g. a single replicate) are NaN and simply draw no bar,
     rather than a misleading zero-height bar.
@@ -397,7 +401,7 @@ def plot_signal_vs_concentration_cv(
     if any(c not in consistency_table.columns for c in required):
         raise ValueError(f"consistency_table missing one of {required}.")
     if consistency_table.empty:
-        raise ValueError("No consistency rows to plot.")
+        raise PlotUnavailableError("No consistency rows to plot.")
 
     sensors = consistency_table[sensor_col].astype(str).drop_duplicates().tolist()
     features = consistency_table[feature_col].astype(str).drop_duplicates().tolist()
@@ -414,7 +418,8 @@ def plot_signal_vs_concentration_cv(
             conc_pct[sensor] = float(row[conc_cv_col]) * 100
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig = Figure(figsize=figsize)
+        ax = fig.subplots()
     else:
         fig = ax.get_figure()
 
@@ -506,10 +511,11 @@ def plot_concentration_regression(
     df_plot = df.loc[valid]
 
     if df_plot.empty:
-        raise ValueError("No valid data for concentration regression plot.")
+        raise PlotUnavailableError("No valid data for concentration regression plot.")
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig = Figure(figsize=figsize)
+        ax = fig.subplots()
     else:
         fig = ax.get_figure()
 
@@ -648,20 +654,21 @@ def plot_multi_sensor_regression(
     ].copy()
 
     if subset.empty:
-        raise ValueError(
+        raise PlotUnavailableError(
             f"No valid data for serotype={serotype}. Need rows with non-null "
             f"{log_conc_col} and {feature_col}."
         )
 
     sensors = subset[sensor_col].dropna().unique()
     if len(sensors) == 0:
-        raise ValueError(f"No sensor_id values found for serotype={serotype}.")
+        raise PlotUnavailableError(f"No sensor_id values found for serotype={serotype}.")
 
     excluded = excluded_sensors or set()
     excluded = {str(s) for s in excluded}
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig = Figure(figsize=figsize)
+        ax = fig.subplots()
     else:
         fig = ax.get_figure()
 
@@ -692,7 +699,7 @@ def plot_multi_sensor_regression(
             zorder=2 if is_excluded else 3,
         )
 
-        if len(x) >= 2:
+        if len(x) >= 2 and np.unique(x).size >= 2:
             res = stats.linregress(x, y)
             x_line = np.linspace(x.min(), x.max(), 50)
             y_line = res.intercept + res.slope * x_line
@@ -785,7 +792,7 @@ def plot_macro_batch_regression(
         & df[feature_col].notna()
     ]
     if subset.empty:
-        raise ValueError(
+        raise PlotUnavailableError(
             f"No valid data for serotype={serotype}. Need non-null "
             f"{log_conc_col} and {feature_col}."
         )
@@ -806,7 +813,8 @@ def plot_macro_batch_regression(
 
     if result is None:
         if ax is None:
-            fig, ax = plt.subplots(figsize=figsize)
+            fig = Figure(figsize=figsize)
+            ax = fig.subplots()
         else:
             fig = ax.get_figure()
         ax.text(
@@ -820,7 +828,8 @@ def plot_macro_batch_regression(
         return fig, None
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig = Figure(figsize=figsize)
+        ax = fig.subplots()
     else:
         fig = ax.get_figure()
 

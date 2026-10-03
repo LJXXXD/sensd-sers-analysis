@@ -28,6 +28,8 @@ from sensd_sers_analysis.config import (
     REGRESSION_MTL_WEIGHT_DECAY,
     REGRESSION_RANDOM_STATE,
 )
+from sensd_sers_analysis.modeling import feature_matrix
+from sensd_sers_analysis.splits import assert_disjoint_group_split, group_train_test_indices
 from sensd_sers_analysis.regression.metrics import regression_metrics
 
 logger = logging.getLogger(__name__)
@@ -124,6 +126,9 @@ class MtlRegressionOutputs:
     class_labels: tuple[str, ...]
     train_loss_history: Optional[list[float]] = None
     val_loss_history: Optional[list[float]] = None
+    early_stop_train_indices: Optional[np.ndarray] = None
+    early_stop_validation_indices: Optional[np.ndarray] = None
+    finetune_epochs: int = 0
 
 
 def train_mtl_regressor(
@@ -139,15 +144,19 @@ def train_mtl_regressor(
     """
     Jointly train multi-class serotype classification and log-concentration regression.
 
-    Uses a random sub-split of the **training** rows for early stopping. Test
+    Uses a sensor-group sub-split of the **training** rows for early stopping. Test
     sensors never appear during training or validation.
 
-    ``random_state`` seeds the row sub-split and CPU PyTorch initialization,
+    ``random_state`` seeds the group sub-split and CPU PyTorch initialization,
     dropout, and shuffling. The caller's CPU PyTorch RNG state is restored after
-    training. Reproducibility applies within the same runtime and hardware.
+    training. Scaling is fit on the inner training sensors and frozen throughout.
+    The best early-stop weights are followed by a fresh AdamW optimizer and a
+    fixed ``max(1, min(30, max_epochs // 4))`` full-outer-training budget. Loss
+    histories describe the early-stop stage, not final fine-tuned weights.
+    Reproducibility applies within the same runtime and hardware.
     """
     with torch.random.fork_rng(devices=[]):
-        torch.manual_seed(random_state)
+        torch.default_generator.manual_seed(random_state)
         return _train_mtl_regressor(
             df,
             feature_cols,
@@ -170,20 +179,16 @@ def _train_mtl_regressor(
     random_state: int,
 ) -> MtlRegressionOutputs:
     """Fit and evaluate the CPU model within the caller's seeded RNG scope."""
-    available = [c for c in feature_cols if c in df.columns]
-    if not available:
-        raise ValueError(f"No feature columns found. Needed: {feature_cols}")
-
-    X_all = df[available].fillna(0).to_numpy(dtype=np.float64, copy=False)
+    assert_disjoint_group_split(df, train_idx, test_idx)
+    X_all = feature_matrix(df, feature_cols)
     y_reg_all = df[target_col].to_numpy(dtype=np.float64, copy=False)
+    if not np.isfinite(y_reg_all).all():
+        raise ValueError("MTL regression targets must be finite log concentrations.")
     class_labels = serotype_class_labels_from_column(
-        df[class_col].to_numpy(dtype=object, copy=False)
+        df.iloc[train_idx][class_col].to_numpy(dtype=object)
     )
     if len(class_labels) < 2:
-        raise ValueError(
-            "MTL classification head needs at least 2 serotype classes in the regression "
-            f"subset; got {class_labels!r}."
-        )
+        raise ValueError("MTL needs at least two classes on the outer training sensors.")
     n_classes = len(class_labels)
     y_cls_all = encode_serotype_class_ids(
         df[class_col].to_numpy(dtype=object, copy=False), class_labels
@@ -197,15 +202,16 @@ def _train_mtl_regressor(
     y_reg_test = y_reg_all[test_idx]
     y_cls_test = y_cls_all[test_idx]
 
-    rng = np.random.RandomState(random_state + 17)
-    n_tr = len(train_idx)
-    n_val = max(1, int(n_tr * REGRESSION_MTL_VAL_FRACTION))
-    perm = rng.permutation(n_tr)
-    val_pos = perm[:n_val]
-    tr_pos = perm[n_val:]
-    if tr_pos.size == 0:
-        tr_pos = val_pos
-        val_pos = perm[: max(1, n_val // 2)]
+    groups_train = df.iloc[train_idx]["sensor_id"].to_numpy(dtype=object)
+    tr_pos, val_pos = group_train_test_indices(
+        groups_train,
+        test_size=REGRESSION_MTL_VAL_FRACTION,
+        random_state=random_state + 17,
+    )
+    if set(y_cls_train_full[tr_pos]) != set(range(n_classes)):
+        raise ValueError(
+            "MTL early-stop training sensors lack support for an outer training class."
+        )
 
     X_tr = X_train_full[tr_pos]
     y_reg_tr = y_reg_train_full[tr_pos]
@@ -215,7 +221,8 @@ def _train_mtl_regressor(
     y_cls_val = y_cls_train_full[val_pos]
 
     scaler_full = StandardScaler()
-    X_train_scaled = scaler_full.fit_transform(X_train_full)
+    scaler_full.fit(X_tr)
+    X_train_scaled = scaler_full.transform(X_train_full)
     X_tr_s = scaler_full.transform(X_tr)
     X_val_s = scaler_full.transform(X_val)
     X_test_scaled = scaler_full.transform(X_test)
@@ -262,6 +269,8 @@ def _train_mtl_regressor(
             logits, yp = model(xb)
             loss = REGRESSION_MTL_LAMBDA_CLASSIFICATION * loss_cls_fn(logits, yc)
             loss = loss + REGRESSION_MTL_LAMBDA_REGRESSION * loss_reg_fn(yp, yr)
+            if not torch.isfinite(loss):
+                raise ValueError("MTL optimizer loss is non-finite.")
             loss.backward()
             opt.step()
             epoch_losses.append(float(loss.detach().cpu()))
@@ -273,7 +282,9 @@ def _train_mtl_regressor(
                 REGRESSION_MTL_LAMBDA_CLASSIFICATION * loss_cls_fn(lv, y_cls_val_t)
                 + REGRESSION_MTL_LAMBDA_REGRESSION * loss_reg_fn(cv, y_reg_val_t)
             )
-        train_hist.append(float(np.mean(epoch_losses)) if epoch_losses else 0.0)
+        if not np.isfinite(v_loss) or not np.isfinite(epoch_losses).all():
+            raise ValueError("MTL training produced a non-finite loss.")
+        train_hist.append(float(np.mean(epoch_losses)))
         val_hist.append(v_loss)
 
         if v_loss < best_val - 1e-6:
@@ -286,10 +297,17 @@ def _train_mtl_regressor(
                 logger.info("MTL early stopping at epoch %d", epoch + 1)
                 break
 
-    if best_state is not None:
-        model.load_state_dict(best_state)
+    if best_state is None:
+        raise ValueError("MTL early stopping produced no valid checkpoint.")
+    model.load_state_dict(best_state)
 
-    # Fine-tune early-stopped weights on all training rows before held-out evaluation.
+    # Restart optimizer state coherently with the restored early-stop checkpoint.
+    opt = torch.optim.AdamW(
+        model.parameters(),
+        lr=REGRESSION_MTL_LEARNING_RATE,
+        weight_decay=REGRESSION_MTL_WEIGHT_DECAY,
+    )
+    # Full-training fine-tuning uses a fixed budget without further validation selection.
     full_ds = TensorDataset(
         torch.tensor(X_train_scaled, dtype=torch.float32, device=device),
         torch.tensor(y_cls_train_full, dtype=torch.long, device=device),
@@ -300,14 +318,16 @@ def _train_mtl_regressor(
         batch_size=min(REGRESSION_MTL_BATCH_SIZE, len(full_ds)),
         shuffle=True,
     )
-    finetune_epochs = min(30, REGRESSION_MTL_MAX_EPOCHS // 4)
-    for _ in range(max(1, finetune_epochs)):
+    finetune_epochs = max(1, min(30, REGRESSION_MTL_MAX_EPOCHS // 4))
+    for _ in range(finetune_epochs):
         model.train()
         for xb, yc, yr in full_loader:
             opt.zero_grad(set_to_none=True)
             logits, yp = model(xb)
             loss = REGRESSION_MTL_LAMBDA_CLASSIFICATION * loss_cls_fn(logits, yc)
             loss = loss + REGRESSION_MTL_LAMBDA_REGRESSION * loss_reg_fn(yp, yr)
+            if not torch.isfinite(loss):
+                raise ValueError("MTL optimizer loss is non-finite.")
             loss.backward()
             opt.step()
 
@@ -335,4 +355,7 @@ def _train_mtl_regressor(
         class_labels=class_labels,
         train_loss_history=train_hist,
         val_loss_history=val_hist,
+        early_stop_train_indices=np.asarray(train_idx)[tr_pos],
+        early_stop_validation_indices=np.asarray(train_idx)[val_pos],
+        finetune_epochs=finetune_epochs,
     )

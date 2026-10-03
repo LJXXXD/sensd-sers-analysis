@@ -56,8 +56,6 @@ CLASSIFICATION_FEATURE_BASE = [
     "integral_area",
     "max_intensity",
     "mean_intensity",
-    "PC1",
-    "PC2",
 ]
 
 

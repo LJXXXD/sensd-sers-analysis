@@ -88,7 +88,11 @@ def render(filtered_bundle, derived_bundle, peak_artifacts) -> None:
             idx = row_start + j
             if idx >= int(n_pf):
                 break
-            default_val = float(defaults[idx]) if idx < len(defaults) else float(defaults[-1])
+            default_val = (
+                float(defaults[idx])
+                if idx < len(defaults)
+                else float(defaults[-1]) + (idx - len(defaults) + 1) * 50.0
+            )
             with row_cols[j]:
                 anchors.append(
                     float(
@@ -101,13 +105,16 @@ def render(filtered_bundle, derived_bundle, peak_artifacts) -> None:
                     )
                 )
 
+    try:
+        merged_preview = merge_targeted_peaks_into_filtered_bundle(
+            filtered_bundle,
+            derived_bundle.wide_df,
+            tuple(anchors),
+        )
+    except ValueError as exc:
+        st.warning(str(exc))
+        return
     st.session_state["pfe_targeted_anchors"] = tuple(anchors)
-
-    merged_preview = merge_targeted_peaks_into_filtered_bundle(
-        filtered_bundle,
-        derived_bundle.wide_df,
-        tuple(anchors),
-    )
     peak_cols = list_targeted_peak_feature_columns(merged_preview.filtered_features_df.columns)
     if peak_cols:
         st.caption("Active feature columns: " + ", ".join(f"``{c}``" for c in peak_cols))

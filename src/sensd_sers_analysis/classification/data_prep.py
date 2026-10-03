@@ -1,5 +1,5 @@
 """
-Serotype classification data preparation: strictly clean rows for ML.
+Identity eligibility and separate retrospective response screening.
 
 Filters to Pass sensors only, drops outlier-flagged points from intra-sensor
 regression, and assigns ``(N + 1)``-class targets: ``N`` serotypes observed on
@@ -15,6 +15,31 @@ from sensd_sers_analysis.assessment import (
     get_global_model_consistency_qa,
 )
 from sensd_sers_analysis.processing.metadata import sample_type_masks
+
+
+def label_classification_dataset(
+    df: pd.DataFrame, *, serotype_col: str = "serotype"
+) -> pd.DataFrame:
+    """Copy identity-eligible rows without response-based screening.
+
+    Explicit sample type supplies control identity; bacterial rows need a usable
+    serotype. Original source indices and order are retained. Cohort QA and
+    outlier diagnostics do not determine eligibility for held-out evaluation.
+    """
+    rinsate, bacteria = sample_type_masks(df)
+    labels = pd.Series("Unknown", index=df.index, dtype=object)
+    labels.loc[rinsate] = "Rinsate"
+    if serotype_col in df:
+        serotypes = df[serotype_col].astype("string").str.strip()
+        valid = (
+            serotypes.notna()
+            & serotypes.ne("")
+            & ~serotypes.str.lower().isin(["nan", "none", "unknown"])
+        )
+        labels.loc[bacteria & valid] = serotypes.loc[bacteria & valid]
+    out = df.loc[labels.ne("Unknown")].copy()
+    out["target"] = labels.loc[out.index]
+    return out
 
 
 def prepare_classification_dataset(

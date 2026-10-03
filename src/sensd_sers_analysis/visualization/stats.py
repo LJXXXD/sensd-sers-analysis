@@ -8,6 +8,7 @@ comparing metrics across groups (e.g., serotype, concentration).
 from typing import Optional
 
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -71,13 +72,16 @@ def plot_feature_distribution(
         raise ValueError("DataFrame is empty")
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig = Figure(figsize=figsize)
+        ax = fig.subplots()
     else:
         fig = ax.get_figure()
 
     # Drop rows with NaN in feature to avoid seaborn boxprops UnboundLocalError
     # (seaborn bug when groups have no valid data)
-    df_clean = df_features.dropna(subset=[feature_col])
+    df_clean = df_features.loc[
+        np.isfinite(pd.to_numeric(df_features[feature_col], errors="coerce"))
+    ]
     if df_clean.empty:
         # Try fallback features when the selected one has no valid data
         fallback_cols = [
@@ -233,6 +237,7 @@ def plot_feature_correlation_heatmap(
         raise ValueError("Need at least two feature columns present in the DataFrame.")
 
     sub = df_features[cols].apply(pd.to_numeric, errors="coerce")
+    sub = sub.where(np.isfinite(sub))
     valid_cols = [c for c in cols if sub[c].notna().sum() >= 2]
     if len(valid_cols) < 2:
         raise ValueError("Need at least two feature columns with ≥2 finite values for correlation.")
@@ -246,7 +251,8 @@ def plot_feature_correlation_heatmap(
         else:
             w = max(6.0, 0.65 * len(valid_cols))
             h = max(5.0, 0.65 * len(valid_cols))
-        fig, ax = plt.subplots(figsize=(w, h))
+        fig = Figure(figsize=(w, h))
+        ax = fig.subplots()
     else:
         fig = ax.get_figure()
 
@@ -307,6 +313,7 @@ def compute_feature_log_concentration_correlations(
         if col not in df_features.columns:
             continue
         paired = df_features[[log_conc_col, col]].apply(pd.to_numeric, errors="coerce").dropna()
+        paired = paired.loc[np.isfinite(paired).all(axis=1)]
         if len(paired) < 3:
             continue
         x = paired[log_conc_col].astype(float).values
@@ -377,7 +384,8 @@ def plot_feature_log_concentration_correlation_bars(
     if ax is None:
         height = figsize[1] if figsize is not None else max(4.0, 0.35 * len(labels))
         width = figsize[0] if figsize is not None else 10.0
-        fig, ax = plt.subplots(figsize=(width, height))
+        fig = Figure(figsize=(width, height))
+        ax = fig.subplots()
     else:
         fig = ax.get_figure()
 
@@ -442,7 +450,7 @@ def plot_feature_log_concentration_scatter(
     plot_df[feature_col] = pd.to_numeric(plot_df[feature_col], errors="coerce")
     if hue_col:
         plot_df[hue_col] = df_features[hue_col]
-    plot_df = plot_df.dropna(subset=[log_conc_col, feature_col])
+    plot_df = plot_df.loc[np.isfinite(plot_df[[log_conc_col, feature_col]]).all(axis=1)]
     if plot_df.empty:
         raise ValueError("No valid rows after dropping NaN in concentration or feature.")
 
@@ -452,7 +460,8 @@ def plot_feature_log_concentration_scatter(
         raise ValueError("Cannot fit OLS: zero variance in log concentration or feature.")
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig = Figure(figsize=figsize)
+        ax = fig.subplots()
     else:
         fig = ax.get_figure()
 

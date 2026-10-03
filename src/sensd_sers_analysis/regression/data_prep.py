@@ -9,7 +9,10 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from sensd_sers_analysis.classification.data_prep import prepare_classification_dataset
+from sensd_sers_analysis.classification.data_prep import (
+    label_classification_dataset,
+    prepare_classification_dataset,
+)
 from sensd_sers_analysis.processing import extract_scalar_concentration
 
 
@@ -25,11 +28,12 @@ def prepare_concentration_regression_data(
     concentration_col: str = "concentration",
     concentration_group_col: str = "concentration_group",
     target_col: str = "target",
+    apply_response_screening: bool = True,
 ) -> pd.DataFrame:
     """
-    Build strictly clean rows for log10 concentration regression.
+    Build finite positive actual-CFU rows for log10 concentration regression.
 
-    Reuses the same Pass-sensor and inlier cleaning as serotype classification
+    With ``apply_response_screening=True``, reuses retrospective Pass-sensor and inlier cleaning
     (including serotype / Rinsate labeling). Retains only **non-Rinsate** rows
     with **positive** concentration and finite ``log_concentration`` (one
     row-level serotype label per sample).
@@ -43,6 +47,9 @@ def prepare_concentration_regression_data(
     sensor_col, serotype_col, log_conc_col, concentration_col,
     concentration_group_col, target_col:
         Column names.
+    apply_response_screening:
+        Retrospective diagnostic cleaning. Model services pass False so held-out
+        responses never determine the evaluated cohort.
 
     Returns
     -------
@@ -56,16 +63,20 @@ def prepare_concentration_regression_data(
     ValueError
         If a custom ``target_col`` would overwrite another input column.
     """
-    classification_clean = prepare_classification_dataset(
-        df,
-        excluded_map=excluded_map,
-        feature_cols=feature_cols,
-        inlier_feature=inlier_feature,
-        sensor_col=sensor_col,
-        serotype_col=serotype_col,
-        log_conc_col=log_conc_col,
-        concentration_group_col=concentration_group_col,
-        concentration_col=concentration_col,
+    classification_clean = (
+        prepare_classification_dataset(
+            df,
+            excluded_map=excluded_map,
+            feature_cols=feature_cols,
+            inlier_feature=inlier_feature,
+            sensor_col=sensor_col,
+            serotype_col=serotype_col,
+            log_conc_col=log_conc_col,
+            concentration_group_col=concentration_group_col,
+            concentration_col=concentration_col,
+        )
+        if apply_response_screening
+        else label_classification_dataset(df, serotype_col=serotype_col)
     )
     if classification_clean.empty:
         return pd.DataFrame()

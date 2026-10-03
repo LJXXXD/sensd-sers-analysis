@@ -3,6 +3,7 @@ Shared UI components for SERS Data Explorer.
 """
 
 import logging
+import hashlib
 from collections.abc import Callable
 
 import pandas as pd
@@ -17,11 +18,19 @@ from theme import (
 logger = logging.getLogger(__name__)
 
 
+def report_context_key(df: pd.DataFrame, *settings) -> str:
+    """Fingerprint report inputs so a changed scope cannot download stale bytes."""
+    digest = hashlib.sha256(pd.util.hash_pandas_object(df.astype(str), index=True).values.tobytes())
+    digest.update(repr((tuple(df.columns), settings)).encode("utf-8"))
+    return digest.hexdigest()
+
+
 def render_pdf_download_section(
     session_key: str,
     filename: str,
     generate_callback: Callable[[], bytes],
     *,
+    context_key: str,
     button_label: str = "Generate report",
     download_label: str = "Download PDF",
     mime: str = "application/pdf",
@@ -36,6 +45,7 @@ def render_pdf_download_section(
 
     Args:
         session_key: Key in st.session_state for PDF bytes.
+        context_key: Stable digest of the current report data and settings.
         filename: Download filename (e.g. "sensor_assessment_report.pdf").
         generate_callback: Callable that returns PDF bytes. Called when
             Generate button is clicked.
@@ -45,17 +55,25 @@ def render_pdf_download_section(
         container: Streamlit container (default: st).
     """
     c = container if container is not None else st
+    state_context_key = f"{session_key}_context"
+    if st.session_state.get(state_context_key) != context_key:
+        st.session_state.pop(session_key, None)
+        st.session_state.pop(state_context_key, None)
 
     with c.container():
         if st.button(button_label, key=f"{session_key}_btn", type="primary"):
             try:
                 pdf_bytes = generate_callback()
+                if not isinstance(pdf_bytes, bytes) or not pdf_bytes:
+                    raise ValueError("Report generation returned no PDF bytes.")
                 st.session_state[session_key] = pdf_bytes
+                st.session_state[state_context_key] = context_key
                 logger.info("PDF report generated successfully: %s", session_key)
                 st.success("Report generated. Click Download below.")
             except Exception as e:
                 logger.exception("Report generation failed (%s): %s", session_key, e)
                 st.session_state.pop(session_key, None)
+                st.session_state.pop(state_context_key, None)
                 st.error(f"Report generation failed: {e}")
 
         _pdf_ready = (
@@ -132,8 +150,10 @@ def render_figure_stretch(
         fig: matplotlib Figure to display.
         close: If True, close the figure after rendering to free memory.
     """
-    st.pyplot(fig, width=FIGURE_WIDTH)
-    if close:
-        import matplotlib.pyplot as plt
+    try:
+        st.pyplot(fig, width=FIGURE_WIDTH)
+    finally:
+        if close:
+            import matplotlib.pyplot as plt
 
-        plt.close(fig)
+            plt.close(fig)

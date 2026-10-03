@@ -15,6 +15,7 @@ from components.shared_ui import (
     render_dataframe_stretch,
     render_figure_stretch,
     render_pdf_download_section,
+    report_context_key,
 )
 from sensd_sers_analysis.application import build_global_regression_pdf_bytes
 from sensd_sers_analysis.config import (
@@ -51,8 +52,8 @@ def render(filtered_features, peak_artifacts):
     if not regression_prerequisites_ok(filtered_features):
         st.warning(
             "Concentration regression requires **sensor_id**, **serotype**, "
-            "**concentration_group**, **log_concentration**, **PC1**, and **PC2**. "
-            "Run **Sensor assessment** and ensure metadata is complete."
+            "**sample_type**, actual **concentration**, and **log_concentration**. "
+            "Ensure sample identity and measured concentration metadata are complete."
         )
         return
 
@@ -68,21 +69,21 @@ def render(filtered_features, peak_artifacts):
     )
     if reg_clean.empty:
         st.warning(
-            "No clean positive-CFU rows for regression. Check QA Pass sensors, "
-            "inliers, and non-zero concentrations."
+            "No identity-eligible positive actual-CFU rows for regression. Check "
+            "Sample Type, serotype labels, and finite measured concentrations."
         )
         return
 
     counts_txt = format_regression_target_counts(reg_clean)
     st.caption(
-        f"Clean regression data: **{len(reg_clean)}** samples"
+        f"Eligible regression data: **{len(reg_clean)}** samples"
         + (f" — {counts_txt}" if counts_txt else "")
     )
 
     st.markdown("---")
     st.markdown("##### Global models (RF + SVR)")
     st.caption(
-        "Features are standardized on the **training sensors only**. "
+        "Features are standardized within each **training CV fold**. "
         "Hyperparameter search (when enabled) uses **GroupKFold** on training rows "
         f"({REGRESSION_TUNING_GROUP_KFOLD_SPLITS} folds max) to avoid sensor leakage "
         "within tuning."
@@ -106,6 +107,10 @@ def render(filtered_features, peak_artifacts):
             "RMSE (log10)": [rf.rmse, svm.rmse],
             "MAE (log10)": [rf.mae, svm.mae],
             "R²": [rf.r2, svm.r2],
+            "Training CV RMSE": [
+                -rf.cv_score if rf.cv_score is not None else None,
+                -svm.cv_score if svm.cv_score is not None else None,
+            ],
         }
     )
     st.markdown("**Held-out sensor metrics (test set)**")
@@ -118,7 +123,9 @@ def render(filtered_features, peak_artifacts):
         },
     )
     best = artifacts.best_result
-    st.caption(f"**Best by test RMSE:** {best.model_name} (RMSE = {best.rmse:.4f}).")
+    st.caption(
+        f"**Selected by training CV (RF reference when CV is unavailable):** {best.model_name} (RMSE = {best.rmse:.4f})."
+    )
 
     with st.expander("Hyperparameter tuning (global regression)", expanded=False):
         if REGRESSION_HYPERPARAMETER_TUNING:
@@ -164,7 +171,7 @@ def render(filtered_features, peak_artifacts):
         )
         render_figure_stretch(fig_b)
 
-    st.markdown("**Residuals (best model)**")
+    st.markdown("**Residuals (training-selected model)**")
     fig_res = plot_residuals(best.y_true, best.y_pred)
     render_figure_stretch(fig_res)
 
@@ -184,6 +191,9 @@ def render(filtered_features, peak_artifacts):
     render_pdf_download_section(
         session_key="reg_global_pdf",
         filename="regression_global_report.pdf",
+        context_key=report_context_key(
+            reg_clean, tuple(feat_cols), artifacts.best_result.model_name
+        ),
         generate_callback=_pdf,
         button_label="Generate Global Regression Report",
         download_label="Download Global Regression Report",

@@ -13,13 +13,13 @@ APPS_DIR = Path(__file__).resolve().parents[1] / "apps"
 if str(APPS_DIR) not in sys.path:
     sys.path.insert(0, str(APPS_DIR))
 
-from txt_to_excel import (  # noqa: E402
+from sensd_sers_analysis.data.txt_converter import (  # noqa: E402
     DATE_METADATA_FIELD_NUMBERS,
     METADATA_FIELD_SPECS,
     TIME_METADATA_FIELD_NUMBERS,
-    _build_embedded_workbook_rows,
-    _embedded_workbook_to_excel_bytes,
-)
+    build_embedded_workbook_rows,
+    embedded_workbook_to_excel_bytes,
+)  # noqa: E402
 
 from sensd_sers_analysis.data.io import (  # noqa: E402
     SersLoadReport,
@@ -49,7 +49,7 @@ def _write_minimal_embedded_xlsx(tmp_path: Path, *, extra_top_rows: int = 0) -> 
 
     raman_shift = np.array([100.0, 101.0])
     intensity_columns = [np.array([1.0, 2.0]), np.array([3.0, 4.0])]
-    rows = _build_embedded_workbook_rows(
+    rows = build_embedded_workbook_rows(
         _minimal_workbook_metadata(),
         target_concentrations=["", 1000.0],
         actual_concentrations=[500.0, 1000.0],
@@ -62,7 +62,7 @@ def _write_minimal_embedded_xlsx(tmp_path: Path, *, extra_top_rows: int = 0) -> 
         rows.insert(0, [np.nan, np.nan] + [""] * (len(rows[0]) - 2))
 
     path = tmp_path / "embedded_test.xlsx"
-    path.write_bytes(_embedded_workbook_to_excel_bytes(rows))
+    path.write_bytes(embedded_workbook_to_excel_bytes(rows))
     return path
 
 

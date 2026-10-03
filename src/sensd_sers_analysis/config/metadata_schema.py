@@ -55,3 +55,49 @@ SPECTRA_FACTOR_ORDER = (
     "source_txt_filename",
     "signal_index",
 )
+
+
+# Workbook field order and JSON preset keys are shared serialization contracts.
+NUMERIC_METADATA_FIELD_NUMBERS = frozenset({1, 2, 3, 4, 6, 7})
+
+
+DATE_METADATA_FIELD_NUMBERS = frozenset({13})
+
+
+TIME_METADATA_FIELD_NUMBERS = frozenset({14})
+
+
+OPTIONAL_METADATA_FIELD_NUMBERS = frozenset({16})
+
+
+METADATA_FIELD_SPECS: tuple[tuple[int, str, str], ...] = (
+    (1, "Disk Diameter (nm)", "txt2excel_meta_disk_diameter_nm"),
+    (2, "Periodicity (µm)", "txt2excel_meta_periodicity_um"),
+    (3, "Thickness (nm)", "txt2excel_meta_thickness_nm"),
+    (4, "Core Diameter (µm)", "txt2excel_meta_core_diameter_um"),
+    (5, "Sensor Model", "txt2excel_meta_sensor_model"),
+    (6, "Integration Time (ms)", "txt2excel_meta_integration_time_ms"),
+    (7, "Scan Average", "txt2excel_meta_scan_average"),
+    (8, "Sensor ID", "txt2excel_meta_sensor_id"),
+    (9, "Test ID", "txt2excel_meta_test_id"),
+    (10, "Connection ID", "txt2excel_meta_connection_id"),
+    (11, "Serotype", "txt2excel_meta_serotype"),
+    (12, "Rinsate Type", "txt2excel_meta_rinsate_type"),
+    (13, "Date", "txt2excel_meta_date"),
+    (14, "Testing Time", "txt2excel_meta_testing_time"),
+    (15, "Operator", "txt2excel_meta_operator"),
+    (16, "Notes", "txt2excel_meta_notes"),
+)
+
+
+METADATA_LOGICAL_GROUPS: tuple[tuple[int, ...], ...] = (
+    (1, 2, 3, 4, 5),
+    (6, 7),
+    (8, 9, 10),
+    (11, 12),
+    (13, 14, 15),
+    (16,),
+)
+
+
+METADATA_WIDGET_KEYS = frozenset(widget_key for _, _, widget_key in METADATA_FIELD_SPECS)

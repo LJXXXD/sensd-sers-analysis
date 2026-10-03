@@ -2,7 +2,7 @@
 Instrument TXT to Excel merger — Streamlit prep utility.
 
 Converts raw Raman instrument ``.txt`` exports into embedded-metadata Excel
-workbooks for the SERS analysis tool. Lives entirely under ``apps/``.
+workbooks using the independently callable data converter.
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ import json
 import logging
 import re
 import uuid
-from datetime import date, datetime, time
-from io import BytesIO, StringIO
+import unicodedata
+from html import escape
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -22,11 +22,35 @@ import streamlit as st
 
 from components.shared_ui import render_figure_stretch
 from sensd_sers_analysis.config.metadata_schema import (
-    INITIAL_TARGET_LABEL,
+    DATE_METADATA_FIELD_NUMBERS,
+    METADATA_FIELD_SPECS,
+    METADATA_LOGICAL_GROUPS,
+    METADATA_WIDGET_KEYS,
+    NUMERIC_METADATA_FIELD_NUMBERS,
+    OPTIONAL_METADATA_FIELD_NUMBERS,
+    TIME_METADATA_FIELD_NUMBERS,
     PER_SIGNAL_PRESET_KEY,
-    SAMPLE_TYPE_LABEL,
     SAMPLE_TYPE_OPTIONS,
     SPECIAL_TREATMENT_OPTIONS,
+)
+from sensd_sers_analysis.data.txt_converter import (
+    TEMPLATE_VERSION,
+    apply_template_import_to_values,
+    build_embedded_workbook_rows,
+    build_template_export_payload,
+    coerce_metadata_widget_state_value,
+    embedded_workbook_to_excel_bytes,
+    field_number_for_widget_key,
+    format_metadata_date,
+    format_metadata_time,
+    is_metadata_widget_value_empty,
+    is_template_field_exportable,
+    merge_txt_spectra,
+    metadata_widget_state_to_string,
+    parse_optional_number,
+    parse_required_number,
+    to_excel_number,
+    validate_common_shift,
 )
 from sensd_sers_analysis.application.metadata_presets import validate_signal_preset
 from sensd_sers_analysis.visualization import plot_spectra
@@ -43,62 +67,24 @@ APP_MODE_PREP = "prep"
 MERGED_PREVIEW_KEY = "_txt2excel_merged_preview"
 EXPORT_BYTES_KEY = "_txt2excel_export_bytes"
 EXPORT_FILENAME_KEY = "_txt2excel_export_filename"
+EXPORT_CONTEXT_KEY = "_txt2excel_export_context"
 PREP_UPLOADER_RESET_KEY = "_txt2excel_uploader_reset"
 TEMPLATE_IMPORT_UPLOADER_RESET_KEY = "_txt2excel_template_import_reset"
 TEMPLATE_IMPORT_FEEDBACK_KEY = "_txt2excel_template_import_feedback"
 TEMPLATE_IMPORT_PENDING_VALUES_KEY = "_txt2excel_template_import_pending_values"
 TEMPLATE_EXPORT_SELECT_ALL_KEY = "txt2excel_template_export_select_all"
 TEMPLATE_EXPORT_FILENAME = "SERS_metadata_preset.json"
-TEMPLATE_VERSION = 1
 DEFAULT_MIN_SHIFT = 560.9
 MERGED_PREVIEW_FIGSIZE = (10.0, 6.0)
 MERGED_PREVIEW_HUE_COL = "concentration_cfu_ml"
 MERGED_PREVIEW_LEGEND_TITLE = "Concentrations (CFU/mL)"
 
-TARGET_CONCENTRATION_LABEL = INITIAL_TARGET_LABEL
-ACTUAL_CONCENTRATION_LABEL = "Actual Concentration (CFU/mL)"
-FILE_NAME_LABEL = "File Name"
-SPECIAL_TREATMENT_LABEL = "Special Treatment"
 PREP_TARGET_CONCENTRATION_HEADER = "Initial Target Concentration"
 PREP_ACTUAL_CONCENTRATION_HEADER = "Actual Concentration"
 PREP_SPECIAL_TREATMENT_HEADER = "Special Treatment"
 REQUIRED_FIELD_LABEL_SUFFIX = " *"
 OPTIONAL_FIELD_LABEL_SUFFIX = " (optional)"
-INTENSITY_HEADER = "Relative Light intensity (a.u)"
-RAMAN_SHIFT_HEADER = "Raman Shift"
 
-# Metadata field numbers whose column-B values must be numeric in the workbook.
-NUMERIC_METADATA_FIELD_NUMBERS = frozenset({1, 2, 3, 4, 6, 7})
-DATE_METADATA_FIELD_NUMBERS = frozenset({13})
-TIME_METADATA_FIELD_NUMBERS = frozenset({14})
-OPTIONAL_METADATA_FIELD_NUMBERS = frozenset({16})
-METADATA_FIELD_SPECS: tuple[tuple[int, str, str], ...] = (
-    (1, "Disk Diameter (nm)", "txt2excel_meta_disk_diameter_nm"),
-    (2, "Periodicity (µm)", "txt2excel_meta_periodicity_um"),
-    (3, "Thickness (nm)", "txt2excel_meta_thickness_nm"),
-    (4, "Core Diameter (µm)", "txt2excel_meta_core_diameter_um"),
-    (5, "Sensor Model", "txt2excel_meta_sensor_model"),
-    (6, "Integration Time (ms)", "txt2excel_meta_integration_time_ms"),
-    (7, "Scan Average", "txt2excel_meta_scan_average"),
-    (8, "Sensor ID", "txt2excel_meta_sensor_id"),
-    (9, "Test ID", "txt2excel_meta_test_id"),
-    (10, "Connection ID", "txt2excel_meta_connection_id"),
-    (11, "Serotype", "txt2excel_meta_serotype"),
-    (12, "Rinsate Type", "txt2excel_meta_rinsate_type"),
-    (13, "Date", "txt2excel_meta_date"),
-    (14, "Testing Time", "txt2excel_meta_testing_time"),
-    (15, "Operator", "txt2excel_meta_operator"),
-    (16, "Notes", "txt2excel_meta_notes"),
-)
-# Logical groups (5 + 2 + 3 + 2 + 3 + notes); Excel dividers follow the last field in each.
-METADATA_LOGICAL_GROUPS: tuple[tuple[int, ...], ...] = (
-    (1, 2, 3, 4, 5),
-    (6, 7),
-    (8, 9, 10),
-    (11, 12),
-    (13, 14, 15),
-    (16,),
-)
 METADATA_UI_COLUMN_COUNT = 5
 # Three five-column UI rows (15 fields) before full-width notes.
 METADATA_UI_ROWS: tuple[tuple[int, ...], ...] = (
@@ -107,7 +93,6 @@ METADATA_UI_ROWS: tuple[tuple[int, ...], ...] = (
     (11, 12, 13, 14, 15),
 )
 _PREP_LAYOUT_STABILITY_CSS_KEY = "_txt2excel_prep_layout_css_injected"
-METADATA_WIDGET_KEYS = frozenset(widget_key for _, _, widget_key in METADATA_FIELD_SPECS)
 RELOAD_CLEAR_WIDGET_KEYS = frozenset(
     {
         "txt2excel_meta_sensor_id",
@@ -136,6 +121,7 @@ def enter_analysis_mode() -> None:
     st.session_state.pop(MERGED_PREVIEW_KEY, None)
     st.session_state.pop(EXPORT_BYTES_KEY, None)
     st.session_state.pop(EXPORT_FILENAME_KEY, None)
+    st.session_state.pop(EXPORT_CONTEXT_KEY, None)
 
 
 def _clear_session_keys_by_prefix(prefix: str) -> None:
@@ -198,7 +184,7 @@ def _restore_persistent_metadata_widgets() -> None:
     snapshot = st.session_state.get(PERSISTENT_METADATA_SNAPSHOT_KEY, {})
     for field_number, _, key in METADATA_FIELD_SPECS:
         if key in RELOAD_PERSIST_WIDGET_KEYS and key in snapshot:
-            st.session_state[key] = _coerce_metadata_widget_state_value(field_number, snapshot[key])
+            st.session_state[key] = coerce_metadata_widget_state_value(field_number, snapshot[key])
 
 
 def _apply_pending_template_import_values() -> None:
@@ -215,18 +201,18 @@ def _apply_pending_template_import_values() -> None:
     for widget_key, value in pending_values.items():
         if widget_key not in METADATA_WIDGET_KEYS:
             continue
-        field_number = _field_number_for_widget_key(widget_key)
+        field_number = field_number_for_widget_key(widget_key)
         if field_number is None:
             continue
-        st.session_state[widget_key] = _coerce_metadata_widget_state_value(field_number, value)
+        st.session_state[widget_key] = coerce_metadata_widget_state_value(field_number, value)
     _sync_persistent_metadata_snapshot(
         {
-            widget_key: _metadata_widget_state_to_string(
+            widget_key: metadata_widget_state_to_string(
                 field_number, st.session_state.get(widget_key)
             )
             for widget_key in pending_values
             if widget_key in METADATA_WIDGET_KEYS
-            for field_number in [_field_number_for_widget_key(widget_key)]
+            for field_number in [field_number_for_widget_key(widget_key)]
             if field_number is not None
         }
     )
@@ -243,7 +229,7 @@ def clear_prep_uploads() -> None:
 
     logger.info("Clearing prep upload state (Reload Data clicked)")
     widget_values = {
-        widget_key: _metadata_widget_state_to_string(
+        widget_key: metadata_widget_state_to_string(
             field_number,
             st.session_state.get(widget_key),
         )
@@ -258,11 +244,12 @@ def clear_prep_uploads() -> None:
     st.session_state.pop(MERGED_PREVIEW_KEY, None)
     st.session_state.pop(EXPORT_BYTES_KEY, None)
     st.session_state.pop(EXPORT_FILENAME_KEY, None)
+    st.session_state.pop(EXPORT_CONTEXT_KEY, None)
     st.session_state.pop("txt2excel_file_signature", None)
     st.session_state.pop("txt2excel_min_shift", None)
     st.session_state.pop("txt2excel_max_shift", None)
     for widget_key in RELOAD_CLEAR_WIDGET_KEYS:
-        field_number = _field_number_for_widget_key(widget_key)
+        field_number = field_number_for_widget_key(widget_key)
         if field_number in DATE_METADATA_FIELD_NUMBERS | TIME_METADATA_FIELD_NUMBERS:
             st.session_state[widget_key] = None
         else:
@@ -301,326 +288,11 @@ def _extract_cfu_sort_key(filename: str) -> int:
     return int(match.group(1)) if match else int(1e9)
 
 
-def _parse_txt_content(content: str) -> pd.DataFrame:
-    """
-    Parse one instrument TXT export into Raman shift and intensity columns.
-
-    Parameters
-    ----------
-    content:
-        UTF-8 text of the instrument export.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns ``RamanShift`` and ``Value``.
-    """
-
-    df = pd.read_csv(
-        StringIO(content),
-        sep="\t",
-        comment=">",
-        header=None,
-        names=["RamanShift", "Value"],
-    )
-    df["RamanShift"] = pd.to_numeric(df["RamanShift"], errors="coerce")
-    return df.dropna(subset=["RamanShift", "Value"]).reset_index(drop=True)
-
-
-def _validate_common_shift(
-    file_contents: dict[str, str],
-    *,
-    atol: float = 1e-4,
-) -> tuple[np.ndarray | None, str | None]:
-    """
-    Verify all uploaded TXT files share the same Raman shift grid.
-
-    Returns
-    -------
-    tuple
-        ``(common_shift, error_message)`` — shift array when valid, else ``None`` and message.
-    """
-
-    common_shift: np.ndarray | None = None
-    for name, content in file_contents.items():
-        shifts = _parse_txt_content(content)["RamanShift"].to_numpy()
-        if common_shift is None:
-            common_shift = shifts
-            continue
-        if common_shift.shape != shifts.shape or not np.allclose(common_shift, shifts, atol=atol):
-            return None, f"Raman shift mismatch in file: {name}"
-    return common_shift, None
-
-
-def _merge_txt_spectra(
-    file_contents: dict[str, str],
-    *,
-    min_shift: float | None,
-    max_shift: float | None,
-) -> tuple[np.ndarray | None, list[np.ndarray] | None, str | None]:
-    """
-    Merge parsed TXT spectra into aligned Raman shift and intensity columns.
-
-    Parameters
-    ----------
-    file_contents:
-        Mapping of filename to UTF-8 file text, in column order.
-    min_shift:
-        Optional lower Raman shift bound (cm⁻¹).
-    max_shift:
-        Optional upper Raman shift bound (cm⁻¹).
-
-    Returns
-    -------
-    tuple
-        ``(raman_shift, intensity_columns, error_message)``.
-    """
-
-    names = list(file_contents.keys())
-    if not names:
-        return None, None, "No TXT files provided."
-
-    common_shift, shift_error = _validate_common_shift(file_contents)
-    if shift_error:
-        return None, None, shift_error
-    if common_shift is None:
-        return None, None, "No Raman shift data found."
-
-    min_final = float(min_shift) if min_shift is not None else float(common_shift.min())
-    max_final = float(max_shift) if max_shift is not None else float(common_shift.max())
-    if min_final >= max_final:
-        return None, None, "Min Raman Shift must be less than Max."
-
-    mask = (common_shift >= min_final) & (common_shift <= max_final)
-    raman_shift = common_shift[mask]
-    intensity_columns: list[np.ndarray] = []
-
-    for name in names:
-        df = _parse_txt_content(file_contents[name])
-        trimmed = df.loc[mask, "Value"].to_numpy(dtype=float)
-        if len(trimmed) != len(raman_shift):
-            return None, None, f"Truncated row count mismatch for file: {name}"
-        intensity_columns.append(trimmed)
-
-    return raman_shift, intensity_columns, None
-
-
-def _parse_required_number(raw: str) -> float | None:
-    """Parse a required numeric field; returns ``None`` when empty or non-numeric."""
-
-    stripped = raw.strip()
-    if not stripped:
-        return None
-    try:
-        return float(stripped)
-    except ValueError:
-        return None
-
-
-def _parse_optional_number(raw: str) -> float | None:
-    """
-    Parse an optional numeric field.
-
-    Returns ``None`` when empty (allowed). Returns ``None`` when non-numeric
-    (caller should treat as validation failure).
-    """
-
-    return _parse_required_number(raw)
-
-
-def _to_excel_number(value: float) -> int | float:
-    """Coerce a numeric value for Excel cells (integers stored without decimals)."""
-
-    if value.is_integer():
-        return int(value)
-    return value
-
-
-def _parse_metadata_date(raw: str) -> date | None:
-    """Parse a metadata date string in ISO or common US format."""
-
-    stripped = raw.strip()
-    if not stripped:
-        return None
-    try:
-        return date.fromisoformat(stripped)
-    except ValueError:
-        pass
-    for fmt in ("%m/%d/%Y", "%m/%d/%y"):
-        try:
-            return datetime.strptime(stripped, fmt).date()
-        except ValueError:
-            continue
-    return None
-
-
-def _normalize_ampm_period(raw_period: str) -> str:
-    """Return ``AM`` or ``PM`` from a case-insensitive period token."""
-
-    token = raw_period.upper().replace(".", "")
-    return "AM" if token.startswith("A") else "PM"
-
-
-def _ampm_parse_candidates(raw: str) -> list[str]:
-    """
-    Build normalized 12-hour time strings with an explicit AM/PM suffix.
-
-    Accepts compact input such as ``230pm`` or ``2:30 PM`` and expands it into
-    ``strptime``-compatible candidates.
-    """
-
-    text = re.sub(r"\s+", " ", raw.strip())
-    if not text:
-        return []
-
-    ampm_match = re.search(r"(a\.?m\.?|p\.?m\.?)\.?\s*$", text, re.IGNORECASE)
-    if not ampm_match:
-        return [text]
-
-    period = _normalize_ampm_period(ampm_match.group(1))
-    time_part = text[: ampm_match.start()].strip()
-    if not time_part:
-        return [f"12 {period}"]
-
-    candidates: list[str] = []
-    if ":" in time_part:
-        candidates.append(f"{time_part} {period}")
-    else:
-        digits = re.sub(r"\D", "", time_part)
-        if not digits:
-            return []
-        if len(digits) <= 2:
-            candidates.append(f"{int(digits)} {period}")
-        elif len(digits) == 3:
-            candidates.append(f"{digits[0]}:{digits[1:]} {period}")
-        else:
-            hour_digits = digits[:2]
-            minute_digits = digits[2:4]
-            if int(hour_digits) > 12:
-                candidates.append(f"{digits[0]}:{digits[1:3]} {period}")
-            else:
-                candidates.append(f"{int(hour_digits)}:{minute_digits} {period}")
-                if len(digits) >= 4:
-                    candidates.append(f"{int(digits[0])}:{digits[1:3]} {period}")
-
-    deduped: list[str] = []
-    for candidate in candidates:
-        if candidate not in deduped:
-            deduped.append(candidate)
-    return deduped
-
-
-def _parse_metadata_time(raw: str) -> time | None:
-    """Parse a metadata time string in 12-hour AM/PM or legacy 24-hour format."""
-
-    stripped = raw.strip()
-    if not stripped:
-        return None
-
-    ampm_formats = ("%I:%M:%S %p", "%I:%M %p", "%I %p")
-    for candidate in _ampm_parse_candidates(stripped):
-        for fmt in ampm_formats:
-            if fmt == "%I %p" and ":" in candidate:
-                continue
-            if fmt.startswith("%I:%M") and candidate.count(":") != fmt.count(":"):
-                continue
-            try:
-                return datetime.strptime(candidate, fmt).time()
-            except ValueError:
-                continue
-
-    legacy_formats = ("%H:%M:%S", "%H:%M")
-    for candidate in (stripped,):
-        for fmt in legacy_formats:
-            if fmt == "%H:%M" and len(candidate) != 5:
-                continue
-            try:
-                return datetime.strptime(candidate, fmt).time()
-            except ValueError:
-                continue
-    return None
-
-
-def _format_metadata_time_display(parsed: time) -> str:
-    """Format a ``time`` value as ``HH:MM AM/PM`` with zero-padded hour and minute."""
-
-    hour = parsed.hour % 12 or 12
-    ampm = "AM" if parsed.hour < 12 else "PM"
-    if parsed.second or parsed.microsecond:
-        return f"{hour:02d}:{parsed.minute:02d}:{parsed.second:02d} {ampm}"
-    return f"{hour:02d}:{parsed.minute:02d} {ampm}"
-
-
-def _format_metadata_date(value: date | str | None) -> str:
-    """Return a normalized ``YYYY-MM-DD`` string, or empty when invalid."""
-
-    if value is None:
-        return ""
-    if isinstance(value, date):
-        return value.isoformat()
-    parsed = _parse_metadata_date(str(value))
-    return parsed.isoformat() if parsed else ""
-
-
-def _format_metadata_time(value: time | str | None) -> str:
-    """Return a normalized 12-hour AM/PM time string, or empty when invalid."""
-
-    if value is None:
-        return ""
-    if isinstance(value, time):
-        parsed = value
-    else:
-        parsed = _parse_metadata_time(str(value))
-    if parsed is None:
-        return ""
-    return _format_metadata_time_display(parsed)
-
-
-def _coerce_metadata_widget_state_value(field_number: int, raw_value: Any) -> Any:
-    """Convert stored template or snapshot text to a widget-ready session value."""
-
-    if field_number in DATE_METADATA_FIELD_NUMBERS:
-        if isinstance(raw_value, date):
-            return raw_value
-        if raw_value is None:
-            return None
-        stripped = str(raw_value).strip()
-        return _parse_metadata_date(stripped) if stripped else None
-    if field_number in TIME_METADATA_FIELD_NUMBERS:
-        if isinstance(raw_value, time):
-            return raw_value
-        if raw_value is None:
-            return None
-        stripped = str(raw_value).strip()
-        return _parse_metadata_time(stripped) if stripped else None
-    if raw_value is None:
-        return ""
-    return str(raw_value).strip()
-
-
-def _metadata_widget_state_to_string(field_number: int, raw_value: Any) -> str:
-    """Serialize a metadata widget session value to workbook/template text."""
-
-    if field_number in DATE_METADATA_FIELD_NUMBERS:
-        return _format_metadata_date(raw_value)
-    if field_number in TIME_METADATA_FIELD_NUMBERS:
-        return _format_metadata_time(raw_value)
-    if raw_value is None:
-        return ""
-    return str(raw_value).strip()
-
-
-def _is_metadata_widget_value_empty(field_number: int, raw_value: Any) -> bool:
-    """Return whether a metadata widget has no usable value."""
-
-    return not _metadata_widget_state_to_string(field_number, raw_value)
-
-
 def _collect_metadata_values() -> dict[str, str]:
     """Read metadata field values from Streamlit session state."""
 
     return {
-        excel_label: _metadata_widget_state_to_string(
+        excel_label: metadata_widget_state_to_string(
             field_number,
             st.session_state.get(widget_key),
         )
@@ -642,164 +314,16 @@ def _collect_metadata_values_by_widget_key(
 
     if field_values is None:
         return {
-            widget_key: _metadata_widget_state_to_string(
+            widget_key: metadata_widget_state_to_string(
                 field_number,
                 st.session_state.get(widget_key),
             )
             for field_number, _, widget_key in METADATA_FIELD_SPECS
         }
     return {
-        widget_key: _metadata_widget_state_to_string(field_number, field_values.get(widget_key))
+        widget_key: metadata_widget_state_to_string(field_number, field_values.get(widget_key))
         for field_number, _, widget_key in METADATA_FIELD_SPECS
     }
-
-
-def _field_number_for_widget_key(widget_key: str) -> int | None:
-    """Return the metadata field number for a widget key, if known."""
-
-    return next(
-        (field_number for field_number, _, key in METADATA_FIELD_SPECS if key == widget_key),
-        None,
-    )
-
-
-def _is_template_field_exportable(field_number: int, raw_value: str) -> bool:
-    """
-    Return whether a metadata field has a valid, exportable value.
-
-    Numeric fields (1–6) must parse as numbers. Date (12) and Testing Time (13) must use
-    valid ``YYYY-MM-DD`` and 12-hour AM/PM formats. Optional Notes (16) may be omitted
-    when empty. All other fields must be non-empty text.
-    """
-
-    stripped = raw_value.strip() if isinstance(raw_value, str) else raw_value
-    if field_number in OPTIONAL_METADATA_FIELD_NUMBERS:
-        if _is_metadata_widget_value_empty(field_number, stripped):
-            return False
-        return True
-    if field_number in NUMERIC_METADATA_FIELD_NUMBERS:
-        return _parse_required_number(str(stripped).strip()) is not None
-    if field_number in DATE_METADATA_FIELD_NUMBERS:
-        return _format_metadata_date(stripped) != ""
-    if field_number in TIME_METADATA_FIELD_NUMBERS:
-        return _format_metadata_time(stripped) != ""
-    return bool(str(stripped).strip())
-
-
-def _serialize_template_field_value(
-    field_number: int, raw_value: str | Any
-) -> str | int | float | None:
-    """Convert a raw widget value to a JSON-safe template value, or ``None`` when invalid."""
-
-    if field_number in NUMERIC_METADATA_FIELD_NUMBERS:
-        parsed = _parse_required_number(str(raw_value).strip())
-        if parsed is None:
-            return None
-        return _to_excel_number(parsed)
-    if field_number in DATE_METADATA_FIELD_NUMBERS:
-        formatted = _format_metadata_date(raw_value)
-        return formatted if formatted else None
-    if field_number in TIME_METADATA_FIELD_NUMBERS:
-        formatted = _format_metadata_time(raw_value)
-        return formatted if formatted else None
-    stripped = str(raw_value).strip()
-    if not stripped:
-        return None
-    return stripped
-
-
-def _build_template_export_payload(
-    field_values: dict[str, str],
-    selected_keys: frozenset[str],
-    signal_labels: dict[str, dict[str, str]] | None = None,
-) -> dict[str, Any] | None:
-    """
-    Build a setup-template JSON payload from selected metadata widget keys.
-
-    Only checked fields with valid values are included.
-    """
-
-    export_fields: dict[str, str | int | float] = {}
-    for field_number, _, widget_key in METADATA_FIELD_SPECS:
-        if widget_key not in selected_keys:
-            continue
-        serialized = _serialize_template_field_value(field_number, field_values.get(widget_key, ""))
-        if serialized is None:
-            continue
-        export_fields[widget_key] = serialized
-    if not export_fields and not signal_labels:
-        return None
-    payload: dict[str, Any] = {"version": TEMPLATE_VERSION, "fields": export_fields}
-    if signal_labels:
-        payload["signal_labels"] = signal_labels
-    return payload
-
-
-def _apply_template_import_to_values(
-    payload: dict[str, Any],
-    field_values: dict[str, str],
-) -> tuple[dict[str, str], list[str]]:
-    """
-    Merge template payload values into a widget-key mapping.
-
-    Returns
-    -------
-    tuple
-        Updated values and human-readable warning messages.
-    """
-
-    warnings: list[str] = []
-    if payload.get("version") != TEMPLATE_VERSION:
-        warnings.append(f"Unsupported template version: {payload.get('version')!r}")
-        return field_values, warnings
-
-    raw_fields = payload.get("fields")
-    if not isinstance(raw_fields, dict):
-        warnings.append("Template is missing a valid 'fields' object.")
-        return field_values, warnings
-
-    updated = dict(field_values)
-    for widget_key, raw_value in raw_fields.items():
-        if widget_key not in METADATA_WIDGET_KEYS:
-            warnings.append(f"Unknown template field ignored: {widget_key}")
-            continue
-        field_number = _field_number_for_widget_key(widget_key)
-        if field_number is None:
-            continue
-        if isinstance(raw_value, bool):
-            warnings.append(f"Invalid value for {widget_key}; skipped.")
-            continue
-        if isinstance(raw_value, (int, float)):
-            if field_number in NUMERIC_METADATA_FIELD_NUMBERS:
-                updated[widget_key] = str(_to_excel_number(float(raw_value)))
-            else:
-                updated[widget_key] = str(raw_value)
-            continue
-        if isinstance(raw_value, str):
-            if field_number in NUMERIC_METADATA_FIELD_NUMBERS:
-                parsed = _parse_required_number(raw_value)
-                if parsed is None:
-                    warnings.append(f"Invalid numeric value for {widget_key}; skipped.")
-                    continue
-                updated[widget_key] = str(_to_excel_number(parsed))
-            elif field_number in DATE_METADATA_FIELD_NUMBERS:
-                formatted = _format_metadata_date(raw_value)
-                if not formatted:
-                    warnings.append(f"Invalid date value for {widget_key}; skipped.")
-                    continue
-                updated[widget_key] = formatted
-            elif field_number in TIME_METADATA_FIELD_NUMBERS:
-                formatted = _format_metadata_time(raw_value)
-                if not formatted:
-                    warnings.append(f"Invalid time value for {widget_key}; skipped.")
-                    continue
-                updated[widget_key] = formatted
-            else:
-                updated[widget_key] = raw_value.strip()
-            continue
-        warnings.append(f"Unsupported value type for {widget_key}; skipped.")
-
-    return updated, warnings
 
 
 def _template_selection_key(widget_key: str) -> str:
@@ -834,12 +358,12 @@ def _validate_metadata() -> str | None:
         if field_number in OPTIONAL_METADATA_FIELD_NUMBERS:
             continue
         raw_value = st.session_state.get(widget_key)
-        if _is_metadata_widget_value_empty(field_number, raw_value):
+        if is_metadata_widget_value_empty(field_number, raw_value):
             missing.append(label)
             continue
-        if field_number in DATE_METADATA_FIELD_NUMBERS and not _format_metadata_date(raw_value):
+        if field_number in DATE_METADATA_FIELD_NUMBERS and not format_metadata_date(raw_value):
             invalid.append(f"{field_number}. {label} must be a valid date (YYYY-MM-DD).")
-        elif field_number in TIME_METADATA_FIELD_NUMBERS and not _format_metadata_time(raw_value):
+        elif field_number in TIME_METADATA_FIELD_NUMBERS and not format_metadata_time(raw_value):
             invalid.append(f"{field_number}. {label} must be a valid time (e.g. 01:30 PM).")
     if missing:
         return f"Required metadata fields are missing: {', '.join(missing)}"
@@ -908,9 +432,7 @@ def _validate_prep_inputs(
     for field_number, excel_label, widget_key in METADATA_FIELD_SPECS:
         raw_value = st.session_state.get(widget_key)
         if field_number in NUMERIC_METADATA_FIELD_NUMBERS:
-            parsed = _parse_required_number(
-                _metadata_widget_state_to_string(field_number, raw_value)
-            )
+            parsed = parse_required_number(metadata_widget_state_to_string(field_number, raw_value))
             if parsed is None:
                 return (
                     {},
@@ -920,9 +442,9 @@ def _validate_prep_inputs(
                     [],
                     f"{field_number}. {excel_label} must be a number.",
                 )
-            metadata[excel_label] = _to_excel_number(parsed)
+            metadata[excel_label] = to_excel_number(parsed)
         elif field_number in DATE_METADATA_FIELD_NUMBERS:
-            formatted = _format_metadata_date(raw_value)
+            formatted = format_metadata_date(raw_value)
             if not formatted:
                 return (
                     {},
@@ -934,7 +456,7 @@ def _validate_prep_inputs(
                 )
             metadata[excel_label] = formatted
         elif field_number in TIME_METADATA_FIELD_NUMBERS:
-            formatted = _format_metadata_time(raw_value)
+            formatted = format_metadata_time(raw_value)
             if not formatted:
                 return (
                     {},
@@ -946,7 +468,7 @@ def _validate_prep_inputs(
                 )
             metadata[excel_label] = formatted
         else:
-            metadata[excel_label] = _metadata_widget_state_to_string(field_number, raw_value)
+            metadata[excel_label] = metadata_widget_state_to_string(field_number, raw_value)
 
     target_values: list[int | float | str] = []
     for file, raw_target in zip(sorted_files, target_inputs, strict=True):
@@ -954,8 +476,8 @@ def _validate_prep_inputs(
         if not stripped_target:
             target_values.append("")
             continue
-        parsed_target = _parse_optional_number(raw_target)
-        if parsed_target is None:
+        parsed_target = parse_optional_number(raw_target)
+        if parsed_target is None or parsed_target < 0:
             return (
                 {},
                 [],
@@ -963,195 +485,31 @@ def _validate_prep_inputs(
                 [],
                 [],
                 (
-                    f"{PREP_TARGET_CONCENTRATION_HEADER} for **{file.name}** must be a number "
+                    f"{PREP_TARGET_CONCENTRATION_HEADER} for **{file.name}** must be a finite non-negative number "
                     "or left blank when the initial target is unknown."
                 ),
             )
-        target_values.append(_to_excel_number(parsed_target))
+        target_values.append(to_excel_number(parsed_target))
 
     actual_values: list[int | float] = []
     for file, raw_actual in zip(sorted_files, actual_inputs, strict=True):
-        parsed_actual = _parse_required_number(raw_actual)
-        if parsed_actual is None:
+        parsed_actual = parse_required_number(raw_actual)
+        if parsed_actual is None or parsed_actual < 0:
             return (
                 {},
                 [],
                 [],
                 [],
                 [],
-                f"{PREP_ACTUAL_CONCENTRATION_HEADER} for **{file.name}** must be a number.",
+                f"{PREP_ACTUAL_CONCENTRATION_HEADER} for **{file.name}** must be a finite non-negative number.",
             )
-        actual_values.append(_to_excel_number(parsed_actual))
+        actual_values.append(to_excel_number(parsed_actual))
 
     source_txt_filenames = [file.name for file in sorted_files]
     treatment_inputs = special_treatment_inputs or [""] * len(sorted_files)
     special_treatments = ["" if value == "None" else value.strip() for value in treatment_inputs]
 
     return metadata, target_values, actual_values, source_txt_filenames, special_treatments, None
-
-
-def _build_embedded_workbook_rows(
-    metadata: dict[str, Any],
-    *,
-    target_concentrations: list[int | float | str],
-    actual_concentrations: list[int | float],
-    source_txt_filenames: list[str],
-    special_treatments: list[str],
-    raman_shift: np.ndarray,
-    intensity_columns: list[np.ndarray],
-    sample_types: list[str] | None = None,
-) -> list[list[Any]]:
-    """
-    Build row-major cell data for the embedded-metadata Excel layout.
-
-    Parameters
-    ----------
-    metadata:
-        Mapping of Excel column-A labels to column-B values (rows 1–16).
-    target_concentrations:
-        Target concentration labels per signal column.
-    actual_concentrations:
-        Measured concentration values per signal column.
-    source_txt_filenames:
-        Original instrument ``.txt`` filename per signal column (provenance).
-    special_treatments:
-        Optional treatment label per signal (e.g. heat kill, PAA); blank when unused.
-    raman_shift:
-        Raman shift grid (cm⁻¹).
-    intensity_columns:
-        One intensity vector per signal column.
-    sample_types:
-        Explicit sample identity per signal; blank identities require completion.
-
-    Returns
-    -------
-    list[list[Any]]
-        Rectangular rows suitable for ``DataFrame.to_excel(header=False)``.
-    """
-
-    n_signals = len(intensity_columns)
-    width = 1 + n_signals
-
-    def _pad_row(row: list[Any]) -> list[Any]:
-        return row + [""] * (width - len(row))
-
-    rows: list[list[Any]] = [
-        _pad_row([excel_label, metadata[excel_label]]) for _, excel_label, _ in METADATA_FIELD_SPECS
-    ]
-    rows.append(_pad_row([FILE_NAME_LABEL, *source_txt_filenames]))
-    rows.append(_pad_row([SAMPLE_TYPE_LABEL, *(sample_types or [""] * n_signals)]))
-    rows.append(_pad_row([SPECIAL_TREATMENT_LABEL, *special_treatments]))
-    rows.append(_pad_row([TARGET_CONCENTRATION_LABEL, *target_concentrations]))
-    rows.append(_pad_row([ACTUAL_CONCENTRATION_LABEL, *actual_concentrations]))
-    rows.append([RAMAN_SHIFT_HEADER, *[INTENSITY_HEADER] * n_signals])
-
-    for shift_idx, shift_value in enumerate(raman_shift):
-        rows.append(
-            [float(shift_value)]
-            + [float(intensity_columns[signal_idx][shift_idx]) for signal_idx in range(n_signals)]
-        )
-
-    return rows
-
-
-# Metadata field numbers (Excel row index) after which a full-width separator line is drawn.
-_SEPARATOR_AFTER_METADATA_NUMBERS = frozenset(
-    group_fields[-1] for group_fields in METADATA_LOGICAL_GROUPS
-)
-
-
-def _apply_full_width_row_separator(
-    worksheet: Any,
-    row_idx: int,
-    max_col: int,
-    bottom_side: Any,
-) -> None:
-    """
-    Draw a horizontal separator beneath ``row_idx`` across columns 1..``max_col``.
-
-    Only the bottom edge is styled; no left, right, or top borders are added.
-    """
-    from openpyxl.styles import Border
-
-    for col_idx in range(1, max_col + 1):
-        worksheet.cell(row=row_idx, column=col_idx).border = Border(bottom=bottom_side)
-
-
-def _embedded_workbook_to_excel_bytes(rows: list[list[Any]]) -> bytes:
-    """
-    Serialize embedded workbook rows to styled ``.xlsx`` bytes.
-
-    Applies bold labels and full-width horizontal separators between metadata
-    sections, before the spectral table, and after the actual concentration row.
-    """
-
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, Side
-
-    n_metadata = len(METADATA_FIELD_SPECS)
-    n_signals = len(rows[n_metadata]) - 1
-    data_width = 1 + n_signals
-    file_name_row_idx = n_metadata + 1
-    sample_type_row_idx = (
-        next(i for i, row in enumerate(rows, 1) if row[0] == SAMPLE_TYPE_LABEL)
-        if any(row[0] == SAMPLE_TYPE_LABEL for row in rows)
-        else None
-    )
-    special_treatment_row_idx = next(
-        i for i, row in enumerate(rows, 1) if row[0] == SPECIAL_TREATMENT_LABEL
-    )
-    target_row_idx = next(
-        i for i, row in enumerate(rows, 1) if row[0] == TARGET_CONCENTRATION_LABEL
-    )
-    actual_row_idx = next(
-        i for i, row in enumerate(rows, 1) if row[0] == ACTUAL_CONCENTRATION_LABEL
-    )
-    header_row_idx = next(i for i, row in enumerate(rows, 1) if row[0] == RAMAN_SHIFT_HEADER)
-
-    separator_row_indices = [
-        field_number
-        for field_number, _, _ in METADATA_FIELD_SPECS
-        if field_number in _SEPARATOR_AFTER_METADATA_NUMBERS
-    ]
-    separator_row_indices.append(actual_row_idx)
-
-    thin_side = Side(style="thin", color="000000")
-    bold_font = Font(bold=True)
-
-    workbook = Workbook()
-    worksheet = workbook.active
-    worksheet.title = "Sheet1"
-
-    for row_idx, row_values in enumerate(rows, start=1):
-        for col_idx, value in enumerate(row_values, start=1):
-            if value == "":
-                continue
-            worksheet.cell(row=row_idx, column=col_idx, value=value)
-
-        if row_idx <= n_metadata:
-            worksheet.cell(row=row_idx, column=1).font = bold_font
-            continue
-
-        if row_idx in {
-            target_row_idx,
-            actual_row_idx,
-            file_name_row_idx,
-            special_treatment_row_idx,
-            sample_type_row_idx,
-        }:
-            worksheet.cell(row=row_idx, column=1).font = bold_font
-            continue
-
-        if row_idx == header_row_idx:
-            for col_idx in range(1, data_width + 1):
-                worksheet.cell(row=row_idx, column=col_idx).font = bold_font
-
-    for separator_row_idx in separator_row_indices:
-        _apply_full_width_row_separator(worksheet, separator_row_idx, data_width, thin_side)
-
-    buffer = BytesIO()
-    workbook.save(buffer)
-    return buffer.getvalue()
 
 
 def _get_merged_preview() -> dict[str, Any] | None:
@@ -1334,8 +692,14 @@ def _process_uploaded_template(
             "warnings": [],
         }, None
 
+    if payload.get("version") != TEMPLATE_VERSION or not isinstance(payload.get("fields"), dict):
+        return {
+            "level": "error",
+            "message": "Template requires supported version 1 and a fields object.",
+            "warnings": [],
+        }, None
     before_values = _collect_metadata_values_by_widget_key()
-    updated_values, warnings = _apply_template_import_to_values(payload, before_values)
+    updated_values, warnings = apply_template_import_to_values(payload, before_values)
     applied_count = sum(
         1
         for widget_key, value in updated_values.items()
@@ -1388,7 +752,7 @@ def _render_export_template(container: DeltaGenerator) -> None:
         for field_number, _, widget_key in METADATA_FIELD_SPECS:
             selection_key = _template_selection_key(widget_key)
             if selection_key not in st.session_state:
-                st.session_state[selection_key] = _is_template_field_exportable(
+                st.session_state[selection_key] = is_template_field_exportable(
                     field_number,
                     field_values.get(widget_key, ""),
                 )
@@ -1432,7 +796,7 @@ def _render_export_template(container: DeltaGenerator) -> None:
                             f"txt2excel_treatment_{filename}", "None"
                         ),
                     }
-        export_payload = _build_template_export_payload(field_values, selected_keys, signal_labels)
+        export_payload = build_template_export_payload(field_values, selected_keys, signal_labels)
         if export_payload is None:
             st.button(
                 "Export metadata to template",
@@ -1635,7 +999,7 @@ def _sync_shift_defaults_for_upload(
         ``(common_shift, shift_error)``.
     """
 
-    common_shift, shift_error = _validate_common_shift(file_contents)
+    common_shift, shift_error = validate_common_shift(file_contents)
     if shift_error or not uploaded_files:
         return common_shift, shift_error
 
@@ -1657,6 +1021,7 @@ def _sync_shift_defaults_for_upload(
         st.session_state.pop(MERGED_PREVIEW_KEY, None)
         st.session_state.pop(EXPORT_BYTES_KEY, None)
         st.session_state.pop(EXPORT_FILENAME_KEY, None)
+        st.session_state.pop(EXPORT_CONTEXT_KEY, None)
         st.session_state["txt2excel_file_signature"] = file_signature
         if default_max_shift:
             st.session_state["txt2excel_max_shift"] = default_max_shift
@@ -1710,8 +1075,18 @@ def render_prep_mode() -> None:
 
     file_contents: dict[str, str] = {}
     if uploaded_files:
+        seen_names: set[str] = set()
         for file in uploaded_files:
-            file_contents[file.name] = file.read().decode("utf-8")
+            identity = unicodedata.normalize("NFC", file.name).casefold()
+            if identity in seen_names:
+                st.error(f"Duplicate TXT filename: {file.name}. Use distinct filenames.")
+                return
+            seen_names.add(identity)
+            try:
+                file_contents[file.name] = file.getvalue().decode("utf-8")
+            except UnicodeDecodeError:
+                st.error(f"TXT file must use UTF-8 encoding: {file.name}")
+                return
 
     shift_error: str | None = None
     if uploaded_files:
@@ -1792,7 +1167,7 @@ def render_prep_mode() -> None:
             )
         with col_file:
             st.markdown(
-                f"<div style='padding-top:6px'>{file.name}</div>",
+                f"<div style='padding-top:6px'>{escape(file.name)}</div>",
                 unsafe_allow_html=True,
             )
         with col_treatment:
@@ -1845,6 +1220,23 @@ def render_prep_mode() -> None:
         type="primary",
     )
 
+    current_context = (
+        tuple(
+            (name, hashlib.sha256(content.encode()).hexdigest())
+            for name, content in file_contents.items()
+        ),
+        tuple(_collect_metadata_values().items()),
+        tuple(target_inputs),
+        tuple(actual_inputs),
+        tuple(special_treatment_inputs),
+        tuple(sample_type_inputs),
+        _read_shift_bounds(),
+        output_file_name.strip(),
+    )
+    if st.session_state.get(EXPORT_CONTEXT_KEY) != current_context:
+        for key in (MERGED_PREVIEW_KEY, EXPORT_BYTES_KEY, EXPORT_FILENAME_KEY):
+            st.session_state.pop(key, None)
+
     if convert_clicked:
         if any(value not in SAMPLE_TYPE_OPTIONS for value in sample_type_inputs):
             st.error("Select Sample Type for every signal before exporting.")
@@ -1879,7 +1271,7 @@ def render_prep_mode() -> None:
             return
 
         ordered_contents = {file.name: file_contents[file.name] for file in sorted_files}
-        raman_shift, intensity_columns, merge_error = _merge_txt_spectra(
+        raman_shift, intensity_columns, merge_error = merge_txt_spectra(
             ordered_contents,
             min_shift=min_shift,
             max_shift=max_shift,
@@ -1889,9 +1281,10 @@ def render_prep_mode() -> None:
             st.session_state.pop(MERGED_PREVIEW_KEY, None)
             st.session_state.pop(EXPORT_BYTES_KEY, None)
             st.session_state.pop(EXPORT_FILENAME_KEY, None)
+            st.session_state.pop(EXPORT_CONTEXT_KEY, None)
             return
 
-        workbook_rows = _build_embedded_workbook_rows(
+        workbook_rows = build_embedded_workbook_rows(
             metadata,
             target_concentrations=target_values,
             actual_concentrations=actual_values,
@@ -1901,7 +1294,7 @@ def render_prep_mode() -> None:
             raman_shift=raman_shift,
             intensity_columns=intensity_columns,
         )
-        excel_bytes = _embedded_workbook_to_excel_bytes(workbook_rows)
+        excel_bytes = embedded_workbook_to_excel_bytes(workbook_rows)
         export_filename = f"{output_file_name.strip()}.xlsx"
 
         st.session_state[MERGED_PREVIEW_KEY] = {
@@ -1915,6 +1308,7 @@ def render_prep_mode() -> None:
         }
         st.session_state[EXPORT_BYTES_KEY] = excel_bytes
         st.session_state[EXPORT_FILENAME_KEY] = export_filename
+        st.session_state[EXPORT_CONTEXT_KEY] = current_context
         logger.info(
             "Embedded TXT merge complete: %d files → %d Raman rows, %d signal columns",
             len(sorted_files),

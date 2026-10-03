@@ -11,8 +11,10 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import GroupKFold, RandomizedSearchCV
+from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
+from sensd_sers_analysis.modeling import feature_matrix, fit_model_pipeline
+from sensd_sers_analysis.splits import assert_disjoint_group_split
 from sklearn.svm import SVR
 
 from sensd_sers_analysis.config import (
@@ -46,7 +48,8 @@ class SingleRegressorResult:
     mae: float
     r2: float
     feature_names: list[str]
-    scaler: StandardScaler
+    scaler: StandardScaler | None = None
+    cv_score: float | None = None
     best_params: Optional[dict[str, Any]] = None
 
 
@@ -74,81 +77,48 @@ def _should_run_regression_search(n_train: int, n_groups: int) -> bool:
     return True
 
 
-def _fit_random_forest_regressor(
-    X: np.ndarray,
-    y: np.ndarray,
-    groups: np.ndarray,
-    random_state: int,
-    *,
-    run_search: bool,
-) -> tuple[RandomForestRegressor, Optional[dict[str, Any]]]:
-    if run_search:
-        n_splits = _effective_group_cv_splits(
-            int(np.unique(groups).size),
-            REGRESSION_TUNING_GROUP_KFOLD_SPLITS,
-        )
-        cv = GroupKFold(n_splits=n_splits)
-        base = RandomForestRegressor(random_state=random_state)
-        param_distributions = {
+def _regression_cv(X, y, groups, run_search):
+    """Realized sensor folds shared by both candidate families."""
+    if not run_search:
+        return None
+    count = _effective_group_cv_splits(len(np.unique(groups)), REGRESSION_TUNING_GROUP_KFOLD_SPLITS)
+    return list(GroupKFold(count).split(X, y, groups))
+
+
+def _fit_random_forest_regressor(X, y, groups, random_state, *, run_search):
+    """Fit the RF pipeline on raw features with fold-local scaling."""
+    return fit_model_pipeline(
+        RandomForestRegressor(random_state=random_state, n_estimators=REGRESSION_RF_N_ESTIMATORS),
+        X,
+        y,
+        cv=_regression_cv(X, y, groups, run_search),
+        parameters={
             "n_estimators": list(REGRESSION_RF_SEARCH_N_ESTIMATORS),
             "max_depth": list(REGRESSION_RF_SEARCH_MAX_DEPTH),
             "min_samples_leaf": list(REGRESSION_RF_SEARCH_MIN_SAMPLES_LEAF),
-        }
-        search = RandomizedSearchCV(
-            base,
-            param_distributions=param_distributions,
-            n_iter=min(REGRESSION_TUNING_RANDOM_SEARCH_ITER, 48),
-            cv=cv,
-            random_state=random_state,
-            n_jobs=-1,
-            refit=True,
-        )
-        search.fit(X, y, groups=groups)
-        return search.best_estimator_, dict(search.best_params_)
-
-    rf = RandomForestRegressor(
+        },
+        scoring="neg_root_mean_squared_error",
+        n_iter=REGRESSION_TUNING_RANDOM_SEARCH_ITER,
         random_state=random_state,
-        n_estimators=REGRESSION_RF_N_ESTIMATORS,
     )
-    rf.fit(X, y)
-    return rf, None
 
 
-def _fit_svr_regressor(
-    X: np.ndarray,
-    y: np.ndarray,
-    groups: np.ndarray,
-    random_state: int,
-    *,
-    run_search: bool,
-) -> tuple[SVR, Optional[dict[str, Any]]]:
-    if run_search:
-        n_splits = _effective_group_cv_splits(
-            int(np.unique(groups).size),
-            REGRESSION_TUNING_GROUP_KFOLD_SPLITS,
-        )
-        cv = GroupKFold(n_splits=n_splits)
-        base = SVR(kernel="rbf")
-        param_distributions = {
+def _fit_svr_regressor(X, y, groups, random_state, *, run_search):
+    """Fit the SVR pipeline on the same folds and RMSE scorer as RF."""
+    return fit_model_pipeline(
+        SVR(kernel="rbf"),
+        X,
+        y,
+        cv=_regression_cv(X, y, groups, run_search),
+        parameters={
             "C": list(REGRESSION_SVR_SEARCH_C),
             "gamma": list(REGRESSION_SVR_SEARCH_GAMMA),
             "epsilon": list(REGRESSION_SVR_SEARCH_EPSILON),
-        }
-        search = RandomizedSearchCV(
-            base,
-            param_distributions=param_distributions,
-            n_iter=min(REGRESSION_TUNING_RANDOM_SEARCH_ITER, 24),
-            cv=cv,
-            random_state=random_state,
-            n_jobs=-1,
-            refit=True,
-        )
-        search.fit(X, y, groups=groups)
-        return search.best_estimator_, dict(search.best_params_)
-
-    svr = SVR(kernel="rbf")
-    svr.fit(X, y)
-    return svr, None
+        },
+        scoring="neg_root_mean_squared_error",
+        n_iter=REGRESSION_TUNING_RANDOM_SEARCH_ITER,
+        random_state=random_state,
+    )
 
 
 def train_global_regressors(
@@ -164,7 +134,7 @@ def train_global_regressors(
     """
     Train serotype-blind RF and SVR regressors with one shared group-aware split.
 
-    StandardScaler is fit on the training rows only. Hyperparameter search uses
+    Each pipeline owns scaling inside the training folds. Hyperparameter search uses
     ``GroupKFold`` on training sensors when enabled.
 
     Parameters
@@ -195,31 +165,31 @@ def train_global_regressors(
     if group_col not in df.columns:
         raise ValueError(f"Missing group column {group_col!r}.")
 
-    X_all = df[available].fillna(0).to_numpy(dtype=np.float64, copy=False)
+    X_all = feature_matrix(df, feature_cols)
+    assert_disjoint_group_split(df, train_idx, test_idx, group_col=group_col)
     y_all = df[target_col].to_numpy(dtype=np.float64, copy=False)
-    groups_all = df[group_col].astype(str).to_numpy(dtype=object, copy=False)
+    groups_all = df[group_col].astype(str).str.strip().to_numpy(dtype=object, copy=False)
 
     X_train, X_test = X_all[train_idx], X_all[test_idx]
     y_train, y_test = y_all[train_idx], y_all[test_idx]
     groups_train = groups_all[train_idx]
 
-    scaler = StandardScaler()
-    X_train_s = scaler.fit_transform(X_train)
-    X_test_s = scaler.transform(X_test)
+    if not np.isfinite(y_all).all():
+        raise ValueError("Regression targets must be finite log concentrations.")
 
     n_groups_train = int(np.unique(groups_train).size)
-    run_search = _should_run_regression_search(len(X_train_s), n_groups_train)
+    run_search = _should_run_regression_search(len(X_train), n_groups_train)
 
-    rf, rf_params = _fit_random_forest_regressor(
-        X_train_s, y_train, groups_train, random_state, run_search=run_search
+    rf, rf_params, rf_score = _fit_random_forest_regressor(
+        X_train, y_train, groups_train, random_state, run_search=run_search
     )
-    y_pred_rf = rf.predict(X_test_s)
+    y_pred_rf = rf.predict(X_test)
     rmse_rf, mae_rf, r2_rf = regression_metrics(y_test, y_pred_rf)
 
-    svr, svr_params = _fit_svr_regressor(
-        X_train_s, y_train, groups_train, random_state, run_search=run_search
+    svr, svr_params, svr_score = _fit_svr_regressor(
+        X_train, y_train, groups_train, random_state, run_search=run_search
     )
-    y_pred_svm = svr.predict(X_test_s)
+    y_pred_svm = svr.predict(X_test)
     rmse_sv, mae_sv, r2_sv = regression_metrics(y_test, y_pred_svm)
 
     rf_result = SingleRegressorResult(
@@ -231,7 +201,8 @@ def train_global_regressors(
         mae=mae_rf,
         r2=r2_rf,
         feature_names=available,
-        scaler=scaler,
+        scaler=None,
+        cv_score=rf_score,
         best_params=rf_params,
     )
     svm_result = SingleRegressorResult(
@@ -243,7 +214,8 @@ def train_global_regressors(
         mae=mae_sv,
         r2=r2_sv,
         feature_names=available,
-        scaler=scaler,
+        scaler=None,
+        cv_score=svr_score,
         best_params=svr_params,
     )
     return rf_result, svm_result

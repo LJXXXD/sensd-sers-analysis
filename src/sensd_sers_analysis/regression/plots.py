@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Optional
 
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -49,7 +50,8 @@ def plot_actual_vs_predicted(
     """
     y_true = np.asarray(y_true, dtype=np.float64).ravel()
     y_pred = np.asarray(y_pred, dtype=np.float64).ravel()
-    fig, ax = plt.subplots(figsize=figsize)
+    fig = Figure(figsize=figsize)
+    ax = fig.subplots()
     lo = float(min(y_true.min(), y_pred.min()))
     hi = float(max(y_true.max(), y_pred.max()))
     pad = 0.05 * (hi - lo) if hi > lo else 0.1
@@ -96,7 +98,8 @@ def plot_residuals(
     y_true = np.asarray(y_true, dtype=np.float64).ravel()
     y_pred = np.asarray(y_pred, dtype=np.float64).ravel()
     resid = y_true - y_pred
-    fig, ax = plt.subplots(figsize=figsize)
+    fig = Figure(figsize=figsize)
+    ax = fig.subplots()
     ax.axhline(0.0, color="k", linestyle="--", linewidth=1)
     ax.scatter(y_pred, resid, alpha=0.75, s=45, edgecolors="k", linewidths=0.3)
     ax.set_xlabel("Predicted log10 concentration")
@@ -116,13 +119,16 @@ def plot_regression_feature_importance(
     """
     Horizontal bar chart of Random Forest feature importances (global model).
     """
-    est = result.model
+    est = (
+        result.model.named_steps["model"] if hasattr(result.model, "named_steps") else result.model
+    )
     if not hasattr(est, "feature_importances_"):
         raise ValueError("Model has no feature_importances_; use a tree-based regressor.")
     imp = np.asarray(est.feature_importances_, dtype=np.float64)
     names = list(result.feature_names)
     order = np.argsort(imp)[::-1][:top_k]
-    fig, ax = plt.subplots(figsize=figsize)
+    fig = Figure(figsize=figsize)
+    ax = fig.subplots()
     y_pos = np.arange(len(order))
     ax.barh(y_pos, imp[order], align="center")
     ax.set_yticks(y_pos)

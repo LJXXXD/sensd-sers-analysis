@@ -1,23 +1,22 @@
-"""
-PDF report generation for Sensor Assessment results.
-
-Uses ReportLab to compile consistency metrics, degradation trends, batch
-variance, and outlier impact into a professional PDF document. Design is
-modular to support future metric injection.
-"""
+"""PDF reports with complete wrapped tables, proportional figures, and explicit scope."""
 
 import io
 from datetime import datetime
+from html import escape
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
+import matplotlib
 import pandas as pd
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     Image,
+    KeepTogether,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -25,781 +24,417 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from sensd_sers_analysis.config import (
+    BATCH_DEVIATION_Z_THRESHOLD,
+    GLOBAL_QA_R2_MIN_THRESHOLD,
+    GLOBAL_QA_REJECTION_MULTIPLIER,
+)
 
-def _df_to_table_data(
-    df: pd.DataFrame,
-    *,
-    max_cols: int = 12,
-    float_fmt: str = "{:.4g}",
-) -> list[list[str]]:
-    """Convert DataFrame to list of lists for ReportLab Table."""
-    df_str = df.copy()
-    for c in df_str.select_dtypes(include=["float", "floating"]).columns:
-        df_str[c] = df_str[c].apply(
-            lambda x: float_fmt.format(x) if pd.notna(x) and isinstance(x, (int, float)) else ""
+
+def _styles():
+    """Use packaged Unicode fonts for symbols in scientific quantities."""
+    font_dir = Path(matplotlib.get_data_path()) / "fonts" / "ttf"
+    if "SersSans" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont("SersSans", str(font_dir / "DejaVuSans.ttf")))
+        pdfmetrics.registerFont(TTFont("SersSans-Bold", str(font_dir / "DejaVuSans-Bold.ttf")))
+        pdfmetrics.registerFontFamily(
+            "SersSans",
+            normal="SersSans",
+            bold="SersSans-Bold",
+            italic="SersSans",
+            boldItalic="SersSans-Bold",
         )
-    # Convert categorical columns to object so fillna("—") does not raise;
-    # Categorical does not allow values outside its categories
-    for c in df_str.select_dtypes(include=["category"]).columns:
-        df_str[c] = df_str[c].astype(object)
-    df_str = df_str.fillna("—")
-    headers = [str(c)[:20] for c in df_str.columns]
-    rows = [headers] + df_str.astype(str).values.tolist()
+    styles = getSampleStyleSheet()
+    for style in styles.byName.values():
+        style.fontName = (
+            "SersSans-Bold" if style.name.startswith(("Heading", "Title")) else "SersSans"
+        )
+    styles["Normal"].fontSize = 9
+    styles["Normal"].leading = 13
+    styles["Title"].fontSize = 18
+    styles["Title"].leading = 23
+    styles["Heading2"].fontSize = 12
+    styles["Heading2"].leading = 16
+    styles["Heading2"].keepWithNext = True
+    return styles
+
+
+def _df_to_table_data(df: pd.DataFrame, *, float_fmt: str = "{:.4g}") -> list[list[str]]:
+    """Keep every header/value; undefined values use an em dash."""
+    rows = [[str(column) for column in df.columns]]
+    for row in df.itertuples(index=False, name=None):
+        rows.append(
+            [
+                "—"
+                if pd.isna(value)
+                else float_fmt.format(value)
+                if isinstance(value, float)
+                else str(value)
+                for value in row
+            ]
+        )
     return rows
 
 
-def _compute_table_col_widths(
-    table_data: list[list[str]],
-    usable_width: float,
-) -> list[float]:
-    """
-    Compute column widths proportional to content, spanning full usable_width.
-
-    Uses max(header_len, max_row_len) per column so wider content gets more space.
-    Ensures table fills 100% of printable page width.
-    """
+def _compute_table_col_widths(table_data: list[list[str]], usable_width: float) -> list[float]:
+    """Bound content weights so a long identifier does not collapse other columns."""
     if not table_data or not table_data[0]:
         return []
-    col_count = len(table_data[0])
-    weights: list[float] = []
-    for j in range(col_count):
-        header_len = len(str(table_data[0][j]))
-        max_row = (
-            max(len(str(table_data[i][j])) for i in range(1, len(table_data)))
-            if len(table_data) > 1
-            else 0
-        )
-        weights.append(max(header_len, max_row, 3))
-    total = sum(weights)
-    if total <= 0:
-        return [usable_width / col_count] * col_count
-    return [(w / total) * usable_width for w in weights]
+    weights = [
+        min(30, max(8, max(len(str(row[column])) for row in table_data)))
+        for column in range(len(table_data[0]))
+    ]
+    return [usable_width * weight / sum(weights) for weight in weights]
 
 
 def _figure_to_image_bytes(fig, *, dpi: int = 150, format: str = "png") -> bytes:
-    """Serialize matplotlib Figure to PNG bytes."""
-    buf = io.BytesIO()
-    fig.savefig(buf, format=format, dpi=dpi, bbox_inches="tight")
-    buf.seek(0)
-    return buf.getvalue()
+    """Serialize a caller-owned figure without changing its lifecycle."""
+    with io.BytesIO() as buffer:
+        fig.savefig(buffer, format=format, dpi=dpi, bbox_inches="tight")
+        return buffer.getvalue()
+
+
+def _image(fig, *, max_width: float = 6.35 * inch, max_height: float = 4.2 * inch) -> Image:
+    """Fit an image inside page bounds while preserving its aspect ratio."""
+    image = Image(io.BytesIO(_figure_to_image_bytes(fig)))
+    scale = min(max_width / image.imageWidth, max_height / image.imageHeight)
+    image.drawWidth = image.imageWidth * scale
+    image.drawHeight = image.imageHeight * scale
+    return image
+
+
+def _table(df: pd.DataFrame, styles, width: float) -> Table:
+    """Wrap safe text, repeat headers, and preserve all rows in a page-spanning table."""
+    raw = _df_to_table_data(df)
+    body = ParagraphStyle(
+        "Cell", parent=styles["Normal"], fontSize=7.5, leading=10, splitLongWords=True
+    )
+    header = ParagraphStyle(
+        "HeaderCell", parent=body, fontName="SersSans-Bold", textColor=colors.white
+    )
+    cells = [
+        [Paragraph(escape(value), header if row == 0 else body) for value in values]
+        for row, values in enumerate(raw)
+    ]
+    table = Table(
+        cells, colWidths=_compute_table_col_widths(raw, width), repeatRows=1, hAlign="LEFT"
+    )
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#345878")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#BBBBBB")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F1F5F8")]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    return table
+
+
+def _add_table(flow: list, df: pd.DataFrame | None, styles, width: float) -> None:
+    """Split wide tables into panels with unambiguous repeated row identity."""
+    if df is None or df.empty:
+        return
+    columns = list(df.columns)
+    if len(columns) <= 8:
+        flow.append(_table(df, styles, width))
+    else:
+        identity = [columns[0]]
+        panel_frame = df
+        if not df.iloc[:, 0].is_unique:
+            row_label = "Report row"
+            while row_label in columns:
+                row_label += " #"
+            panel_frame = df.copy()
+            panel_frame.insert(0, row_label, range(1, len(df) + 1))
+            identity.insert(0, row_label)
+        panel_size = 8 - len(identity)
+        for start in range(1, len(columns), panel_size):
+            flow.append(
+                _table(
+                    panel_frame[[*identity, *columns[start : start + panel_size]]], styles, width
+                )
+            )
+            flow.append(Spacer(1, 0.12 * inch))
+    flow.append(Spacer(1, 0.18 * inch))
+
+
+def _add_figure(
+    flow: list,
+    title: str,
+    fig,
+    styles,
+    note: str | None = None,
+    *,
+    section_title: str | None = None,
+) -> None:
+    section = []
+    if section_title:
+        section.append(Paragraph(escape(section_title), styles["Heading2"]))
+    section.append(Paragraph(escape(title), styles["Heading2"]))
+    if note:
+        section.append(Paragraph(escape(note), styles["Normal"]))
+    if fig is not None:
+        section.extend([Spacer(1, 0.08 * inch), _image(fig)])
+    flow.append(KeepTogether(section))
+    flow.append(Spacer(1, 0.15 * inch))
+
+
+def _start(report_title: str):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        rightMargin=0.75 * inch,
+        leftMargin=0.75 * inch,
+        topMargin=0.65 * inch,
+        bottomMargin=0.65 * inch,
+    )
+    styles = _styles()
+    flow = [
+        Paragraph(escape(report_title), styles["Title"]),
+        Paragraph(f"Generated: {datetime.now():%Y-%m-%d %H:%M}", styles["Normal"]),
+        Spacer(1, 0.15 * inch),
+    ]
+    return buffer, doc, styles, flow
+
+
+def _finish(buffer, doc, flow, output_path) -> bytes:
+    """Publish bytes only after successful document layout and serialization."""
+    try:
+        doc.build(flow)
+        data = buffer.getvalue()
+        if output_path is not None:
+            Path(output_path).write_bytes(data)
+        return data
+    finally:
+        buffer.close()
 
 
 def build_sensor_assessment_pdf(
     *,
-    consistency_table: Optional[pd.DataFrame] = None,
-    degradation_table: Optional[pd.DataFrame] = None,
-    degradation_fig: Optional[Any] = None,
-    batch_variance_table: Optional[pd.DataFrame] = None,
-    batch_boxplot_fig: Optional[Any] = None,
-    deviating_sensors_table: Optional[pd.DataFrame] = None,
+    consistency_table: pd.DataFrame | None = None,
+    degradation_table: pd.DataFrame | None = None,
+    degradation_fig: Any = None,
+    batch_variance_table: pd.DataFrame | None = None,
+    batch_boxplot_fig: Any = None,
+    deviating_sensors_table: pd.DataFrame | None = None,
     outlier_method: str = "iqr",
+    degradation_scope: str | None = None,
     report_title: str = "SERS Sensor Assessment Report",
-    output_path: Optional[str | Path] = None,
+    output_path: str | Path | None = None,
 ) -> bytes:
+    """Compile retrospective consistency, trend, and batch diagnostics.
+
+    Missing sections retain their heading and a data-availability explanation.
+    No diagnostic establishes physical sensor failure or pre-use qualification.
+    Input figures remain caller-owned. All supplied table values are retained.
     """
-    Compile assessment results into a PDF report.
-
-    All arguments are optional; only provided sections are included.
-    Design is modular: add new tables/figures by extending the flow.
-
-    Args:
-        consistency_table: Summary of CV (raw vs filtered) per feature/group.
-        degradation_table: Slope, R², p-value from degradation analysis.
-        degradation_fig: matplotlib Figure for degradation trend plot.
-        batch_variance_table: Per-sensor mean, std, z_from_batch.
-        batch_boxplot_fig: matplotlib Figure for batch boxplot.
-        deviating_sensors_table: Sensors with |z| > threshold.
-        outlier_method: Method used for outlier filtering (for report text).
-        report_title: Title on first page.
-        output_path: If provided, also save PDF to this path.
-
-    Returns:
-        PDF file contents as bytes (for Streamlit download).
-    """
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=letter,
-        rightMargin=0.75 * inch,
-        leftMargin=0.75 * inch,
-        topMargin=0.75 * inch,
-        bottomMargin=0.75 * inch,
-    )
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "ReportTitle",
-        parent=styles["Heading1"],
-        fontSize=18,
-        spaceAfter=12,
-    )
-    heading_style = ParagraphStyle(
-        "SectionHeading",
-        parent=styles["Heading2"],
-        fontSize=14,
-        spaceBefore=18,
-        spaceAfter=8,
-    )
-    body_style = styles["Normal"]
-
-    flow: list = []
-
-    # Title and metadata
-    flow.append(Paragraph(report_title, title_style))
+    buffer, doc, styles, flow = _start(report_title)
     flow.append(
         Paragraph(
-            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            body_style,
+            "Retrospective response diagnostics; these results do not establish physical sensor failure or prospective qualification.",
+            styles["Normal"],
         )
     )
-    flow.append(Spacer(1, 0.25 * inch))
-
-    # 1. Consistency Metrics
-    if consistency_table is not None and not consistency_table.empty:
-        flow.append(Paragraph("1. Consistency Metrics (CV)", heading_style))
-        flow.append(
-            Paragraph(
-                f"Coefficient of Variation (σ/μ) for key features. "
-                f"Raw vs. outlier-filtered (method: {outlier_method}). "
-                f"Lower CV indicates better consistency.",
-                body_style,
-            )
-        )
-        flow.append(Spacer(1, 0.1 * inch))
-
-        table_data = _df_to_table_data(
+    sections = [
+        (
+            "1. Consistency Metrics (CV)",
             consistency_table,
-            float_fmt="{:.4f}",
-        )
-        col_count = len(table_data[0])
-        usable_width = 6.5 * inch
-        col_widths = [usable_width / max(col_count, 1)] * col_count
-        t = Table(table_data, colWidths=col_widths)
-        t.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4472C4")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, 0), 9),
-                    ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
-                    ("BACKGROUND", (0, 1), (-1, -1), colors.beige),
-                    ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
-                    ("FONTSIZE", (0, 1), (-1, -1), 8),
-                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                    (
-                        "ROWBACKGROUNDS",
-                        (0, 1),
-                        (-1, -1),
-                        [colors.white, colors.HexColor("#f5f5f5")],
-                    ),
-                ]
+            f"CV = SD/mean; raw and within-group filtered replicates ({outlier_method}). Undefined CV remains unavailable.",
+        ),
+        (
+            "2. Response Trend Across Tests",
+            degradation_table,
+            (f"Scope: {degradation_scope}. " if degradation_scope else "")
+            + "Linear trend across ordered tests. Negative slope describes signal decline; it does not establish its cause.",
+        ),
+        (
+            "3. Batch Variance",
+            batch_variance_table,
+            "Per-sensor responses relative to the observed batch mean and SD.",
+        ),
+        (
+            "4. Deviating Sensors",
+            deviating_sensors_table,
+            f"Configured diagnostic threshold: |z_from_batch| > {BATCH_DEVIATION_Z_THRESHOLD:g}.",
+        ),
+    ]
+    for title, table, note in sections:
+        flow.append(Paragraph(title, styles["Heading2"]))
+        flow.append(Paragraph(escape(note), styles["Normal"]))
+        if table is None or table.empty:
+            reason = (
+                "No deviations under the configured threshold."
+                if title.startswith("4.")
+                and batch_variance_table is not None
+                and not batch_variance_table.empty
+                else "Unavailable: no assessable rows in the selected scope."
             )
-        )
-        flow.append(t)
-        flow.append(Spacer(1, 0.3 * inch))
-
-    # 2. Degradation Analysis
-    if degradation_table is not None and not degradation_table.empty:
-        flow.append(Paragraph("2. Degradation Analysis", heading_style))
-        flow.append(
-            Paragraph(
-                "Linear regression of feature vs. sequence/timestamp. "
-                "Negative slope indicates degradation.",
-                body_style,
-            )
-        )
-        flow.append(Spacer(1, 0.1 * inch))
-
-        table_data = _df_to_table_data(degradation_table, float_fmt="{:.4g}")
-        col_count = len(table_data[0])
-        usable_width = 6.5 * inch
-        col_widths = [usable_width / max(col_count, 1)] * col_count
-        t = Table(table_data, colWidths=col_widths)
-        t.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#70AD47")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 8),
-                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                    (
-                        "ROWBACKGROUNDS",
-                        (0, 1),
-                        (-1, -1),
-                        [colors.white, colors.HexColor("#e8f4e4")],
-                    ),
-                ]
-            )
-        )
-        flow.append(t)
-        flow.append(Spacer(1, 0.15 * inch))
-
-    if degradation_fig is not None:
-        img_bytes = _figure_to_image_bytes(degradation_fig)
-        img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=3.5 * inch)
-        flow.append(img)
-        flow.append(Spacer(1, 0.3 * inch))
-
-    # 3. Batch Variance
-    if batch_variance_table is not None and not batch_variance_table.empty:
-        flow.append(Paragraph("3. Batch Variance", heading_style))
-        flow.append(
-            Paragraph(
-                "Per-sensor statistics and deviation from batch mean. "
-                "z_from_batch indicates how many standard deviations a sensor "
-                "is from the population mean.",
-                body_style,
-            )
-        )
-        flow.append(Spacer(1, 0.1 * inch))
-
-        # Limit to key columns if too wide
-        key_cols = [
-            c
-            for c in [
-                "sensor_id",
-                "n_samples",
-                "mean",
-                "std",
-                "cv",
-                "z_from_batch",
-                "deviation_pct",
-            ]
-            if c in batch_variance_table.columns
-        ]
-        if not key_cols:
-            key_cols = batch_variance_table.columns[:8].tolist()
-        sub = batch_variance_table[key_cols].head(30)
-        table_data = _df_to_table_data(sub, float_fmt="{:.4g}")
-        col_count = len(table_data[0])
-        usable_width = 6.5 * inch
-        col_widths = [usable_width / max(col_count, 1)] * col_count
-        t = Table(table_data, colWidths=col_widths)
-        t.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#ED7D31")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 8),
-                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                    (
-                        "ROWBACKGROUNDS",
-                        (0, 1),
-                        (-1, -1),
-                        [colors.white, colors.HexColor("#fde9db")],
-                    ),
-                ]
-            )
-        )
-        flow.append(t)
-        if len(batch_variance_table) > 30:
-            flow.append(
-                Paragraph(
-                    f"<i>(Showing first 30 of {len(batch_variance_table)} sensors)</i>",
-                    body_style,
-                )
-            )
-        flow.append(Spacer(1, 0.15 * inch))
-
-    if batch_boxplot_fig is not None:
-        img_bytes = _figure_to_image_bytes(batch_boxplot_fig)
-        img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=3.5 * inch)
-        flow.append(img)
-        flow.append(Spacer(1, 0.3 * inch))
-
-    # 4. Deviating Sensors
-    if deviating_sensors_table is not None and not deviating_sensors_table.empty:
-        flow.append(Paragraph("4. Deviating Sensors", heading_style))
-        flow.append(
-            Paragraph(
-                "Sensors with |z_from_batch| > 2.0 (or configured threshold).",
-                body_style,
-            )
-        )
-        flow.append(Spacer(1, 0.1 * inch))
-        table_data = _df_to_table_data(deviating_sensors_table, float_fmt="{:.4g}")
-        col_count = len(table_data[0])
-        usable_width = 6.5 * inch
-        col_widths = [usable_width / max(col_count, 1)] * col_count
-        t = Table(table_data, colWidths=col_widths)
-        t.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#C55A11")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 8),
-                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ]
-            )
-        )
-        flow.append(t)
-
-    doc.build(flow)
-    pdf_bytes = buffer.getvalue()
-
-    if output_path is not None:
-        Path(output_path).write_bytes(pdf_bytes)
-
-    return pdf_bytes
+            flow.append(Paragraph(reason, styles["Normal"]))
+        else:
+            _add_table(flow, table, styles, doc.width)
+        if title.startswith("2.") and degradation_fig is not None:
+            _add_figure(flow, "Response trend", degradation_fig, styles)
+        if title.startswith("3.") and batch_boxplot_fig is not None:
+            _add_figure(flow, "Between-sensor stability", batch_boxplot_fig, styles)
+    return _finish(buffer, doc, flow, output_path)
 
 
 def build_sensor_assessment_qa_pdf(
     *,
-    global_qa_table: Optional[pd.DataFrame] = None,
-    overlay_items: Optional[list[dict]] = None,
-    macro_items: Optional[list[dict]] = None,
+    global_qa_table: pd.DataFrame | None = None,
+    overlay_items: list[dict] | None = None,
+    macro_items: list[dict] | None = None,
     report_title: str = "Sensor Consistency & Quality Assurance Report",
-    output_path: Optional[str | Path] = None,
+    output_path: str | Path | None = None,
+    unavailable_sections: list[tuple[str, str]] | None = None,
 ) -> bytes:
+    """Compile retrospective sensor fits, exclusions, overlays and pooled fits.
+
+    Expected unavailable plots use explicit section notes. Unexpected plot/write
+    errors propagate to the caller; they never become silently omitted sections.
     """
-    Compile sensor assessment QA results into PDF.
-
-    Args:
-        global_qa_table: DataFrame with sensor_id, serotype, feature, n_points,
-            outliers, raw_rmse, raw_r2, clean_rmse, clean_r2, status.
-        overlay_items: List of dicts with keys fig, serotype, feature.
-        macro_items: List of dicts with keys fig, macro_result, serotype, feature.
-        report_title: Title on first page.
-        output_path: If provided, also save PDF to this path.
-
-    Returns:
-        PDF file contents as bytes.
-    """
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=letter,
-        rightMargin=0.75 * inch,
-        leftMargin=0.75 * inch,
-        topMargin=0.75 * inch,
-        bottomMargin=0.75 * inch,
-    )
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "ReportTitle",
-        parent=styles["Heading1"],
-        fontSize=18,
-        spaceAfter=12,
-    )
-    heading_style = ParagraphStyle(
-        "SectionHeading",
-        parent=styles["Heading2"],
-        fontSize=14,
-        spaceBefore=18,
-        spaceAfter=8,
-    )
-    body_style = styles["Normal"]
-
-    flow: list = []
-
-    flow.append(Paragraph(report_title, title_style))
+    buffer, doc, styles, flow = _start(report_title)
+    flow.append(Paragraph("1. Individual Sensor Assessment", styles["Heading2"]))
     flow.append(
         Paragraph(
-            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            body_style,
+            f"Retrospective raw/clean response fits. Excluded when clean RMSE > {GLOBAL_QA_REJECTION_MULTIPLIER:g} × batch median or clean R² < {GLOBAL_QA_R2_MIN_THRESHOLD:.2f}. Unassessed pairs are not Pass. This does not establish physical failures.",
+            styles["Normal"],
         )
     )
-    flow.append(Spacer(1, 0.25 * inch))
-
-    if global_qa_table is not None and not global_qa_table.empty:
-        flow.append(Paragraph("1. Individual Sensor Assessment Table", heading_style))
+    if global_qa_table is None or global_qa_table.empty:
         flow.append(
             Paragraph(
-                "Linear fit analysis with statistical outlier removal. "
-                "Raw RMSE / Raw R²: before removal. Clean RMSE / Clean R²: after. "
-                "Excluded: Clean RMSE > 2× batch median OR Clean R² < 0.80.",
-                body_style,
+                "Unavailable: no assessable sensor fits in the selected scope.", styles["Normal"]
             )
         )
-        flow.append(Spacer(1, 0.1 * inch))
-
-        table_data = _df_to_table_data(
-            global_qa_table,
-            float_fmt="{:.4f}",
-        )
-        usable_width = 7.0 * inch
-        col_widths = _compute_table_col_widths(table_data, usable_width)
-        t = Table(table_data, colWidths=col_widths)
-        t.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4472C4")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, 0), 9),
-                    ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
-                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("BACKGROUND", (0, 1), (-1, -1), colors.beige),
-                    ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
-                    ("FONTSIZE", (0, 1), (-1, -1), 8),
-                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                    (
-                        "ROWBACKGROUNDS",
-                        (0, 1),
-                        (-1, -1),
-                        [colors.white, colors.HexColor("#f5f5f5")],
-                    ),
-                ]
+    _add_table(flow, global_qa_table, styles, doc.width)
+    for title, items in [
+        ("2. Multi-Sensor Regression Overlays", overlay_items),
+        ("3. Macro Batch Regressions", macro_items),
+    ]:
+        if not items:
+            _add_figure(
+                flow,
+                title,
+                None,
+                styles,
+                "No available plots in the selected scope; unavailable requests are listed below.",
             )
-        )
-        flow.append(t)
-        flow.append(Spacer(1, 0.3 * inch))
-
-    overlay_items = overlay_items or []
-    macro_items = macro_items or []
-
-    if overlay_items:
-        flow.append(Paragraph("2. Multi-Sensor Regression Overlays", heading_style))
-        flow.append(
-            Paragraph(
-                "Scatter and regression lines per sensor. Excluded sensors shown "
-                "with dashed gray lines.",
-                body_style,
+        for item_number, item in enumerate(items or []):
+            result = item.get("macro_result")
+            note = None
+            if result is not None:
+                note = f"Raw RMSE={result.raw_batch_rmse:.4g}, R²={result.raw_batch_r2:.4g}; clean RMSE={result.clean_batch_rmse:.4g}, R²={result.clean_batch_r2:.4g}; macro outliers={result.n_macro_outliers}."
+            _add_figure(
+                flow,
+                f"{item['serotype']} — {item['feature']}",
+                item["fig"],
+                styles,
+                note,
+                section_title=title if item_number == 0 else None,
             )
-        )
-        for item in overlay_items:
-            sero = item.get("serotype", "")
-            feat = item.get("feature", "")
-            fig = item.get("fig")
-            if fig is not None:
-                flow.append(Spacer(1, 0.15 * inch))
-                flow.append(Paragraph(f"{sero} — {feat}", styles["Heading3"]))
-                flow.append(Spacer(1, 0.08 * inch))
-                img_bytes = _figure_to_image_bytes(fig)
-                img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=3.5 * inch)
-                flow.append(img)
-        flow.append(Spacer(1, 0.3 * inch))
-
-    if macro_items:
-        flow.append(Paragraph("3. Macro Batch Regressions", heading_style))
-        flow.append(
-            Paragraph(
-                "Two-pass pooled regression: Raw line (dashed gray) on all pooled "
-                "inliers; Clean line (solid red) after IQR-based macro outlier removal. "
-                "Macro outliers marked with red X.",
-                body_style,
-            )
-        )
-        for item in macro_items:
-            sero = item.get("serotype", "")
-            feat = item.get("feature", "")
-            fig = item.get("fig")
-            macro_result = item.get("macro_result")
-            if fig is not None:
-                flow.append(Spacer(1, 0.15 * inch))
-                flow.append(Paragraph(f"{sero} — {feat}", styles["Heading3"]))
-                if macro_result is not None:
-                    flow.append(
-                        Paragraph(
-                            f"Raw: RMSE={macro_result.raw_batch_rmse:.4f}, "
-                            f"R²={macro_result.raw_batch_r2:.4f}. "
-                            f"Clean: RMSE={macro_result.clean_batch_rmse:.4f}, "
-                            f"R²={macro_result.clean_batch_r2:.4f}. "
-                            f"Macro outliers removed: {macro_result.n_macro_outliers}.",
-                            body_style,
-                        )
-                    )
-                flow.append(Spacer(1, 0.08 * inch))
-                img_bytes = _figure_to_image_bytes(fig)
-                img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=3.5 * inch)
-                flow.append(img)
-
-    doc.build(flow)
-    pdf_bytes = buffer.getvalue()
-
-    if output_path is not None:
-        Path(output_path).write_bytes(pdf_bytes)
-
-    return pdf_bytes
+    for title, reason in unavailable_sections or []:
+        _add_figure(flow, title, None, styles, f"Unavailable: {reason}")
+    return _finish(buffer, doc, flow, output_path)
 
 
 def build_classification_report_pdf(
     *,
-    pca_fig: Optional[Any] = None,
-    feature_importance_fig: Optional[Any] = None,
-    rf_confusion_matrix_fig: Optional[Any] = None,
-    svm_confusion_matrix_fig: Optional[Any] = None,
-    rf_accuracy: Optional[float] = None,
-    rf_f1: Optional[float] = None,
-    svm_accuracy: Optional[float] = None,
-    svm_f1: Optional[float] = None,
-    best_model_name: Optional[str] = None,
+    pca_fig: Any = None,
+    feature_importance_fig: Any = None,
+    rf_confusion_matrix_fig: Any = None,
+    svm_confusion_matrix_fig: Any = None,
+    rf_accuracy: float | None = None,
+    rf_f1: float | None = None,
+    svm_accuracy: float | None = None,
+    svm_f1: float | None = None,
+    best_model_name: str | None = None,
     report_title: str = "Serotyping & Classification Report",
-    output_path: Optional[str | Path] = None,
+    output_path: str | Path | None = None,
+    pca_unavailable_reason: str | None = None,
+    caption_lines: tuple[str, ...] | None = None,
 ) -> bytes:
+    """Report sensor-held-out metrics separately from exploratory cohort PCA.
+
+    ``best_model_name`` is chosen using comparable training CV scores, or the
+    predeclared RF reference when CV is infeasible. It is never a test winner.
     """
-    Compile serotype classification results into PDF.
-
-    Args:
-        pca_fig: PCA scatter (PC1 vs PC2 by class).
-        feature_importance_fig: RF feature importance bar chart.
-        rf_confusion_matrix_fig: Random Forest confusion matrix heatmap.
-        svm_confusion_matrix_fig: SVM confusion matrix heatmap.
-        rf_accuracy: RF accuracy on the held-out test split.
-        rf_f1: RF weighted F1 on the held-out test split.
-        svm_accuracy: SVM accuracy on the held-out test split.
-        svm_f1: SVM weighted F1 on the held-out test split.
-        best_model_name: Model with higher weighted F1 (for summary text).
-        report_title: Title on first page.
-        output_path: If provided, save PDF to path.
-
-    Returns:
-        PDF file contents as bytes.
-    """
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=letter,
-        rightMargin=0.75 * inch,
-        leftMargin=0.75 * inch,
-        topMargin=0.75 * inch,
-        bottomMargin=0.75 * inch,
-    )
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "ReportTitle",
-        parent=styles["Heading1"],
-        fontSize=18,
-        spaceAfter=12,
-    )
-    heading_style = ParagraphStyle(
-        "SectionHeading",
-        parent=styles["Heading2"],
-        fontSize=14,
-        spaceBefore=18,
-        spaceAfter=8,
-    )
-    body_style = styles["Normal"]
-
-    flow: list = []
-
-    flow.append(Paragraph(report_title, title_style))
+    buffer, doc, styles, flow = _start(report_title)
     flow.append(
         Paragraph(
-            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            body_style,
+            "Identity-eligible sample rows without retrospective response-based screening. Sensor-group holdout; scaling and tuning use training folds. Selected predictors are independent per-spectrum scalars and fixed peak heights. These are retrospective metrics, not prospective qualification.",
+            styles["Normal"],
         )
     )
-    flow.append(Spacer(1, 0.25 * inch))
-
-    if pca_fig is not None:
-        flow.append(Paragraph("1. PCA Scatter (Unsupervised Clustering)", heading_style))
+    if best_model_name:
         flow.append(
             Paragraph(
-                "PC1 vs PC2 colored by class (ST, SE, Rinsate). "
-                "Shows natural separability before ML.",
-                body_style,
+                f"Selected by training CV; RF reference when CV is unavailable: {escape(best_model_name)}.",
+                styles["Normal"],
             )
         )
-        flow.append(Spacer(1, 0.1 * inch))
-        img_bytes = _figure_to_image_bytes(pca_fig)
-        img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=4 * inch)
-        flow.append(img)
-        flow.append(Spacer(1, 0.3 * inch))
-
-    if feature_importance_fig is not None:
-        flow.append(Paragraph("2. Random Forest Feature Importance", heading_style))
-        flow.append(
-            Paragraph(
-                "Ranking of features by importance. Validates peak extraction value.",
-                body_style,
-            )
-        )
-        flow.append(Spacer(1, 0.1 * inch))
-        img_bytes = _figure_to_image_bytes(feature_importance_fig)
-        img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=4 * inch)
-        flow.append(img)
-        flow.append(Spacer(1, 0.3 * inch))
-
-    if best_model_name and (
-        rf_confusion_matrix_fig is not None or svm_confusion_matrix_fig is not None
-    ):
-        flow.append(
-            Paragraph(
-                f"Best model by weighted F1 on the held-out split: <b>{best_model_name}</b>.",
-                body_style,
-            )
-        )
-        flow.append(Spacer(1, 0.15 * inch))
-
-    if rf_confusion_matrix_fig is not None:
-        flow.append(Paragraph("3. Random Forest — Confusion matrix", heading_style))
-        rf_metrics: list[str] = []
-        if rf_accuracy is not None:
-            rf_metrics.append(f"Accuracy: {rf_accuracy:.3f}")
-        if rf_f1 is not None:
-            rf_metrics.append(f"F1 (weighted): {rf_f1:.3f}")
-        if rf_metrics:
-            flow.append(Paragraph(" | ".join(rf_metrics), body_style))
-        flow.append(Spacer(1, 0.1 * inch))
-        img_bytes = _figure_to_image_bytes(rf_confusion_matrix_fig)
-        img = Image(io.BytesIO(img_bytes), width=4.5 * inch, height=4 * inch)
-        flow.append(img)
-        flow.append(Spacer(1, 0.25 * inch))
-
-    if svm_confusion_matrix_fig is not None:
-        flow.append(Paragraph("4. SVM (RBF) — Confusion matrix", heading_style))
-        svm_metrics: list[str] = []
-        if svm_accuracy is not None:
-            svm_metrics.append(f"Accuracy: {svm_accuracy:.3f}")
-        if svm_f1 is not None:
-            svm_metrics.append(f"F1 (weighted): {svm_f1:.3f}")
-        if svm_metrics:
-            flow.append(Paragraph(" | ".join(svm_metrics), body_style))
-        flow.append(Spacer(1, 0.1 * inch))
-        img_bytes = _figure_to_image_bytes(svm_confusion_matrix_fig)
-        img = Image(io.BytesIO(img_bytes), width=4.5 * inch, height=4 * inch)
-        flow.append(img)
-
-    doc.build(flow)
-    pdf_bytes = buffer.getvalue()
-
-    if output_path is not None:
-        Path(output_path).write_bytes(pdf_bytes)
-
-    return pdf_bytes
+    for line in caption_lines or ():
+        flow.append(Paragraph(escape(line), styles["Normal"]))
+    _add_figure(
+        flow,
+        "1. Exploratory Cohort PCA",
+        pca_fig,
+        styles,
+        pca_unavailable_reason
+        or "Full-cohort PC1/PC2 colored by sample class. This exploratory view supplies no model predictors.",
+    )
+    _add_figure(
+        flow,
+        "2. Random Forest Feature Importance",
+        feature_importance_fig,
+        styles,
+        "Impurity-based importance describes this fitted model; it does not validate peak specificity or causal value."
+        if feature_importance_fig is not None
+        else "Unavailable: this result has no feature importances.",
+    )
+    for title, fig, accuracy, f1 in [
+        ("3. Random Forest Confusion Matrix", rf_confusion_matrix_fig, rf_accuracy, rf_f1),
+        ("4. SVM (RBF) Confusion Matrix", svm_confusion_matrix_fig, svm_accuracy, svm_f1),
+    ]:
+        metrics = [
+            f"Accuracy={accuracy:.3f}" if accuracy is not None else "Accuracy unavailable",
+            f"Weighted F1={f1:.3f}" if f1 is not None else "F1 unavailable",
+        ]
+        _add_figure(flow, title, fig, styles, "; ".join(metrics))
+    return _finish(buffer, doc, flow, output_path)
 
 
 def build_regression_concentration_pdf(
     *,
     paradigm_title: str,
-    metrics_table: Optional[pd.DataFrame] = None,
-    scatter_fig: Optional[Any] = None,
-    residual_fig: Optional[Any] = None,
-    extra_figures: Optional[list[tuple[str, Any]]] = None,
-    caption_lines: Optional[tuple[str, ...]] = None,
+    metrics_table: pd.DataFrame | None = None,
+    scatter_fig: Any = None,
+    residual_fig: Any = None,
+    extra_figures: list[tuple[str, Any]] | None = None,
+    caption_lines: tuple[str, ...] | None = None,
     report_title: str = "Concentration regression report",
-    output_path: Optional[str | Path] = None,
+    output_path: str | Path | None = None,
 ) -> bytes:
-    """
-    Compile concentration-regression metrics and figures into a compact PDF.
-
-    First iteration: metrics table plus actual-vs-predicted and residual plots.
-
-    Parameters
-    ----------
-    paradigm_title:
-        Short paradigm label (shown as section text).
-    metrics_table:
-        Optional summary table (e.g. model comparison).
-    scatter_fig, residual_fig:
-        Matplotlib figures.
-    extra_figures:
-        Optional list of ``(section_title, figure)`` pairs.
-    caption_lines:
-        Optional bullet-style notes rendered as paragraphs.
-    report_title:
-        Document title on the cover line.
-    output_path:
-        If set, write bytes to this path.
-
-    Returns
-    -------
-    bytes
-        PDF file contents.
-    """
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=letter,
-        rightMargin=0.75 * inch,
-        leftMargin=0.75 * inch,
-        topMargin=0.75 * inch,
-        bottomMargin=0.75 * inch,
-    )
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "RegReportTitle",
-        parent=styles["Heading1"],
-        fontSize=18,
-        spaceAfter=12,
-    )
-    heading_style = ParagraphStyle(
-        "RegSectionHeading",
-        parent=styles["Heading2"],
-        fontSize=14,
-        spaceBefore=16,
-        spaceAfter=8,
-    )
-    body_style = styles["Normal"]
-
-    flow: list = []
-    flow.append(Paragraph(report_title, title_style))
+    """Report positive actual-CFU log10 regression on held-out sensor groups."""
+    buffer, doc, styles, flow = _start(report_title)
+    flow.append(Paragraph(escape(paradigm_title), styles["Heading2"]))
     flow.append(
         Paragraph(
-            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            body_style,
+            "Identity-eligible bacterial rows with finite positive measured concentration; no response-based QA screening. Target: log10(actual CFU/mL). Evaluation uses sensor-group holdout and training-only preprocessing/model selection. Sensor identifiers do not establish independent biological preparations. These retrospective results do not establish prospective performance.",
+            styles["Normal"],
         )
     )
-    flow.append(Spacer(1, 0.12 * inch))
-    flow.append(Paragraph(f"<b>{paradigm_title}</b>", heading_style))
-    flow.append(
-        Paragraph(
-            "Evaluation uses a <b>group holdout by sensor_id</b>: test rows come from "
-            "sensors not seen during training. Target is log10 concentration (positive CFU; "
-            "positive-CFU rows only).",
-            body_style,
-        )
-    )
-    if caption_lines:
-        for line in caption_lines:
-            flow.append(Paragraph(line, body_style))
-    flow.append(Spacer(1, 0.15 * inch))
-
-    if metrics_table is not None and not metrics_table.empty:
-        flow.append(Paragraph("Metrics summary", heading_style))
-        tdata = _df_to_table_data(metrics_table)
-        tw = _compute_table_col_widths(tdata, doc.width)
-        tbl = Table(tdata, colWidths=tw, repeatRows=1)
-        tbl.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 9),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ]
-            )
-        )
-        flow.append(tbl)
-        flow.append(Spacer(1, 0.25 * inch))
-
-    if scatter_fig is not None:
-        flow.append(Paragraph("Actual vs predicted", heading_style))
-        flow.append(Spacer(1, 0.08 * inch))
-        img_bytes = _figure_to_image_bytes(scatter_fig)
-        img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=4.2 * inch)
-        flow.append(img)
-        flow.append(Spacer(1, 0.22 * inch))
-
-    if residual_fig is not None:
-        flow.append(Paragraph("Residuals", heading_style))
-        flow.append(Spacer(1, 0.08 * inch))
-        img_bytes = _figure_to_image_bytes(residual_fig)
-        img = Image(io.BytesIO(img_bytes), width=5.5 * inch, height=3.4 * inch)
-        flow.append(img)
-        flow.append(Spacer(1, 0.22 * inch))
-
-    if extra_figures:
-        for sec_title, fig in extra_figures:
-            if fig is None:
-                continue
-            flow.append(Paragraph(sec_title, heading_style))
-            flow.append(Spacer(1, 0.08 * inch))
-            img_bytes = _figure_to_image_bytes(fig)
-            img = Image(io.BytesIO(img_bytes), width=4.8 * inch, height=4 * inch)
-            flow.append(img)
-            flow.append(Spacer(1, 0.2 * inch))
-
-    doc.build(flow)
-    pdf_bytes = buffer.getvalue()
-
-    if output_path is not None:
-        Path(output_path).write_bytes(pdf_bytes)
-
-    return pdf_bytes
+    for line in caption_lines or ():
+        flow.append(Paragraph(escape(line), styles["Normal"]))
+    flow.append(Paragraph("Held-out metrics", styles["Heading2"]))
+    _add_table(flow, metrics_table, styles, doc.width)
+    _add_figure(flow, "Actual vs predicted", scatter_fig, styles)
+    _add_figure(flow, "Residuals", residual_fig, styles)
+    for title, fig in extra_figures or []:
+        _add_figure(flow, title, fig, styles)
+    return _finish(buffer, doc, flow, output_path)

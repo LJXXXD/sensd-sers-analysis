@@ -10,6 +10,7 @@ from typing import Optional, Union
 import matplotlib.colors
 import matplotlib.cm
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import pandas as pd
 import seaborn as sns
 
@@ -103,7 +104,8 @@ def plot_spectra(
         use_legend = True
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig = Figure(figsize=figsize)
+        ax = fig.subplots()
     else:
         fig = ax.get_figure()
 

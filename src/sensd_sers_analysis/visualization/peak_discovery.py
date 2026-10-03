@@ -4,9 +4,12 @@ Peak discovery plotting helpers for Streamlit verification views.
 
 from __future__ import annotations
 
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 
-from sensd_sers_analysis.application.peak_discovery_service import SignalVerificationArtifact
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sensd_sers_analysis.application.peak_discovery_service import SignalVerificationArtifact
 from sensd_sers_analysis.processing import PeakWindowInfo
 
 
@@ -52,7 +55,8 @@ def plot_peak_anchor_summary(
         Rendered peak-anchor summary figure.
     """
 
-    fig, ax = plt.subplots(figsize=figsize)
+    fig = Figure(figsize=figsize)
+    ax = fig.subplots()
     ax.plot(
         raman_x,
         mean_spectrum,
@@ -114,7 +118,8 @@ def plot_signal_level_peak_verification(
         Rendered signal-level verification figure.
     """
 
-    fig, ax = plt.subplots(figsize=figsize)
+    fig = Figure(figsize=figsize)
+    ax = fig.subplots()
     ax.plot(artifact.x_plot, artifact.y_plot, color="C0", linewidth=1.2, label="Raw spectrum")
 
     for i, info in enumerate(artifact.row_peak_infos):

@@ -52,7 +52,7 @@ def test_plain_workbook_roundtrip_preserves_per_signal_identity(tmp_path):
     """Exporter writes plain values; loader keeps identity independent of dose."""
     prep = prep_module()
     metadata = {label: "test" for _, label, _ in prep.METADATA_FIELD_SPECS}
-    rows = prep._build_embedded_workbook_rows(
+    rows = prep.build_embedded_workbook_rows(
         metadata,
         target_concentrations=[1000, 0],
         actual_concentrations=[0, 0],
@@ -62,7 +62,7 @@ def test_plain_workbook_roundtrip_preserves_per_signal_identity(tmp_path):
         raman_shift=np.array([500.0, 501.0]),
         intensity_columns=[np.array([1.0, 2.0]), np.array([3.0, 4.0])],
     )
-    payload = prep._embedded_workbook_to_excel_bytes(rows)
+    payload = prep.embedded_workbook_to_excel_bytes(rows)
     workbook = openpyxl.load_workbook(BytesIO(payload))
     assert not workbook.active.data_validations.dataValidation
     assert workbook.active["A20"].value == "Initial Target Concentration (CFU/mL)"
@@ -78,7 +78,7 @@ def test_preset_labels_roundtrip_and_reload(monkeypatch):
     """Preset import restores named signals; batch reset clears labels and counts."""
     prep = prep_module()
     labels = {"a.txt": {"sample_type": "Bacteria sample", "special_treatment": "PAA 50 ppm"}}
-    payload = prep._build_template_export_payload({}, frozenset(), labels)
+    payload = prep.build_template_export_payload({}, frozenset(), labels)
     valid, warnings = validate_signal_preset(payload["signal_labels"])
     assert valid == labels and not warnings
     assert validate_signal_preset({"bad": {"sample_type": "oops"}})[0] == {}
@@ -136,7 +136,7 @@ sys.path.insert(0, {app_directory!r})
 import streamlit as st
 from types import SimpleNamespace
 import txt_to_excel as prep
-files = [SimpleNamespace(name=name, read=lambda: b"600\\t1\\n601\\t2\\n") for name in ["a.txt", "b.txt"]]
+files = [SimpleNamespace(name=name, getvalue=lambda: b"600\\t1\\n601\\t2\\n") for name in ["a.txt", "b.txt"]]
 original = st.file_uploader
 st.file_uploader = lambda label, **kwargs: files if label == "Upload Raman TXT Files" else None
 try:

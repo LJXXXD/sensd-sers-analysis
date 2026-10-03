@@ -12,6 +12,7 @@ from components.shared_ui import (
     render_dataframe_stretch,
     render_figure_stretch,
     render_pdf_download_section,
+    report_context_key,
 )
 
 from sensd_sers_analysis.application import build_classification_report_pdf_bytes
@@ -51,7 +52,7 @@ def render(filtered_features, peak_artifacts):
 
     st.markdown(
         "#### Serotyping & Classification\n"
-        "Uses strictly clean rows: Pass sensors only, inlier points only. "
+        "Uses explicit sample identity without response-based QA exclusions. "
         "Trains baseline ML models for **(N + 1)-class** classification: **N** "
         "serotypes on Bacteria sample rows plus **Rinsate** controls, where **N** is "
         "determined by the current filter."
@@ -60,27 +61,19 @@ def render(filtered_features, peak_artifacts):
     has_classification_cols = (
         "sensor_id" in filtered_features.columns
         and "serotype" in filtered_features.columns
-        and "concentration_group" in filtered_features.columns
-        and "PC1" in filtered_features.columns
-        and "PC2" in filtered_features.columns
+        and "sample_type" in filtered_features.columns
     )
     classification_peak_cols = list_targeted_peak_feature_columns(filtered_features.columns)
-    classification_feat_cols = [
-        c
-        for c in CLASSIFICATION_FEATURE_BASE + classification_peak_cols
-        if c in filtered_features.columns
-    ]
+    classification_feat_cols = CLASSIFICATION_FEATURE_BASE + classification_peak_cols
 
     if not has_classification_cols:
         st.warning(
-            "Classification requires **sensor_id**, **serotype**, **concentration_group**, "
-            "**PC1**, and **PC2**. Run **Sensor assessment** first "
-            "(which computes Pass/Excluded) and ensure data has PCA features."
+            "Classification requires **sensor_id**, **serotype**, and explicit **sample_type**."
         )
         return
     if len(classification_feat_cols) < 2:
         st.warning(
-            "Need at least 2 feature columns (integral_area, PC1, etc.) for "
+            "Need at least 2 feature columns (integral_area, max_intensity, etc.) for "
             "classification. Check that features are extracted."
         )
         return
@@ -93,20 +86,19 @@ def render(filtered_features, peak_artifacts):
 
     if clean_classification_df.empty:
         st.warning(
-            "No clean rows for classification. Ensure sensors pass QA (Pass sensors) "
-            "and inlier points exist. Check that explicit Bacteria sample and Rinsate control labels "
+            "No identity-eligible rows for classification. Check that explicit Bacteria sample and Rinsate control labels "
             "exist."
         )
         return
 
     counts = clean_classification_df["target"].value_counts()
     st.caption(
-        f"Clean data: **{len(clean_classification_df)}** samples — "
+        f"Eligible data: **{len(clean_classification_df)}** samples — "
         + ", ".join(f"{k}: {v}" for k, v in counts.items())
     )
 
     st.markdown("---")
-    st.markdown("##### 1. Unsupervised Clustering (PCA Scatter)")
+    st.markdown("##### 1. Exploratory Cohort PCA")
     try:
         fig_pca = plot_pca_classification(clean_classification_df)
         render_figure_stretch(fig_pca)
@@ -117,8 +109,8 @@ def render(filtered_features, peak_artifacts):
     st.markdown("---")
     st.markdown("##### 2. Baseline ML Classification")
     st.caption(
-        "80/20 stratified train/test split; features are standardized before fitting. "
-        "Feature set: integral_area, max_intensity, mean_intensity, PC1, PC2, plus "
+        "80/20 sensor-group holdout; scaling is fit inside training CV folds. "
+        "Feature set: integral_area, max_intensity, mean_intensity, plus "
         "targeted ``peak_near_*`` heights. **Both** Random Forest and SVM (RBF) are "
         "trained on the same split; tables and plots report metrics on the held-out "
         "test set only."
@@ -139,6 +131,7 @@ def render(filtered_features, peak_artifacts):
                 "Precision (weighted)": [rf.precision, svm.precision],
                 "Recall (weighted)": [rf.recall, svm.recall],
                 "F1 (weighted)": [rf.f1, svm.f1],
+                "Training CV F1": [rf.cv_score, svm.cv_score],
             }
         )
         st.markdown("**Held-out test metrics**")
@@ -152,8 +145,8 @@ def render(filtered_features, peak_artifacts):
             },
         )
         st.caption(
-            f"**Best by weighted F1:** {classification_artifacts.best_result.model_name} "
-            f"(F1 = {classification_artifacts.best_result.f1:.3f})."
+            f"**Selected by training CV (RF reference when CV is unavailable):** {classification_artifacts.best_result.model_name} "
+            f"(held-out F1 = {classification_artifacts.best_result.f1:.3f})."
         )
 
         with st.expander("Hyperparameter tuning (how models are fit)", expanded=False):
@@ -161,7 +154,7 @@ def render(filtered_features, peak_artifacts):
                 st.markdown(
                     f"When the **training** split has at least "
                     f"{CLASSIFICATION_TUNING_MIN_TRAIN_SAMPLES} samples, each model is tuned with "
-                    "**RandomizedSearchCV** and stratified cross-validation on that training "
+                    "**RandomizedSearchCV** and sensor-group cross-validation on that training "
                     "split only. Search grids and iteration counts live in "
                     "``config/model_policies.py``. Smaller training sets skip search and use "
                     "fixed defaults (``CLASSIFICATION_RF_N_ESTIMATORS`` for RF; default RBF-SVM "
@@ -227,6 +220,11 @@ def render(filtered_features, peak_artifacts):
         render_pdf_download_section(
             session_key="classification_report_pdf",
             filename="serotype_classification_report.pdf",
+            context_key=report_context_key(
+                clean_classification_df,
+                tuple(classification_feat_cols),
+                classification_artifacts.best_result.model_name,
+            ),
             generate_callback=_generate_classification_report_pdf_bytes,
             button_label="Generate Serotype Classification Report",
             download_label="Download Serotype Classification Report",

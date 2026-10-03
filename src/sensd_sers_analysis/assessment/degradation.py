@@ -204,15 +204,14 @@ def add_sequence_column(
         date_col: Fallback for date-based ordering.
 
     Returns:
-        Copy of df with "sequence" column added (0-based integer sequence).
+        Copy with numeric "sequence"; unavailable supplied values remain NaN.
     """
     out = df.copy()
 
     if sequence_col in df.columns:
         out["sequence"] = pd.to_numeric(df[sequence_col], errors="coerce")
         if out["sequence"].notna().any():
-            # Sort and assign 0,1,2,... per group if needed
-            out["sequence"] = out["sequence"].fillna(0).astype(int)
+            out["sequence"] = out["sequence"].where(np.isfinite(out["sequence"]))
             return out
 
     if date_col in df.columns:

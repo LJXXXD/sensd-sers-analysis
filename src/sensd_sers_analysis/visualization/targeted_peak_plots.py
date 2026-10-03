@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import numpy as np
 
 
@@ -55,7 +55,8 @@ def plot_targeted_mean_spectrum_markers(
         Rendered figure.
     """
 
-    fig, ax = plt.subplots(figsize=figsize)
+    fig = Figure(figsize=figsize)
+    ax = fig.subplots()
     ax.plot(
         raman_x,
         mean_spectrum,
@@ -150,7 +151,8 @@ def plot_targeted_signal_verification(
         Rendered figure.
     """
 
-    fig, ax = plt.subplots(figsize=figsize)
+    fig = Figure(figsize=figsize)
+    ax = fig.subplots()
     ax.plot(raman_x, intensity, color="C0", linewidth=1.2, label="Spectrum")
     for i, anchor in enumerate(anchor_cm1):
         color = f"C{(i % 9) + 1}"

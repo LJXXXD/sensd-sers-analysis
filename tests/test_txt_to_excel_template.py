@@ -7,33 +7,36 @@ from pathlib import Path
 
 import pytest
 
-APPS_DIR = Path(__file__).resolve().parents[1] / "apps"
-if str(APPS_DIR) not in sys.path:
-    sys.path.insert(0, str(APPS_DIR))
-
-from txt_to_excel import (  # noqa: E402
+from sensd_sers_analysis.data.txt_converter import (
     DATE_METADATA_FIELD_NUMBERS,
     METADATA_FIELD_SPECS,
     METADATA_WIDGET_KEYS,
     NUMERIC_METADATA_FIELD_NUMBERS,
     OPTIONAL_METADATA_FIELD_NUMBERS,
-    RELOAD_CLEAR_WIDGET_KEYS,
-    RELOAD_PERSIST_WIDGET_KEYS,
     TIME_METADATA_FIELD_NUMBERS,
     TEMPLATE_VERSION,
-    _apply_template_import_to_values,
-    _build_template_export_payload,
+    apply_template_import_to_values,
+    build_template_export_payload,
+    coerce_metadata_widget_state_value,
+    format_metadata_date,
+    format_metadata_time,
+    is_template_field_exportable,
+    parse_metadata_date,
+    parse_metadata_time,
+    serialize_template_field_value,
+)
+
+APPS_DIR = Path(__file__).resolve().parents[1] / "apps"
+if str(APPS_DIR) not in sys.path:
+    sys.path.insert(0, str(APPS_DIR))
+
+from txt_to_excel import (  # noqa: E402
+    RELOAD_CLEAR_WIDGET_KEYS,
+    RELOAD_PERSIST_WIDGET_KEYS,
     _clear_reload_fields_in_snapshot,
-    _coerce_metadata_widget_state_value,
-    _format_metadata_date,
-    _format_metadata_time,
-    _is_template_field_exportable,
     _merge_widget_values_into_snapshot,
     _merged_preview_legend_labels,
     _normalize_legacy_preview_label,
-    _parse_metadata_date,
-    _parse_metadata_time,
-    _serialize_template_field_value,
 )
 
 
@@ -106,9 +109,9 @@ def test_date_and_time_metadata_field_numbers() -> None:
 def test_metadata_field_specs_follow_grouped_order() -> None:
     """Excel/UI order is 5+2+3+2+3 fields across three five-column rows, then notes."""
 
-    from txt_to_excel import (
+    from txt_to_excel import METADATA_UI_ROWS
+    from sensd_sers_analysis.data.txt_converter import (
         METADATA_LOGICAL_GROUPS,
-        METADATA_UI_ROWS,
         _SEPARATOR_AFTER_METADATA_NUMBERS,
     )
 
@@ -144,20 +147,20 @@ def test_parse_and_format_metadata_date_and_time() -> None:
 
     from datetime import date, time
 
-    assert _parse_metadata_date("2026-05-29") == date(2026, 5, 29)
-    assert _parse_metadata_date("05/29/2026") == date(2026, 5, 29)
-    assert _parse_metadata_date("not-a-date") is None
-    assert _parse_metadata_time("2:30 PM") == time(14, 30)
-    assert _parse_metadata_time("2:30pm") == time(14, 30)
-    assert _parse_metadata_time("2 PM") == time(14, 0)
-    assert _parse_metadata_time("2pm") == time(14, 0)
-    assert _parse_metadata_time("14:30") == time(14, 30)
-    assert _parse_metadata_time("morning") is None
-    assert _format_metadata_date(date(2026, 5, 29)) == "2026-05-29"
-    assert _format_metadata_time(time(14, 30)) == "02:30 PM"
-    assert _format_metadata_time(time(14, 30, 15)) == "02:30:15 PM"
-    assert _format_metadata_time(time(0, 15)) == "12:15 AM"
-    assert _format_metadata_time("1:30 PM") == "01:30 PM"
+    assert parse_metadata_date("2026-05-29") == date(2026, 5, 29)
+    assert parse_metadata_date("05/29/2026") == date(2026, 5, 29)
+    assert parse_metadata_date("not-a-date") is None
+    assert parse_metadata_time("2:30 PM") == time(14, 30)
+    assert parse_metadata_time("2:30pm") == time(14, 30)
+    assert parse_metadata_time("2 PM") == time(14, 0)
+    assert parse_metadata_time("2pm") == time(14, 0)
+    assert parse_metadata_time("14:30") == time(14, 30)
+    assert parse_metadata_time("morning") is None
+    assert format_metadata_date(date(2026, 5, 29)) == "2026-05-29"
+    assert format_metadata_time(time(14, 30)) == "02:30 PM"
+    assert format_metadata_time(time(14, 30, 15)) == "02:30:15 PM"
+    assert format_metadata_time(time(0, 15)) == "12:15 AM"
+    assert format_metadata_time("1:30 PM") == "01:30 PM"
 
 
 def test_merged_preview_legend_labels_use_colon_format() -> None:
@@ -194,10 +197,10 @@ def test_coerce_testing_time_widget_accepts_parsed_template_strings() -> None:
 
     from datetime import time
 
-    assert _coerce_metadata_widget_state_value(14, "10:45 AM") == time(10, 45)
-    assert _coerce_metadata_widget_state_value(14, time(14, 30)) == time(14, 30)
-    assert _coerce_metadata_widget_state_value(14, None) is None
-    assert _coerce_metadata_widget_state_value(14, "morning") is None
+    assert coerce_metadata_widget_state_value(14, "10:45 AM") == time(10, 45)
+    assert coerce_metadata_widget_state_value(14, time(14, 30)) == time(14, 30)
+    assert coerce_metadata_widget_state_value(14, None) is None
+    assert coerce_metadata_widget_state_value(14, "morning") is None
 
 
 def test_build_template_export_payload_includes_only_selected_valid_fields() -> None:
@@ -217,7 +220,7 @@ def test_build_template_export_payload_includes_only_selected_valid_fields() -> 
             "txt2excel_meta_notes",
         }
     )
-    payload = _build_template_export_payload(field_values, selected)
+    payload = build_template_export_payload(field_values, selected)
     assert payload is not None
     assert payload["version"] == TEMPLATE_VERSION
     assert payload["fields"] == {
@@ -231,7 +234,7 @@ def test_build_template_export_payload_returns_none_when_nothing_valid() -> None
 
     field_values = {"txt2excel_meta_disk_diameter_nm": "not-a-number"}
     selected = frozenset({"txt2excel_meta_disk_diameter_nm"})
-    assert _build_template_export_payload(field_values, selected) is None
+    assert build_template_export_payload(field_values, selected) is None
 
 
 def test_template_export_rejects_invalid_date_and_time_values() -> None:
@@ -242,14 +245,14 @@ def test_template_export_rejects_invalid_date_and_time_values() -> None:
         "txt2excel_meta_testing_time": "morning",
     }
     selected = frozenset(field_values)
-    assert _build_template_export_payload(field_values, selected) is None
-    assert _is_template_field_exportable(13, "2026-05-29")
-    assert not _is_template_field_exportable(13, "bad-date")
-    assert _is_template_field_exportable(14, "10:45 AM")
-    assert not _is_template_field_exportable(14, "morning")
-    assert _serialize_template_field_value(13, "2026-05-29") == "2026-05-29"
-    assert _serialize_template_field_value(14, "10:45 AM") == "10:45 AM"
-    assert _serialize_template_field_value(14, "10:45") == "10:45 AM"
+    assert build_template_export_payload(field_values, selected) is None
+    assert is_template_field_exportable(13, "2026-05-29")
+    assert not is_template_field_exportable(13, "bad-date")
+    assert is_template_field_exportable(14, "10:45 AM")
+    assert not is_template_field_exportable(14, "morning")
+    assert serialize_template_field_value(13, "2026-05-29") == "2026-05-29"
+    assert serialize_template_field_value(14, "10:45 AM") == "10:45 AM"
+    assert serialize_template_field_value(14, "10:45") == "10:45 AM"
 
 
 def test_apply_template_import_merges_valid_fields() -> None:
@@ -265,7 +268,7 @@ def test_apply_template_import_merges_valid_fields() -> None:
     }
     before = {key: "" for key in METADATA_WIDGET_KEYS}
     before["txt2excel_meta_operator"] = "Existing Operator"
-    updated, warnings = _apply_template_import_to_values(payload, before)
+    updated, warnings = apply_template_import_to_values(payload, before)
     assert updated["txt2excel_meta_disk_diameter_nm"] == "250"
     assert updated["txt2excel_meta_sensor_model"] == "Imported"
     assert updated["txt2excel_meta_operator"] == "Existing Operator"
@@ -276,7 +279,7 @@ def test_apply_template_import_rejects_bad_version() -> None:
     """Import warns and leaves values unchanged for unsupported template versions."""
 
     before = {"txt2excel_meta_sensor_model": "Keep Me"}
-    updated, warnings = _apply_template_import_to_values({"version": 99, "fields": {}}, before)
+    updated, warnings = apply_template_import_to_values({"version": 99, "fields": {}}, before)
     assert updated == before
     assert any("Unsupported template version" in message for message in warnings)
 
@@ -285,7 +288,7 @@ def test_apply_template_import_validates_date_and_time() -> None:
     """Import normalizes valid date/time values and warns on invalid ones."""
 
     before = {key: "" for key in METADATA_WIDGET_KEYS}
-    updated, warnings = _apply_template_import_to_values(
+    updated, warnings = apply_template_import_to_values(
         {
             "version": TEMPLATE_VERSION,
             "fields": {
@@ -299,7 +302,7 @@ def test_apply_template_import_validates_date_and_time() -> None:
     assert updated["txt2excel_meta_testing_time"] == "10:45 AM"
 
     before = {key: "" for key in METADATA_WIDGET_KEYS}
-    _, warnings = _apply_template_import_to_values(
+    _, warnings = apply_template_import_to_values(
         {
             "version": TEMPLATE_VERSION,
             "fields": {
@@ -330,4 +333,4 @@ def test_apply_template_import_validates_date_and_time() -> None:
 def test_is_template_field_exportable(field_number: int, raw_value: str, expected: bool) -> None:
     """Template exportability follows numeric, text, and optional Notes rules."""
 
-    assert _is_template_field_exportable(field_number, raw_value) is expected
+    assert is_template_field_exportable(field_number, raw_value) is expected

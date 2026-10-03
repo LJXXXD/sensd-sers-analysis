@@ -133,7 +133,13 @@ def extract_targeted_peak_height_features(
         Empty dataframe if ``df_wide`` is empty or there are no anchors.
     """
 
-    if df_wide.empty or not anchor_cm1:
+    anchors = np.asarray(anchor_cm1, dtype=float)
+    if not np.isfinite(anchors).all() or not np.isfinite(half_width_cm1) or half_width_cm1 <= 0:
+        raise ValueError("Peak anchors must be finite and search half-width must be positive.")
+    names = [target_anchor_to_feature_name(anchor) for anchor in anchors]
+    if len(set(names)) != len(names):
+        raise ValueError("Peak anchors must produce distinct feature names.")
+    if df_wide.empty or not len(anchors):
         return pd.DataFrame(index=df_wide.index)
 
     signals = get_signals_matrix(df_wide)
@@ -153,11 +159,14 @@ def extract_targeted_peak_height_features(
             continue
 
         window_y = signals[:, mask]
-        n_edge = max(1, int(window_y.shape[1] * 0.1))
-        left = window_y[:, :n_edge]
-        right = window_y[:, -n_edge:]
-        baseline = (np.nanmean(left, axis=1) + np.nanmean(right, axis=1)) / 2.0
-        peak_height = np.nanmax(window_y, axis=1) - baseline
+        complete = np.isfinite(window_y).all(axis=1)
+        peak_height = np.full(n_samples, np.nan)
+        valid_y = window_y[complete]
+        if valid_y.size:
+            n_edge = max(1, int(valid_y.shape[1] * 0.1))
+            baseline = (valid_y[:, :n_edge].mean(axis=1) + valid_y[:, -n_edge:].mean(axis=1)) / 2.0
+            peak_height[complete] = valid_y.max(axis=1) - baseline
+
         out[col] = np.asarray(peak_height, dtype=float)
 
     return pd.DataFrame(out, index=df_wide.index)
@@ -204,7 +213,7 @@ def detect_targeted_peaks_on_spectrum_row(
             continue
         wx = x[mask]
         wy = y[mask]
-        if not np.any(np.isfinite(wy)):
+        if not np.isfinite(wy).all():
             continue
         n_edge = max(1, int(len(wy) * 0.1))
         left = wy[:n_edge]

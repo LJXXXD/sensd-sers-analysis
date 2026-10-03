@@ -4,8 +4,7 @@ degradation, and multi-sensor batch stability.
 
 Replicates are grouped by nominal **target** concentration so sample-to-sample
 CFU spread stays inside each group. The consistency table reports the SERS
-signal CV alongside the actual-concentration CV, exposing how much variability
-the sensor adds beyond the inherent sample variability.
+signal CV alongside the actual-concentration CV, comparing observed relative spread without decomposing its causes.
 """
 
 import logging
@@ -18,6 +17,7 @@ from components.shared_ui import (
     render_dataframe_stretch,
     render_figure_stretch,
     render_pdf_download_section,
+    report_context_key,
 )
 
 from sensd_sers_analysis.application import (
@@ -250,7 +250,7 @@ def render(filtered_features, peak_artifacts):
         f"Within serotype={assess_serotype}, target={assess_concentration}. "
         "One row per sensor; each selected feature is a **signal CV%** column "
         "(outlier-filtered), side by side with **Concentration CV%** "
-        "(sample spread). Signal ≫ Concentration ⇒ sensor-added variability."
+        "(sample spread). Their difference does not isolate sensor variance."
     )
     if artifacts.consistency_error:
         logger.warning("Consistency error: %s", artifacts.consistency_error)
@@ -259,9 +259,8 @@ def render(filtered_features, peak_artifacts):
         render_dataframe_stretch(_format_consistency_table(artifacts.display_consistency_table))
         st.caption(
             "Signal CV% (per feature) vs the sample **Concentration CV%** "
-            "(hatched). Signal bars well above the concentration bar = "
-            "sensor-added variability; bars with no height = undefined (e.g. a "
-            "single replicate)."
+            "(hatched). These compare observed relative spread. Undefined CVs "
+            "draw no bar; a measured zero CV also has zero height."
         )
         try:
             fig_cv = plot_signal_vs_concentration_cv(artifacts.display_consistency_table)
@@ -387,14 +386,22 @@ def render(filtered_features, peak_artifacts):
         artifacts,
         degradation_input_df=deg_artifacts.degradation_input_df,
         degradation_table=deg_artifacts.degradation_table,
+        degradation_error=deg_artifacts.degradation_error,
     )
 
     def _generate_assessment_pdf_bytes() -> bytes:
-        return build_sensor_assessment_pdf_bytes(pdf_artifacts, degradation_feature=deg_feature)
+        return build_sensor_assessment_pdf_bytes(
+            pdf_artifacts,
+            degradation_feature=deg_feature,
+            degradation_scope=f"{deg_serotype}, target {deg_concentration}, feature {deg_feature}",
+        )
 
     render_pdf_download_section(
         session_key="assessment_pdf",
         filename="sensor_qc_report.pdf",
+        context_key=report_context_key(
+            filtered_features, repr(artifacts.selection), repr(deg_artifacts.selection), deg_feature
+        ),
         generate_callback=_generate_assessment_pdf_bytes,
         button_label="Generate report",
         download_label="Download PDF",

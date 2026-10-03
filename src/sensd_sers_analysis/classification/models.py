@@ -1,12 +1,9 @@
-"""
-Baseline serotype classification: Random Forest and SVM classifiers.
-"""
+"""Serotype classifiers with sensor holdout and training-only model selection."""
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -18,7 +15,7 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold, train_test_split
+from sklearn.model_selection import GroupKFold, StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
@@ -36,13 +33,13 @@ from sensd_sers_analysis.config import (
     CLASSIFICATION_TUNING_MIN_TRAIN_SAMPLES,
     CLASSIFICATION_TUNING_RANDOM_SEARCH_ITER,
 )
-
-logger = logging.getLogger(__name__)
+from sensd_sers_analysis.modeling import feature_matrix, fit_model_pipeline
+from sensd_sers_analysis.splits import group_train_test_indices
 
 
 @dataclass
 class ClassificationResult:
-    """Results from training a serotype classifier."""
+    """Held-out metrics with a pipeline that owns its input transformation."""
 
     model_name: str
     model: object
@@ -55,200 +52,36 @@ class ClassificationResult:
     confusion_matrix: np.ndarray
     class_names: list[str]
     feature_names: list[str]
-    feature_importances: Optional[np.ndarray] = None
-    scaler: Optional[StandardScaler] = None
-    best_params: Optional[dict[str, Any]] = None
+    feature_importances: np.ndarray | None = None
+    scaler: StandardScaler | None = None
+    best_params: dict[str, Any] | None = None
+    cv_score: float | None = None
+    train_indices: np.ndarray | None = None
+    test_indices: np.ndarray | None = None
+    split_seed: int | None = None
 
 
-def _effective_cv_splits(y_train: np.ndarray, requested: int) -> int:
-    """
-    Number of stratified CV folds that are valid for y_train.
-
-    Returns
-    -------
-    int
-        ``0`` if stratified CV is not viable, otherwise at least ``2``.
-    """
-    _, counts = np.unique(y_train, return_counts=True)
-    min_c = int(counts.min())
-    if min_c < 2:
-        return 0
-    return max(2, min(int(requested), min_c))
-
-
-def _should_run_hyperparameter_search(n_train: int, y_train: np.ndarray) -> bool:
-    if not CLASSIFICATION_HYPERPARAMETER_TUNING:
-        return False
-    if n_train < CLASSIFICATION_TUNING_MIN_TRAIN_SAMPLES:
-        logger.info(
-            "Classification hyperparameter search skipped: train size %d < %d",
-            n_train,
-            CLASSIFICATION_TUNING_MIN_TRAIN_SAMPLES,
+def _classification_cv(y: np.ndarray, groups: np.ndarray | None, seed: int):
+    """Return one shared viable fold plan; unsupported training classes skip search."""
+    if not CLASSIFICATION_HYPERPARAMETER_TUNING or len(y) < CLASSIFICATION_TUNING_MIN_TRAIN_SAMPLES:
+        return None
+    if groups is not None:
+        count = min(CLASSIFICATION_TUNING_CV_SPLITS, len(np.unique(groups)))
+        if count < 2:
+            return None
+        splits = list(GroupKFold(count).split(np.zeros((len(y), 1)), y, groups))
+    else:
+        _, counts = np.unique(y, return_counts=True)
+        count = min(CLASSIFICATION_TUNING_CV_SPLITS, int(counts.min()))
+        if count < 2:
+            return None
+        splits = list(
+            StratifiedKFold(count, shuffle=True, random_state=seed).split(np.zeros((len(y), 1)), y)
         )
-        return False
-    if _effective_cv_splits(y_train, CLASSIFICATION_TUNING_CV_SPLITS) == 0:
-        logger.info(
-            "Classification hyperparameter search skipped: need at least 2 training samples "
-            "per class for stratified CV."
-        )
-        return False
-    return True
-
-
-def _fit_random_forest(
-    X_train_s: np.ndarray,
-    y_train: np.ndarray,
-    random_state: int,
-    *,
-    run_hyperparameter_search: bool,
-) -> tuple[RandomForestClassifier, Optional[dict[str, Any]]]:
-    if run_hyperparameter_search:
-        n_splits = _effective_cv_splits(y_train, CLASSIFICATION_TUNING_CV_SPLITS)
-        cv = StratifiedKFold(
-            n_splits=n_splits,
-            shuffle=True,
-            random_state=random_state,
-        )
-        base = RandomForestClassifier(random_state=random_state)
-        param_distributions = {
-            "n_estimators": list(CLASSIFICATION_RF_SEARCH_N_ESTIMATORS),
-            "max_depth": list(CLASSIFICATION_RF_SEARCH_MAX_DEPTH),
-            "min_samples_leaf": list(CLASSIFICATION_RF_SEARCH_MIN_SAMPLES_LEAF),
-        }
-        search = RandomizedSearchCV(
-            base,
-            param_distributions=param_distributions,
-            n_iter=min(CLASSIFICATION_TUNING_RANDOM_SEARCH_ITER, 48),
-            cv=cv,
-            random_state=random_state,
-            n_jobs=-1,
-            refit=True,
-        )
-        search.fit(X_train_s, y_train)
-        best = search.best_estimator_
-        return best, dict(search.best_params_)
-    rf = RandomForestClassifier(
-        random_state=random_state,
-        n_estimators=CLASSIFICATION_RF_N_ESTIMATORS,
-    )
-    rf.fit(X_train_s, y_train)
-    return rf, None
-
-
-def _fit_svc(
-    X_train_s: np.ndarray,
-    y_train: np.ndarray,
-    random_state: int,
-    *,
-    run_hyperparameter_search: bool,
-) -> tuple[SVC, Optional[dict[str, Any]]]:
-    if run_hyperparameter_search:
-        n_splits = _effective_cv_splits(y_train, CLASSIFICATION_TUNING_CV_SPLITS)
-        cv = StratifiedKFold(
-            n_splits=n_splits,
-            shuffle=True,
-            random_state=random_state,
-        )
-        base = SVC(kernel="rbf", random_state=random_state)
-        param_distributions = {
-            "C": list(CLASSIFICATION_SVM_SEARCH_C),
-            "gamma": list(CLASSIFICATION_SVM_SEARCH_GAMMA),
-        }
-        search = RandomizedSearchCV(
-            base,
-            param_distributions=param_distributions,
-            n_iter=min(CLASSIFICATION_TUNING_RANDOM_SEARCH_ITER, 20),
-            cv=cv,
-            random_state=random_state,
-            n_jobs=-1,
-            refit=True,
-        )
-        search.fit(X_train_s, y_train)
-        best = search.best_estimator_
-        return best, dict(search.best_params_)
-    svm = SVC(kernel="rbf", random_state=random_state)
-    svm.fit(X_train_s, y_train)
-    return svm, None
-
-
-def _classification_results_from_scaled(
-    X_train_s: np.ndarray,
-    X_test_s: np.ndarray,
-    y_train: np.ndarray,
-    y_test: np.ndarray,
-    feature_names: list[str],
-    scaler: StandardScaler,
-    *,
-    random_state: int,
-) -> tuple[ClassificationResult, ClassificationResult]:
-    """
-    Fit RF + SVM on scaled training rows and evaluate on scaled test rows.
-
-    Parameters
-    ----------
-    X_train_s, X_test_s:
-        Standardized feature matrices.
-    y_train, y_test:
-        String class labels.
-    feature_names:
-        Feature names aligned with columns of ``X_*``.
-    scaler:
-        Fitted ``StandardScaler`` used to produce ``X_train_s`` / ``X_test_s``.
-    random_state:
-        Random seed for estimators and search.
-
-    Returns
-    -------
-    tuple[ClassificationResult, ClassificationResult]
-        ``(rf_result, svm_result)``.
-    """
-    class_names = sorted(pd.unique(np.concatenate([y_train, y_test])).tolist())
-
-    run_hp = _should_run_hyperparameter_search(len(X_train_s), y_train)
-
-    rf, rf_params = _fit_random_forest(
-        X_train_s, y_train, random_state, run_hyperparameter_search=run_hp
-    )
-    y_pred_rf = rf.predict(X_test_s)
-
-    svm, svm_params = _fit_svc(X_train_s, y_train, random_state, run_hyperparameter_search=run_hp)
-    y_pred_svm = svm.predict(X_test_s)
-
-    rf_result = ClassificationResult(
-        model_name="Random Forest",
-        model=rf,
-        y_true=y_test,
-        y_pred=y_pred_rf,
-        accuracy=float(accuracy_score(y_test, y_pred_rf)),
-        precision=float(precision_score(y_test, y_pred_rf, average="weighted", zero_division=0)),
-        recall=float(recall_score(y_test, y_pred_rf, average="weighted", zero_division=0)),
-        f1=float(f1_score(y_test, y_pred_rf, average="weighted", zero_division=0)),
-        confusion_matrix=confusion_matrix(y_test, y_pred_rf, labels=class_names).astype(int),
-        class_names=class_names,
-        feature_names=feature_names,
-        feature_importances=rf.feature_importances_,
-        scaler=scaler,
-        best_params=rf_params,
-    )
-
-    svm_result = ClassificationResult(
-        model_name="SVM (RBF)",
-        model=svm,
-        y_true=y_test,
-        y_pred=y_pred_svm,
-        accuracy=float(accuracy_score(y_test, y_pred_svm)),
-        precision=float(precision_score(y_test, y_pred_svm, average="weighted", zero_division=0)),
-        recall=float(recall_score(y_test, y_pred_svm, average="weighted", zero_division=0)),
-        f1=float(f1_score(y_test, y_pred_svm, average="weighted", zero_division=0)),
-        confusion_matrix=confusion_matrix(y_test, y_pred_svm, labels=class_names).astype(int),
-        class_names=class_names,
-        feature_names=feature_names,
-        feature_importances=None,
-        scaler=scaler,
-        best_params=svm_params,
-    )
-
-    return rf_result, svm_result
+    labels = set(y)
+    if any(set(y[train]) != labels for train, _ in splits):
+        return None
+    return splits
 
 
 def train_classifiers_on_arrays(
@@ -259,41 +92,120 @@ def train_classifiers_on_arrays(
     feature_names: list[str],
     *,
     random_state: int = CLASSIFICATION_RANDOM_STATE,
+    groups_train: np.ndarray | None = None,
 ) -> tuple[ClassificationResult, ClassificationResult]:
-    """
-    Train serotype classifiers on a caller-defined train/test feature split.
-
-    Use when the split is already fixed (e.g. group-by-sensor holdout). Fits a
-    new ``StandardScaler`` on the training rows only.
+    """Fit RF/SVM on a caller-defined split and report held-out metrics.
 
     Parameters
     ----------
-    X_train, X_test:
-        Unscaled feature matrices (same columns as ``feature_names``).
-    y_train, y_test:
-        String class labels (e.g. serotype names and ``Rinsate``).
-    feature_names:
-        Names aligned with columns of ``X_train`` / ``X_test``.
-    random_state:
-        Random seed.
+    X_train, X_test : np.ndarray
+        Finite unscaled selected features; measured zeros remain zero.
+    y_train, y_test : np.ndarray
+        Class labels. Test classes must belong to the training vocabulary.
+    feature_names : list[str]
+        Names aligned with the feature columns.
+    random_state : int
+        Estimator/search seed.
+    groups_train : np.ndarray, optional
+        Training sensor IDs for grouped tuning. Without IDs, caller-defined
+        independent arrays use stratified row CV.
 
     Returns
     -------
     tuple[ClassificationResult, ClassificationResult]
-        ``(rf_result, svm_result)``.
+        RF and SVM results with training CV selection scores when feasible.
+        Pipelines predict from unscaled inputs; ``scaler`` is unused.
     """
-    scaler = StandardScaler()
-    X_train_s = scaler.fit_transform(X_train)
-    X_test_s = scaler.transform(X_test)
-    return _classification_results_from_scaled(
-        X_train_s,
-        X_test_s,
-        y_train,
-        y_test,
-        feature_names,
-        scaler,
-        random_state=random_state,
-    )
+    X_train = np.asarray(X_train, dtype=float)
+    X_test = np.asarray(X_test, dtype=float)
+    y_train = np.asarray(y_train, dtype=object)
+    y_test = np.asarray(y_test, dtype=object)
+    if (
+        X_train.ndim != 2
+        or X_test.ndim != 2
+        or X_train.shape[1] != len(feature_names)
+        or X_test.shape[1] != len(feature_names)
+    ):
+        raise ValueError("Classifier feature matrices must align with the selected feature names.")
+    if len(X_train) != len(y_train) or len(X_test) != len(y_test) or not len(y_test):
+        raise ValueError("Classifier labels and nonempty split rows must align.")
+    if not np.isfinite(X_train).all() or not np.isfinite(X_test).all():
+        raise ValueError(
+            "Selected classifier inputs must be finite; missing measurements are unavailable."
+        )
+    classes = sorted(pd.unique(y_train).tolist())
+    if len(classes) < 2:
+        raise ValueError("Classification requires at least two training classes.")
+    unknown = set(y_test) - set(classes)
+    if unknown:
+        raise ValueError(f"Held-out classes have no training support: {sorted(unknown)}.")
+    if groups_train is not None:
+        groups_train = np.asarray(groups_train, dtype=object)
+        if (
+            groups_train.shape != y_train.shape
+            or pd.isna(groups_train).any()
+            or any(not str(group).strip() for group in groups_train)
+        ):
+            raise ValueError("Training group IDs must align with rows and be non-missing/nonempty.")
+        groups_train = np.asarray([str(group).strip() for group in groups_train], dtype=object)
+    cv = _classification_cv(y_train, groups_train, random_state)
+    specifications = [
+        (
+            "Random Forest",
+            RandomForestClassifier(
+                random_state=random_state, n_estimators=CLASSIFICATION_RF_N_ESTIMATORS
+            ),
+            {
+                "n_estimators": list(CLASSIFICATION_RF_SEARCH_N_ESTIMATORS),
+                "max_depth": list(CLASSIFICATION_RF_SEARCH_MAX_DEPTH),
+                "min_samples_leaf": list(CLASSIFICATION_RF_SEARCH_MIN_SAMPLES_LEAF),
+            },
+        ),
+        (
+            "SVM (RBF)",
+            SVC(kernel="rbf", random_state=random_state),
+            {
+                "C": list(CLASSIFICATION_SVM_SEARCH_C),
+                "gamma": list(CLASSIFICATION_SVM_SEARCH_GAMMA),
+            },
+        ),
+    ]
+    results = []
+    for name, estimator, parameters in specifications:
+        model, best_params, cv_score = fit_model_pipeline(
+            estimator,
+            X_train,
+            y_train,
+            cv=cv,
+            parameters=parameters,
+            scoring="f1_weighted",
+            n_iter=CLASSIFICATION_TUNING_RANDOM_SEARCH_ITER,
+            random_state=random_state,
+        )
+        prediction = model.predict(X_test)
+        results.append(
+            ClassificationResult(
+                model_name=name,
+                model=model,
+                y_true=y_test,
+                y_pred=prediction,
+                accuracy=float(accuracy_score(y_test, prediction)),
+                precision=float(
+                    precision_score(y_test, prediction, average="weighted", zero_division=0)
+                ),
+                recall=float(recall_score(y_test, prediction, average="weighted", zero_division=0)),
+                f1=float(f1_score(y_test, prediction, average="weighted", zero_division=0)),
+                confusion_matrix=confusion_matrix(y_test, prediction, labels=classes).astype(int),
+                class_names=classes,
+                feature_names=feature_names,
+                feature_importances=getattr(
+                    model.named_steps["model"], "feature_importances_", None
+                ),
+                best_params=best_params,
+                cv_score=cv_score,
+            )
+        )
+    return results[0], results[1]
 
 
 def train_classifiers(
@@ -303,65 +215,29 @@ def train_classifiers(
     *,
     test_size: float = CLASSIFICATION_TEST_SIZE,
     random_state: int = CLASSIFICATION_RANDOM_STATE,
+    group_col: str = "sensor_id",
 ) -> tuple[ClassificationResult, ClassificationResult]:
+    """Evaluate RF/SVM on a sensor-group holdout of identity-eligible rows.
+
+    Learned scaling and tuning use training folds only. Feature inputs must be
+    independently computed per spectrum; cohort PCA belongs to exploration.
+    The supplied dataframe's row labels/order remain unchanged.
     """
-    Train Random Forest and SVM with 80/20 stratified split.
-
-    When ``CLASSIFICATION_HYPERPARAMETER_TUNING`` is True and the training split is at
-    least ``CLASSIFICATION_TUNING_MIN_TRAIN_SAMPLES`` rows, each model is tuned with
-    ``RandomizedSearchCV`` (stratified folds) on the training data only; the
-    held-out test set is used once for the reported metrics.
-
-    Parameters
-    ----------
-    df:
-        Clean DataFrame with feature columns and target.
-    feature_cols:
-        Feature column names.
-    target_col:
-        Target column (dynamic serotypes + ``Rinsate``).
-    test_size:
-        Fraction for test set.
-    random_state:
-        Random seed.
-
-    Returns
-    -------
-    tuple[ClassificationResult, ClassificationResult]
-        ``(rf_result, svm_result)``. RF result includes ``feature_importances``.
-    """
-    available = [c for c in feature_cols if c in df.columns]
-    if not available:
-        raise ValueError(f"No feature columns found. Needed: {feature_cols}")
-
-    # Fill NaN in peak columns (and any other features) with 0 before ML.
-    # Do NOT use dropna—legitimate Rinsate/low-CFU samples often have NaN peaks.
-    # Arrow-backed columns: .values breaks sklearn train_test_split indexing.
-    X = df[available].fillna(0).to_numpy(dtype=np.float64, copy=False)
+    X = feature_matrix(df, feature_cols)
     y = df[target_col].map(str).to_numpy(dtype=object)
-    class_names = sorted(pd.unique(y).tolist())
-
-    min_per_class = 2
-    if any((y == c).sum() < min_per_class for c in class_names):
-        raise ValueError(
-            f"Need at least {min_per_class} samples per class for stratified split. "
-            f"Counts: {dict(zip(class_names, [(y == c).sum() for c in class_names]))}."
-        )
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, stratify=y, random_state=random_state
-    )
-
-    scaler = StandardScaler()
-    X_train_s = scaler.fit_transform(X_train)
-    X_test_s = scaler.transform(X_test)
-
-    return _classification_results_from_scaled(
-        X_train_s,
-        X_test_s,
-        y_train,
-        y_test,
-        available,
-        scaler,
+    groups = df[group_col].to_numpy(dtype=object)
+    train, test = group_train_test_indices(groups, test_size=test_size, random_state=random_state)
+    results = train_classifiers_on_arrays(
+        X[train],
+        X[test],
+        y[train],
+        y[test],
+        feature_cols,
         random_state=random_state,
+        groups_train=groups[train],
     )
+    for result in results:
+        result.train_indices = train
+        result.test_indices = test
+        result.split_seed = random_state
+    return results

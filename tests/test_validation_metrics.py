@@ -22,7 +22,7 @@ from sensd_sers_analysis.config import VALIDATION_N_SPLITS
 
 def _make_validation_classification_df() -> pd.DataFrame:
     """Synthetic clean classification rows spanning two serovars and concentrations."""
-    return pd.DataFrame(
+    frame = pd.DataFrame(
         {
             "sensor_id": ["S1", "S1", "S1", "S2", "S2", "S3", "S3", "S3", "S4"],
             "serotype": ["ST", "ST", "ST", "ST", "ST", "SE", "SE", "SE", "SE"],
@@ -60,6 +60,10 @@ def _make_validation_classification_df() -> pd.DataFrame:
             "PC2": [0.2, 0.3, 0.0, 0.2, 0.2, 0.8, 0.9, 0.8, 0.0],
         }
     )
+    # Both SE sensors contain bacterial readings so every tested outer fold has class support.
+    frame.loc[len(frame)] = frame.iloc[5].copy()
+    frame.loc[len(frame) - 1, ["sensor_id", "test_id"]] = ["S4", "T2"]
+    return frame
 
 
 class TestValidationMetrics(unittest.TestCase):
@@ -90,6 +94,18 @@ class TestValidationMetrics(unittest.TestCase):
             self.assertEqual(len(fold.eval_mask), len(work))
             self.assertGreater(int(fold.eval_mask.sum()), 0)
             self.assertLess(int(fold.eval_mask.sum()), len(work))
+
+    def test_sensor_labels_normalize_consistently_for_regression_mapping(self) -> None:
+        reference = fit_validation_predictions(self.clf_df, self.reg_df, self.feat_cols, n_splits=1)
+        spaced = self.clf_df.copy()
+        spaced["sensor_id"] = " " + spaced["sensor_id"] + " "
+        actual = fit_validation_predictions(spaced, self.reg_df, self.feat_cols, n_splits=1)
+        np.testing.assert_array_equal(actual.folds[0].eval_mask, reference.folds[0].eval_mask)
+        np.testing.assert_allclose(actual.folds[0].pred_log_conc, reference.folds[0].pred_log_conc)
+        missing = self.clf_df.copy()
+        missing.loc[0, "sensor_id"] = None
+        with self.assertRaisesRegex(ValueError, "Sensor group IDs"):
+            fit_validation_predictions(missing, self.reg_df, self.feat_cols)
 
     def test_three_tables_match_docx_column_schemas(self) -> None:
         artifacts = build_validation_tables(

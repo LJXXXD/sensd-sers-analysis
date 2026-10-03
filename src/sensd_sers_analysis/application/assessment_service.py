@@ -4,7 +4,9 @@ Application-layer orchestration for the sensor assessment workflow.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 import pandas as pd
+from sensd_sers_analysis.report.figures import own_figure
 
 from sensd_sers_analysis.application.contracts import (
     SensorAssessmentArtifacts,
@@ -205,6 +207,7 @@ def build_sensor_assessment_pdf_bytes(
     artifacts: SensorAssessmentArtifacts,
     *,
     degradation_feature: str | None = None,
+    degradation_scope: str | None = None,
 ) -> bytes:
     """
     Build the sensor assessment PDF from precomputed artifacts.
@@ -218,59 +221,74 @@ def build_sensor_assessment_pdf_bytes(
         ``artifacts.selection.feature``; pass an explicit value when the
         degradation view uses a feature different from the consistency selection.
 
+    degradation_scope:
+        Optional label describing the selected degradation cohort.
+
     Returns
     -------
     bytes
         PDF document bytes.
     """
+    with ExitStack() as figures:
+        for section, error in [
+            ("Consistency", artifacts.consistency_error),
+            ("Degradation", artifacts.degradation_error),
+            ("Batch", artifacts.batch_error),
+        ]:
+            if error is not None:
+                raise ValueError(f"{section} report computation failed: {error}")
+        degradation_column = degradation_feature or artifacts.selection.feature
+        degradation_fig = None
+        if not artifacts.degradation_input_df.empty and len(artifacts.degradation_input_df) >= 2:
+            degradation_fig = plot_degradation_trend(
+                artifacts.degradation_input_df,
+                degradation_column,
+                "test_ordinal",
+                group_col=(
+                    "sensor_id" if "sensor_id" in artifacts.degradation_input_df.columns else None
+                ),
+            )
+            own_figure(figures, degradation_fig)
 
-    degradation_column = degradation_feature or artifacts.selection.feature
-    degradation_fig = None
-    if not artifacts.degradation_input_df.empty and len(artifacts.degradation_input_df) >= 2:
-        degradation_fig = plot_degradation_trend(
-            artifacts.degradation_input_df,
-            degradation_column,
-            "test_ordinal",
-            group_col=(
-                "sensor_id" if "sensor_id" in artifacts.degradation_input_df.columns else None
+        batch_fig = None
+        if (
+            "sensor_id" in artifacts.assessment_df.columns
+            and not artifacts.assessment_df.empty
+            and not artifacts.pdf_batch_table.empty
+        ):
+            batch_fig = plot_sensor_batch_stability(
+                artifacts.assessment_df,
+                artifacts.pdf_batch_table,
+                artifacts.selection.feature,
+                sensor_col="sensor_id",
+                z_threshold=BATCH_DEVIATION_Z_THRESHOLD,
+            )
+            own_figure(figures, batch_fig)
+
+        return build_sensor_assessment_pdf(
+            consistency_table=(
+                artifacts.pdf_consistency_table
+                if not artifacts.pdf_consistency_table.empty
+                else None
+            ),
+            degradation_table=(
+                artifacts.degradation_table if not artifacts.degradation_table.empty else None
+            ),
+            degradation_fig=degradation_fig,
+            batch_variance_table=artifacts.pdf_batch_table
+            if not artifacts.pdf_batch_table.empty
+            else None,
+            batch_boxplot_fig=batch_fig,
+            deviating_sensors_table=(
+                artifacts.pdf_deviating_sensors_table
+                if not artifacts.pdf_deviating_sensors_table.empty
+                else None
+            ),
+            outlier_method=artifacts.selection.outlier_method,
+            degradation_scope=degradation_scope,
+            report_title=(
+                "SERS Sensor Assessment — "
+                f"{artifacts.selection.serotype}, "
+                f"{artifacts.selection.target_concentration_group}"
             ),
         )
-
-    batch_fig = None
-    if (
-        "sensor_id" in artifacts.assessment_df.columns
-        and not artifacts.assessment_df.empty
-        and not artifacts.pdf_batch_table.empty
-    ):
-        batch_fig = plot_sensor_batch_stability(
-            artifacts.assessment_df,
-            artifacts.pdf_batch_table,
-            artifacts.selection.feature,
-            sensor_col="sensor_id",
-            z_threshold=BATCH_DEVIATION_Z_THRESHOLD,
-        )
-
-    return build_sensor_assessment_pdf(
-        consistency_table=(
-            artifacts.pdf_consistency_table if not artifacts.pdf_consistency_table.empty else None
-        ),
-        degradation_table=(
-            artifacts.degradation_table if not artifacts.degradation_table.empty else None
-        ),
-        degradation_fig=degradation_fig,
-        batch_variance_table=artifacts.pdf_batch_table
-        if not artifacts.pdf_batch_table.empty
-        else None,
-        batch_boxplot_fig=batch_fig,
-        deviating_sensors_table=(
-            artifacts.pdf_deviating_sensors_table
-            if not artifacts.pdf_deviating_sensors_table.empty
-            else None
-        ),
-        outlier_method=artifacts.selection.outlier_method,
-        report_title=(
-            "SERS Sensor Assessment — "
-            f"{artifacts.selection.serotype}, "
-            f"{artifacts.selection.target_concentration_group}"
-        ),
-    )

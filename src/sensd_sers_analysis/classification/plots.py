@@ -5,6 +5,8 @@ Serotype classification visualizations.
 from typing import Optional
 
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from sensd_sers_analysis.utils.availability import PlotUnavailableError
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -38,16 +40,19 @@ def plot_pca_classification(
         matplotlib Figure.
     """
     if pc1_col not in df.columns or pc2_col not in df.columns:
-        raise ValueError(f"Need {pc1_col} and {pc2_col} in DataFrame")
+        raise PlotUnavailableError(f"Need {pc1_col} and {pc2_col} in DataFrame")
     if target_col not in df.columns:
         raise ValueError(f"Need {target_col} in DataFrame")
 
-    subset = df[[pc1_col, pc2_col, target_col]].dropna()
+    subset = df.loc[
+        np.isfinite(df[[pc1_col, pc2_col]]).all(axis=1), [pc1_col, pc2_col, target_col]
+    ].dropna()
     if subset.empty:
-        raise ValueError("No valid PCA + target data")
+        raise PlotUnavailableError("No complete PCA scores with class labels in this scope.")
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig = Figure(figsize=figsize)
+        ax = fig.subplots()
     else:
         fig = ax.get_figure()
 
@@ -106,7 +111,8 @@ def plot_confusion_matrix(
         matplotlib Figure.
     """
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig = Figure(figsize=figsize)
+        ax = fig.subplots()
     else:
         fig = ax.get_figure()
 
@@ -170,7 +176,8 @@ def plot_feature_importance(
     names_sorted = [names[i] for i in order]
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig = Figure(figsize=figsize)
+        ax = fig.subplots()
     else:
         fig = ax.get_figure()
 

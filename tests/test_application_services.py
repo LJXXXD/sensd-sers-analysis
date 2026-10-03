@@ -135,6 +135,7 @@ def _make_model_consistency_df() -> pd.DataFrame:
 def _make_classification_clean_df() -> pd.DataFrame:
     return pd.DataFrame(
         {
+            "sensor_id": [f"S{i % 5}" for i in range(15)],
             "target": [
                 "ST",
                 "ST",
@@ -501,7 +502,8 @@ class ApplicationServiceTests(unittest.TestCase):
         self.assertEqual(artifacts.rf_result.f1, direct_rf.f1)
         self.assertEqual(artifacts.svm_result.accuracy, direct_svm.accuracy)
         self.assertEqual(artifacts.svm_result.f1, direct_svm.f1)
-        self.assertEqual(artifacts.best_result.f1, max(direct_rf.f1, direct_svm.f1))
+        self.assertEqual(artifacts.best_result.model_name, "Random Forest")
+        self.assertIsNone(artifacts.best_result.cv_score)
 
 
 if __name__ == "__main__":

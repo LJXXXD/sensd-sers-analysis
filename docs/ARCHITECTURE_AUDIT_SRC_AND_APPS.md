@@ -17,7 +17,7 @@ This document describes the current `src/sensd_sers_analysis` and `apps` impleme
 
 The library currently has no dependency on Streamlit or `apps`. Streamlit cache decorators live in `apps/cache.py` and the upload component; the application services remain callable independently of the UI.
 
-`apps/txt_to_excel.py` contains both the prep UI and parsing/workbook-export logic. Its current single-file form reflects deferred extraction, not a permanent architecture exception. Structural extraction is pending LJ's review; narrow converter correctness fixes do not require treating that layout as the intended long-term design.
+`apps/txt_to_excel.py` owns prep widgets, session state, metadata forms and template actions. `data/txt_converter.py` owns callable TXT parsing, metadata serialization, preset conversion and workbook construction. `config/metadata_schema.py` owns field order, field types and canonical preset keys. The library has no Streamlit dependency.
 
 ## Active analysis flow
 
@@ -50,44 +50,45 @@ These are nested tabs in the current UI. Further navigation integration remains 
 - MTL's seed controls CPU PyTorch initialization, dropout and shuffling as well as its NumPy sub-split. Its scoped RNG ownership restores the caller's CPU state; runtime/hardware differences remain outside the reproducibility guarantee.
 - `MacroRegressionResult` owns pooled coordinates, sensor labels, fit coefficients, metrics, and the point-aligned outlier mask. Macro plotting consumes that artifact directly; without a supplied result it computes one once.
 - Other assessment plotting functions can still call fitting helpers. Passing existing results is useful where it eliminates repeated work; splitting every plotting helper into a new service is not inherently necessary.
-- Dynamic peak discovery and shared PCA are fitted on the derived input before the classification/regression split. The current classification cleaning also uses labeled responses before splitting. Those paths support exploration but need a training-only evaluation design before scores represent a prospective held-out workflow.
-- PCA replaces missing/non-finite spectral values with zero; several model paths fill missing feature values with zero. Missing measurement, unavailable feature, and an undetected peak are different cases. Their scientific policy needs review rather than a generic fallback replacement.
+- Cohort PCA and dynamic peak discovery are exploratory. PCA uses complete finite spectra; dynamic anchor means use complete bacteria spectra. Neither supplies default model predictors. Selected scalar/fixed-peak predictors must be finite; missing values are never substituted with measured zeros.
+- Model eligibility uses explicit sample identity and actual positive CFU for regression, independently of retrospective QA. Classifiers and regressors hold out sensor IDs. Fold-local scaling belongs to estimator Pipelines; candidate families share a realized training-sensor CV plan and scorer. Training CV selects the family, with a fixed RF reference when CV is unavailable. No outer test metric selects a family.
+- MTL uses a group-disjoint inner early-stopping split, inner-training scaling and training-only class vocabulary. Unsupported classes or invalid losses abort. Restored best weights use a fresh optimizer and a fixed full-training fine-tuning budget.
+- Validation classifier and regression use the same held-in sensor assignment. Every requested fold must succeed; unsupported class support or model failure aborts the request. Missing sensor holdout produces no fabricated scores.
+- Figure factories return caller-owned standalone Figures. Report services register only their own figures in an ExitStack; failures release those figures without touching unrelated callers. Typed `PlotUnavailableError` describes expected absent plot data and appears as an explicit report note; other plotting failures abort export.
+- PDF reports preserve every table row/header and all metric columns through wrapped cells and horizontal panels. Repeated row identity disambiguates panels when the first column is nonunique. Figures retain aspect ratio. Assessment and degradation scopes are explicit, and missing sections contain availability explanations.
+- PDF and converter download bytes are bound to the current data and settings. Scope changes or failed requests clear stale bytes; generation exposes a download only after success.
 
-## Maintenance questions
+## Maintenance boundaries
 
-| Area | Evidence and next decision |
+| Area | Current ownership and boundary |
 | --- | --- |
-| Model evaluation | Define the intended independent unit, training-only preprocessing, screening, and model selection together. Avoid repairing PCA in isolation while leaving other leakage paths unchanged. |
-| Converter structure | Parsing and serialization are independently useful, but extraction is deferred. Keep its current UI/workbook behavior stable while choosing whether it remains a tool or becomes a separate package. |
-| Large modules | `validation_metrics`, `assessment_plots`, and `pdf_builder` group several related operations. Split only when responsibilities or repeated changes justify it; line count alone is insufficient. |
-| Error boundaries | Workbook loading records per-file failures; upload and PDF UI boundaries display failures. Broad catches at these outer boundaries are observable rather than silent. PDF failures retain a traceback through logging. |
-| PDF figure omissions | Sensor-assessment report preparation currently skips some plot `ValueError`s. Missing sections need an explicit report policy before those failures can be interpreted as complete assessment. |
-| Rerun cost | Cached numerical stages are separated from rendering. Profile actual reruns before adding more caching, fragments, or session abstractions. |
-| Session reset | `clear_app_data` clears caches and session state. Its lifecycle is deliberate; namespacing is useful only if unrelated state needs preservation. |
+| Model evaluation | Shared `modeling.py` owns strict feature matrices, Pipeline fitting/search and comparable CV family selection; `splits.py` owns sensor holdout and group validation. The regression split import remains a compatibility entry point. |
+| Converter | UI/session behavior stays in the App; serialization and numerical input contracts are callable without Streamlit. Recognized instrument provenance headers are not measurements; malformed measurement rows fail. |
+| Large modules | Validation tables, assessment plots and PDF assembly group related operations. Cohesive responsibilities take priority over a line-count target. |
+| Errors | Input and export outer boundaries report failures with context. Expected missing plot data is distinct from computation failure; neither produces fabricated measurements or predictions. |
+| Rerun cost | Cached numerical stages are separate from rendering. Further cache/fragment changes require measured rerun costs. |
+| Product decisions | Deeper navigation integration, new screening qualification rules and deployment remain separate user decisions; maintenance does not adopt them. |
 
 Active checks are `pytest tests`, `ruff check apps src tests`, and formatting checks for affected code. Legacy tests depend on retired imports and are not part of this active suite. Numerical regression tests use independent expected quantities; artifact presence and a passing suite do not independently validate model generalization or archived scientific claims.
 
-## Evaluation paths requiring a coordinated design
+## Evaluation and scientific interpretation
 
-| Current path | Consequence to resolve before prospective claims |
-| --- | --- |
-| PCA/dynamic anchors fitted on the derived cohort before splitting | Held-out observations influence representation. Dynamic anchors also use serotype and nominal-dose labels. |
-| QA and pooled residual screening before splitting | The evaluated cohort depends on labeled concentration-response evidence. Define what screening evidence would be available for a future sample/sensor. |
-| Classification stratifies rows; regression/Validation hold out sensor IDs | These answer different generalization questions. Repeated spectra can share a sensor across classification train/test sets; recorded IDs do not establish physical-device or biological independence. |
-| Outer-training scaling precedes tuning CV | Inner validation folds influence the scaler used by the search. Use training-fold transformations when redesigning tuning. |
-| MTL early stopping splits training rows and scales using all outer-training rows | Within-training validation can share sensors and influence scaling. The tiny-training fallback can overlap training/validation rows; outer test sensors remain separate under the application split. |
-| Classification/two-stage select by held-out F1; global regression selects by held-out RMSE | The same holdout informs model choice and displayed performance. Keep final assessment separate from selection in a future design. |
-| Missing features filled with zero | Unavailable measurements and measured zeros share a representation. Define missingness and feature availability together with evaluation. |
+These are retrospective sensor-ID holdout results. Recorded IDs do not prove physical-device or independent biological-preparation identity. Fixed peak choices and estimator policies retain prior dataset-informed decisions. QA describes labeled response consistency; it does not establish prospective sensor qualification or the physical cause of a signal decline. Grouped evaluation and strict fit boundaries improve the estimand's integrity without reproducing historical emailed accuracies or establishing external generalization.
 
 ## Review coverage and verification boundary
 
-The active inventory contains 67 library and 25 App Python modules, including package export files. Inventory, imports, callable boundaries, error/imputation sites, and test routing are scanned across that surface. This is not a line-by-line acceptance of all 92 modules.
+The active inventory contains 72 library and 25 App Python modules, including package export files. Responsibilities, imports, callable boundaries, input/failure semantics and affected callers are reviewed across this surface. Detailed calculations and revised contracts are supported by independent regression tests; this is software maintenance acceptance, not scientific acceptance of every archived result.
 
 | Area | Review depth |
 | --- | --- |
-| Workbook loading → metadata/normalization/grid alignment → scalar/peak features → filtering | Detailed source and caller review, independent input/quantity regressions, bundled-data smoke |
-| QA/classification/concentration preparation → model/split code → Validation tables/UI | Detailed identity, array/split, error handling, and reproducibility review; focused regressions |
-| Inventory, assessment/peak orchestration, configuration/utilities, plotting/report boundaries, App composition/cache/reset | Interface and selected calculation/caller review; existing focused coverage retained |
-| Converter metadata/template UI, the full plotting/PDF layout surface, other tab presentation branches | Not fully reviewed line by line; converter extraction and broader navigation/layout work remain outside this pass |
+| Loading → metadata/normalization/alignment → scalar/fixed/dynamic features → filters | Detailed source and caller review; invalid-input and independent numerical expectations; complete bundled-data smoke |
+| QA/identity preparation → classifiers/global/two-stage/MTL → Validation | Detailed cohort, split, scaler, selection, class-support and failure contracts; outer-test perturbation and grouped inner-split regressions |
+| Inventory, assessment/peak orchestration, config/utilities, App composition/cache/reset | Responsibilities and caller review; numerical and lifecycle tests where consequential; complete default App rerun |
+| Converter metadata/template UI and serialization | Full extraction/caller review, finite/grid/preset regressions, real instrument TXT/workbook round trip and prep-App export lifecycle |
+| Plot factories, report services, PDF layouts, tab presentation/downloads | Detailed data-availability, labeling, figure ownership, complete-table, aspect-ratio and stale-download review; generated PDF text and rendered-page checks |
 
-The current checkpoint passes 155 active tests with five existing warnings (degenerate PCA fixtures and small search spaces), Ruff, and formatting for affected code. The bundled upload pipeline loads all 125 default workbooks/580 spectra, trims to 249 points at 450–1800 cm⁻¹ with normalization enabled, and retains finite integral areas matching an independent segment-by-segment trapezoidal sum. Its 412 classification and 322 regression rows retain aligned source indices; this smoke does not train new models. Counts describe all default categories/dates, not the restricted recent ST/SE cohort. Full live-App reruns, every PDF layout, archived accuracy reproduction, and prospective scientific validity are not established by these checks.
+Verification uses `pytest tests`, Ruff, formatter checks and repository pre-commit hooks. Legacy tests depend on retired imports and are outside this active suite. The active suite currently has 178 passing tests without warnings; completion checks are recorded in Git and the owning project State.
+
+The bundled pipeline loads 125 workbooks /580 spectra, trims to 249 points at 450–1800 cm⁻¹ with exposure normalization, and produces finite integral areas matching an independent segment-by-segment trapezoidal sum. Identity-eligible cohorts contain 580 classification /454 positive-CFU regression rows; these counts cover all default categories/dates. Recent ST/SE (dates >=2025-09-01) remains 259 spectra. These unscreened eligibility counts are distinct from the diagnostic screened cohort.
+
+A real default AppTest renders 16 main/subtabs with no uncaught exception, error or warning. Four instrument TXT files merge on a common grid, retain 231 points at 560–1800 cm⁻¹, and round-trip actual concentrations and explicit sample labels through the workbook loader. Six report types plus a 45-row/13-column stress table are generated; all 32 rendered pages are inspected. The model-layout checks use a synthetic sensor-balanced cohort with default split seeds and four MTL epochs for QA, and do not represent new research performance experiments. PDF failure/availability and download invalidation tests cover error paths separately from those successful outputs.

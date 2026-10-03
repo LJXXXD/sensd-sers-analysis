@@ -350,7 +350,7 @@ class GlobalRegressionArtifacts:
     Parameters
     ----------
     regression_clean:
-        Clean positive-CFU rows (dynamic serotypes) used for training and evaluation.
+        Identity-eligible positive-CFU rows used for training and evaluation.
     feature_columns:
         Feature names passed to the models.
     train_indices, test_indices:
@@ -358,7 +358,7 @@ class GlobalRegressionArtifacts:
     rf_result, svm_result:
         Random Forest and SVR results on the test split.
     best_result:
-        Model with lower test RMSE.
+        Model chosen by training CV; RF is the fixed reference when CV is unavailable.
     """
 
     regression_clean: pd.DataFrame
@@ -404,7 +404,7 @@ class ClassificationArtifacts:
     Parameters
     ----------
     clean_classification_df:
-        Cleaned dataframe used for classification.
+        Identity-eligible dataframe used for classification, without response screening.
     feature_columns:
         Feature columns passed to the classifiers.
     rf_result:
@@ -412,7 +412,7 @@ class ClassificationArtifacts:
     svm_result:
         SVM result bundle.
     best_result:
-        Result chosen as the best-performing model.
+        Result chosen by training CV; RF is the fixed reference when CV is unavailable.
     """
 
     clean_classification_df: pd.DataFrame

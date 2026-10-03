@@ -5,20 +5,22 @@ Application orchestration for concentration regression paradigms.
 from __future__ import annotations
 
 import numpy as np
+from contextlib import ExitStack
 import pandas as pd
+from sensd_sers_analysis.report.figures import own_figure
 
 from sensd_sers_analysis.application.contracts import (
     GlobalRegressionArtifacts,
     MtlRegressionArtifacts,
     TwoStageRegressionArtifacts,
 )
-from sensd_sers_analysis.assessment import get_global_model_consistency_qa
 from sensd_sers_analysis.config import (
     REGRESSION_INLIER_FEATURE,
     REGRESSION_QA_FEATURES,
     REGRESSION_RANDOM_STATE,
     REGRESSION_TEST_SIZE,
 )
+from sensd_sers_analysis.modeling import select_by_training_cv
 from sensd_sers_analysis.regression import (
     assert_disjoint_group_split,
     group_train_test_indices,
@@ -35,35 +37,12 @@ def build_concentration_regression_dataset(
     excluded_map_policy: tuple[str, ...] = REGRESSION_QA_FEATURES,
     inlier_feature: str = REGRESSION_INLIER_FEATURE,
 ) -> pd.DataFrame:
+    """Build unscreened identity-eligible finite positive actual-CFU rows.
+
+    QA arguments remain accepted for caller compatibility; held-out responses
+    never determine exclusions. Retrospective screening is a separate diagnostic.
     """
-    Build the clean concentration-regression table (positive CFU, dynamic serotypes).
-
-    Parameters
-    ----------
-    filtered_features:
-        Feature dataframe after app filters.
-    excluded_map_policy:
-        Features used to build the global QA exclusion map.
-    inlier_feature:
-        Feature column used for intra-sensor outlier filtering (shared policy with
-        serotype classification).
-
-    Returns
-    -------
-    pd.DataFrame
-        Regression-ready rows; empty when prerequisites fail.
-    """
-
-    _, excluded_map = get_global_model_consistency_qa(
-        filtered_features,
-        feature_cols=list(excluded_map_policy),
-    )
-    return prepare_concentration_regression_data(
-        filtered_features,
-        excluded_map=excluded_map,
-        feature_cols=list(excluded_map_policy),
-        inlier_feature=inlier_feature,
-    )
+    return prepare_concentration_regression_data(filtered_features, apply_response_screening=False)
 
 
 def _split_train_test(
@@ -74,7 +53,7 @@ def _split_train_test(
     group_col: str = "sensor_id",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Shared group holdout for all three paradigms."""
-    groups = regression_clean[group_col].astype(str).to_numpy(dtype=object, copy=False)
+    groups = regression_clean[group_col].to_numpy(dtype=object, copy=False)
     train_idx, test_idx = group_train_test_indices(
         groups,
         test_size=test_size,
@@ -98,7 +77,7 @@ def run_global_concentration_regression(
         test_idx,
         random_state=REGRESSION_RANDOM_STATE,
     )
-    best = rf_result if rf_result.rmse <= svm_result.rmse else svm_result
+    best = select_by_training_cv(rf_result, svm_result)
     return GlobalRegressionArtifacts(
         regression_clean=df,
         feature_columns=feature_columns,
@@ -158,110 +137,126 @@ def run_mtl_concentration_regression(
 
 def build_global_regression_pdf_bytes(artifacts: GlobalRegressionArtifacts) -> bytes:
     """PDF with metrics table + global regression plots."""
-    from sensd_sers_analysis.regression.plots import plot_actual_vs_predicted, plot_residuals
-    from sensd_sers_analysis.report import build_regression_concentration_pdf
+    with ExitStack() as figures:
+        from sensd_sers_analysis.regression.plots import plot_actual_vs_predicted, plot_residuals
+        from sensd_sers_analysis.report import build_regression_concentration_pdf
 
-    best = artifacts.best_result
-    compare_df = pd.DataFrame(
-        {
-            "Model": [artifacts.rf_result.model_name, artifacts.svm_result.model_name],
-            "RMSE (log10)": [artifacts.rf_result.rmse, artifacts.svm_result.rmse],
-            "MAE (log10)": [artifacts.rf_result.mae, artifacts.svm_result.mae],
-            "R²": [artifacts.rf_result.r2, artifacts.svm_result.r2],
-        }
-    )
-    fig_scatter = plot_actual_vs_predicted(
-        best.y_true,
-        best.y_pred,
-        title=f"Global model — {best.model_name} (held-out sensors)",
-    )
-    fig_res = plot_residuals(best.y_true, best.y_pred)
-    pdf = build_regression_concentration_pdf(
-        paradigm_title="Paradigm 1: Global (serotype-blind) regression",
-        metrics_table=compare_df,
-        scatter_fig=fig_scatter,
-        residual_fig=fig_res,
-    )
-    import matplotlib.pyplot as plt
+        best = artifacts.best_result
+        compare_df = pd.DataFrame(
+            {
+                "Model": [artifacts.rf_result.model_name, artifacts.svm_result.model_name],
+                "RMSE (log10)": [artifacts.rf_result.rmse, artifacts.svm_result.rmse],
+                "MAE (log10)": [artifacts.rf_result.mae, artifacts.svm_result.mae],
+                "R²": [artifacts.rf_result.r2, artifacts.svm_result.r2],
+                "Training CV RMSE": [
+                    -artifacts.rf_result.cv_score
+                    if artifacts.rf_result.cv_score is not None
+                    else None,
+                    -artifacts.svm_result.cv_score
+                    if artifacts.svm_result.cv_score is not None
+                    else None,
+                ],
+            }
+        )
+        fig_scatter = plot_actual_vs_predicted(
+            best.y_true,
+            best.y_pred,
+            title=f"Global model — {best.model_name} (held-out sensors)",
+        )
+        own_figure(figures, fig_scatter)
+        fig_res = plot_residuals(best.y_true, best.y_pred)
+        own_figure(figures, fig_res)
+        pdf = build_regression_concentration_pdf(
+            paradigm_title="Paradigm 1: Global (serotype-blind) regression",
+            metrics_table=compare_df,
+            scatter_fig=fig_scatter,
+            residual_fig=fig_res,
+            caption_lines=(
+                "Predictors: " + ", ".join(artifacts.feature_columns) + ".",
+                f"Outer split seed={REGRESSION_RANDOM_STATE}; train rows={len(artifacts.train_indices)}, test rows={len(artifacts.test_indices)}.",
+            ),
+        )
 
-    plt.close(fig_scatter)
-    plt.close(fig_res)
-    return pdf
+        return pdf
 
 
 def build_two_stage_regression_pdf_bytes(artifacts: TwoStageRegressionArtifacts) -> bytes:
-    from sensd_sers_analysis.classification.plots import plot_confusion_matrix
-    from sensd_sers_analysis.regression.plots import plot_actual_vs_predicted, plot_residuals
-    from sensd_sers_analysis.report import build_regression_concentration_pdf
+    with ExitStack() as figures:
+        from sensd_sers_analysis.classification.plots import plot_confusion_matrix
+        from sensd_sers_analysis.regression.plots import plot_actual_vs_predicted, plot_residuals
+        from sensd_sers_analysis.report import build_regression_concentration_pdf
 
-    out = artifacts.outputs
-    metrics_df = pd.DataFrame(
-        {
-            "Pipeline": ["Routed (predicted serotype)", "Oracle (true serotype)"],
-            "RMSE (log10)": [out.rmse_routed, out.rmse_oracle],
-            "MAE (log10)": [out.mae_routed, out.mae_oracle],
-            "R²": [out.r2_routed, out.r2_oracle],
-        }
-    )
-    fig_scatter = plot_actual_vs_predicted(
-        out.y_true_reg,
-        out.y_pred_routed,
-        title="Two-stage — routed regression (held-out sensors)",
-    )
-    fig_res = plot_residuals(out.y_true_reg, out.y_pred_routed, title="Residuals — routed")
-    fig_cm = plot_confusion_matrix(out.stage1_best)
-    pdf = build_regression_concentration_pdf(
-        paradigm_title="Paradigm 2: Two-stage (classify then regress)",
-        metrics_table=metrics_df,
-        scatter_fig=fig_scatter,
-        residual_fig=fig_res,
-        extra_figures=[("Stage 1 confusion (best classifier)", fig_cm)],
-        caption_lines=(
-            f"Stage-1 routing accuracy on test: {out.routing_accuracy:.3f}. "
-            "Oracle uses true serotype for routing (upper bound on stage 2).",
-        ),
-    )
-    import matplotlib.pyplot as plt
+        out = artifacts.outputs
+        metrics_df = pd.DataFrame(
+            {
+                "Pipeline": ["Routed (predicted serotype)", "Oracle (true serotype)"],
+                "RMSE (log10)": [out.rmse_routed, out.rmse_oracle],
+                "MAE (log10)": [out.mae_routed, out.mae_oracle],
+                "R²": [out.r2_routed, out.r2_oracle],
+            }
+        )
+        fig_scatter = plot_actual_vs_predicted(
+            out.y_true_reg,
+            out.y_pred_routed,
+            title="Two-stage — routed regression (held-out sensors)",
+        )
+        own_figure(figures, fig_scatter)
+        fig_res = plot_residuals(out.y_true_reg, out.y_pred_routed, title="Residuals — routed")
+        own_figure(figures, fig_res)
+        fig_cm = plot_confusion_matrix(out.stage1_best)
+        own_figure(figures, fig_cm)
+        pdf = build_regression_concentration_pdf(
+            paradigm_title="Paradigm 2: Two-stage (classify then regress)",
+            metrics_table=metrics_df,
+            scatter_fig=fig_scatter,
+            residual_fig=fig_res,
+            extra_figures=[("Stage 1 confusion (best classifier)", fig_cm)],
+            caption_lines=(
+                "Predictors: " + ", ".join(artifacts.feature_columns) + ".",
+                f"Stage-1 routing accuracy on test: {out.routing_accuracy:.3f}. "
+                "Oracle uses true serotype for routing (diagnostic true-serotype routing).",
+            ),
+        )
 
-    plt.close(fig_scatter)
-    plt.close(fig_res)
-    plt.close(fig_cm)
-    return pdf
+        return pdf
 
 
 def build_mtl_regression_pdf_bytes(artifacts: MtlRegressionArtifacts) -> bytes:
-    import matplotlib.pyplot as plt
+    with ExitStack() as figures:
+        from sensd_sers_analysis.regression.plots import plot_actual_vs_predicted, plot_residuals
+        from sensd_sers_analysis.report import build_regression_concentration_pdf
 
-    from sensd_sers_analysis.regression.plots import plot_actual_vs_predicted, plot_residuals
-    from sensd_sers_analysis.report import build_regression_concentration_pdf
-
-    out = artifacts.outputs
-    labels = out.class_labels
-    sero = np.asarray([labels[int(i)] for i in out.y_true_cls], dtype=object)
-    n_cls = len(labels)
-    metrics_df = pd.DataFrame(
-        {
-            "Task": ["Regression (log10)", f"Classification ({n_cls} serotypes)"],
-            "Metric": ["RMSE / MAE / R²", "Accuracy"],
-            "Value": [
-                f"{out.rmse:.4f} / {out.mae:.4f} / {out.r2:.4f}",
-                f"{out.clf_accuracy:.4f}",
-            ],
-        }
-    )
-    fig_scatter = plot_actual_vs_predicted(
-        out.y_true_reg,
-        out.y_pred_reg,
-        title="MTL — regression head (held-out sensors)",
-        hue=sero,
-    )
-    fig_res = plot_residuals(out.y_true_reg, out.y_pred_reg, title="Residuals — MTL regression")
-    pdf = build_regression_concentration_pdf(
-        paradigm_title="Paradigm 3: Multi-task learning (shared trunk)",
-        metrics_table=metrics_df,
-        scatter_fig=fig_scatter,
-        residual_fig=fig_res,
-    )
-    plt.close(fig_scatter)
-    plt.close(fig_res)
-    return pdf
+        out = artifacts.outputs
+        labels = out.class_labels
+        sero = np.asarray([labels[int(i)] for i in out.y_true_cls], dtype=object)
+        n_cls = len(labels)
+        metrics_df = pd.DataFrame(
+            {
+                "Task": ["Regression (log10)", f"Classification ({n_cls} serotypes)"],
+                "Metric": ["RMSE / MAE / R²", "Accuracy"],
+                "Value": [
+                    f"{out.rmse:.4f} / {out.mae:.4f} / {out.r2:.4f}",
+                    f"{out.clf_accuracy:.4f}",
+                ],
+            }
+        )
+        fig_scatter = plot_actual_vs_predicted(
+            out.y_true_reg,
+            out.y_pred_reg,
+            title="MTL — regression head (held-out sensors)",
+            hue=sero,
+        )
+        own_figure(figures, fig_scatter)
+        fig_res = plot_residuals(out.y_true_reg, out.y_pred_reg, title="Residuals — MTL regression")
+        own_figure(figures, fig_res)
+        pdf = build_regression_concentration_pdf(
+            paradigm_title="Paradigm 3: Multi-task learning (shared trunk)",
+            metrics_table=metrics_df,
+            scatter_fig=fig_scatter,
+            residual_fig=fig_res,
+            caption_lines=(
+                "Predictors: " + ", ".join(artifacts.feature_columns) + ".",
+                f"Outer seed={REGRESSION_RANDOM_STATE}; early-stop train rows={len(out.early_stop_train_indices)}, validation rows={len(out.early_stop_validation_indices)}; fixed full-training fine-tune epochs={out.finetune_epochs}. Scaling is fit only on inner training sensors; early-stop loss histories precede final fine-tuning.",
+            ),
+        )
+        return pdf
