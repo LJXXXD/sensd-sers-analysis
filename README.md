@@ -75,3 +75,9 @@ The TXT-to-Excel generator provides per-signal Sample Type and Special Treatment
 - [Schema, compatibility and migration details](docs/DATA_SCOPE.md#per-spectrum-metadata-schema).
 
 The active New Format examples use this schema. Legacy files remain readable for inventory, but missing Sample Type must be completed for classification and control comparisons. Existing audit reports preserve their historical input hashes; migration records identify the current metadata changes.
+
+## Local research records
+
+`reports/` contains local inventory/migration evidence, model experiments and report deliverables. The directory is ignored by Git and excluded from HF deployment. Interpret each record with its documented input hashes, runtime, split protocol and historical scope; it does not describe current App results.
+
+Local archives preserve scripts, numerical arrays, predictions, telemetry and manifest-listed logs; use a separate copy for reruns. Presentation previews/inspection files live in ignored local support storage. The four tracked raw TXT inputs in `example_data/txt_to_excel/` are manual converter examples and retain instrument-export bytes independently of the default workbook loader.

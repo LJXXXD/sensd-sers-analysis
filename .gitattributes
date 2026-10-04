@@ -1,0 +1,3 @@
+# Raw instrument exports retain their recorded bytes.
+example_data/txt_to_excel/*.txt -text whitespace=cr-at-eol
+legacy/tools/txt2excel/*.txt -text whitespace=cr-at-eol
