@@ -37,28 +37,51 @@ jobs:
           open('requirements.txt', 'w').write('\n'.join(deps))
           "
 
-          # --- Remove tracked Excel files (HF rejects binary .xlsx/.xls) ---
-          if git ls-files -z '*.xlsx' '*.xls' '*.XLSX' '*.XLS' | grep -q .; then
-            git ls-files -z '*.xlsx' '*.xls' '*.XLSX' '*.XLS' \
-              | xargs -0 git rm -f
-          else
-            echo "No tracked Excel files found."
-          fi
+          # Keep a byte-level manifest of the bundled workbooks.
+          python3 - <<'PYCODE'
+          import hashlib
+          import json
+          import runpy
+          from pathlib import Path
+          config = runpy.run_path("src/sensd_sers_analysis/config/example_data.py")
+          for directory in config["EXAMPLE_DATA_DIRECTORIES"]:
+              if not directory.is_dir() or not any(directory.glob("*.xlsx")):
+                  raise SystemExit(f"Missing bundled dilution collection: {directory}")
+          files = sorted(Path("example_data").rglob("*.xlsx"))
+          manifest = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+          Path("/tmp/example-data-manifest.json").write_text(json.dumps(manifest))
+          PYCODE
+
+          # LFS pointers belong only to the temporary HF deploy commit.
+          git lfs install --local
+          git lfs track "*.xlsx" "*.xls" "*.XLSX" "*.XLS" "*.pdf" "*.PDF"
 
           # --- Single orphan commit: no GitHub history, no leftover binary blobs ---
           git checkout --orphan hf-deploy
+          # Research records stay in GitHub and are outside the Space's runtime inputs.
+          git rm -rf --ignore-unmatch -- reports
           git add -A
+          git add --renormalize .
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git commit -m "chore: HF Spaces deploy"
 
-          # Sanity check before push
-          if git ls-files '*.xlsx' '*.xls' '*.XLSX' '*.XLS' | grep -q .; then
-            echo "ERROR: Excel files still present in deploy commit."
-            git ls-files '*.xlsx' '*.xls' '*.XLSX' '*.XLS'
-            exit 1
-          fi
-          echo "Deploy commit ready ($(git rev-list --count HEAD) commit, no Excel files)."
+          # Every bundled workbook must be present as an LFS pointer to its exact bytes.
+          python3 - <<'PYCODE'
+          import json
+          import subprocess
+          from pathlib import Path
+          manifest = json.loads(Path("/tmp/example-data-manifest.json").read_text())
+          if subprocess.check_output(["git", "ls-files", "--", "reports/"], text=True):
+              raise SystemExit("Research records are present in the deploy commit.")
+          for name, digest in manifest.items():
+              pointer = subprocess.check_output(["git", "show", f"HEAD:{name}"], text=True)
+              if not pointer.startswith("version https://git-lfs.github.com/spec/v1\n"):
+                  raise SystemExit(f"Workbook is not tracked with LFS: {name}")
+              if f"oid sha256:{digest}\n" not in pointer:
+                  raise SystemExit(f"Workbook content changed: {name}")
+          print(f"Deploy commit ready: {len(manifest)} bundled workbooks verified.")
+          PYCODE
 
       - name: Push to Hugging Face Space
         env:
