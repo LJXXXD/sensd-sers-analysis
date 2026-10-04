@@ -58,7 +58,7 @@ jobs:
 
           # --- Single orphan commit: no GitHub history, no leftover binary blobs ---
           git checkout --orphan hf-deploy
-          # Research records stay in GitHub and are outside the Space's runtime inputs.
+          # Local research records are outside the Space's runtime inputs.
           git rm -rf --ignore-unmatch -- reports
           git add -A
           git add --renormalize .
