@@ -78,6 +78,6 @@ The active New Format examples use this schema. Legacy files remain readable for
 
 ## Local research records
 
-`reports/` contains local inventory/migration evidence, model experiments and report deliverables. The directory is ignored by Git and excluded from HF deployment. Interpret each record with its documented input hashes, runtime, split protocol and historical scope; it does not describe current App results.
+`reports/` contains local inventory/migration evidence, model experiments and report deliverables. Its files remain untracked and visible in Git status, subject to existing file-type ignore rules, and are excluded from HF deployment. Interpret each record with its documented input hashes, runtime, split protocol and historical scope; it does not describe current App results.
 
 Local archives preserve scripts, numerical arrays, predictions, telemetry and manifest-listed logs; use a separate copy for reruns. Presentation previews/inspection files live in ignored local support storage. The four tracked raw TXT inputs in `example_data/txt_to_excel/` are manual converter examples and retain instrument-export bytes independently of the default workbook loader.

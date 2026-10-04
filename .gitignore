@@ -128,6 +128,3 @@ dmypy.json
 # Local AI working state
 .context/
 /.ai-tmp/
-
-# Local research records and report deliverables.
-/reports/
